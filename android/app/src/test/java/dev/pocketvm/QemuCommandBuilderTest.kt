@@ -1,5 +1,7 @@
 package dev.pocketvm
 
+import dev.pocketvm.core.model.LaunchMode
+import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.StorageController
 import dev.pocketvm.runtime.FirmwareFiles
 import dev.pocketvm.runtime.LaunchRequest
@@ -155,5 +157,51 @@ class QemuCommandBuilderTest {
         // Below 5900 is rejected by the validator; the builder must not clamp
         // it back to 5900 or the manifest would describe a different listener.
         assertEquals(-100, builder.displayIndex(5800))
+    }
+
+    @Test
+    fun `standard profile uses multithreaded tcg and max cpu`() {
+        val args = builder.build(request().copy(profile = LaunchProfile.STANDARD))
+        assertEquals("tcg,thread=multi,tb-size=512", valueOf(args, "-accel"))
+        assertEquals("max", valueOf(args, "-cpu"))
+        assertTrue(args.contains("-object"))
+        assertTrue(args.any { it.startsWith("virtio-net-pci") })
+    }
+
+    @Test
+    fun `compat profile shrinks the code cache and drops rng`() {
+        val args = builder.build(request().copy(profile = LaunchProfile.COMPAT))
+        assertEquals("tcg,thread=single,tb-size=128", valueOf(args, "-accel"))
+        assertEquals("cortex-a76", valueOf(args, "-cpu"))
+        assertFalse("兼容模式不挂 rng", args.contains("rng-random,filename=/dev/urandom,id=rng0"))
+        assertTrue("网络保留", args.any { it.startsWith("virtio-net-pci") })
+    }
+
+    @Test
+    fun `minimal profile drops networking too`() {
+        val args = builder.build(request().copy(profile = LaunchProfile.MINIMAL))
+        assertEquals("tcg,thread=single,tb-size=64", valueOf(args, "-accel"))
+        assertEquals("cortex-a76", valueOf(args, "-cpu"))
+        assertFalse(args.contains("-netdev"))
+        assertFalse(args.any { it.startsWith("virtio-net-pci") })
+    }
+
+    @Test
+    fun `profiles never change the disk controller`() {
+        // Switching the controller would make an installed Windows unbootable,
+        // so a fallback must only touch acceleration/CPU/optional devices.
+        LaunchProfile.entries.forEach { profile ->
+            val args = builder.build(request().copy(profile = profile))
+            assertTrue("$profile 丢了 NVMe", args.any { it.startsWith("nvme,drive=disk0") })
+        }
+    }
+
+    @Test
+    fun `auto mode ladder escalates from standard to minimal`() {
+        assertEquals(
+            listOf(LaunchProfile.STANDARD, LaunchProfile.COMPAT, LaunchProfile.MINIMAL),
+            LaunchProfile.ladder(LaunchMode.AUTO),
+        )
+        assertEquals(listOf(LaunchProfile.MINIMAL), LaunchProfile.ladder(LaunchMode.MINIMAL))
     }
 }

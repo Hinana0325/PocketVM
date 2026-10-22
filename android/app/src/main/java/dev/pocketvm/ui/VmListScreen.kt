@@ -103,6 +103,10 @@ fun VmListScreen(
                         KeyValueRow("来源", env.origin ?: "—")
                         KeyValueRow("qemu-img", env.imageTool ?: "未打包（回退 Kotlin 写盘）")
                         KeyValueRow("数据目录 -L", env.dataDir ?: "使用内置路径")
+                        env.soc?.let { KeyValueRow("SoC", it) }
+                        env.pageSizeKb?.takeIf { it > 0 }?.let {
+                            KeyValueRow("页大小", "$it KB")
+                        }
                         KeyValueRow(
                             "静态执行自检",
                             when (env.staticExec) {

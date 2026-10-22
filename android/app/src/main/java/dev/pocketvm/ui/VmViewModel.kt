@@ -49,6 +49,9 @@ data class EnvSnapshot(
     val detail: String? = null,
     /** Result of the packaged static-binary probe; null when not packaged. */
     val staticExec: Boolean? = null,
+    /** SoC and page size matter for ARM64 emulation quirks. */
+    val soc: String? = null,
+    val pageSizeKb: Long? = null,
 )
 
 data class UiState(
@@ -115,6 +118,8 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 nativeLibDir = getApplication<Application>().applicationInfo.nativeLibraryDir,
                 detail = report.abortReason ?: report.imageBinary?.diagnostic,
                 staticExec = report.staticExecOk,
+                soc = dev.pocketvm.runtime.DeviceInfo.socLabel(),
+                pageSizeKb = dev.pocketvm.runtime.DeviceInfo.pageSizeKb(),
             )
             _ui.update {
                 it.copy(
@@ -229,10 +234,15 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             val message = when (outcome) {
                 is LaunchOutcome.Started -> {
                     VmKeepAliveService.start(getApplication())
-                    listOfNotNull(
-                        "QEMU 已启动，固件画面就绪后连接 VNC",
-                        container.session.preflightNote,
-                    ).joinToString("；")
+                    buildString {
+                        if (outcome.failed.isEmpty()) {
+                            append("QEMU 已启动（${outcome.profile.label}），固件画面就绪后连接 VNC")
+                        } else {
+                            append("标准模式未成功（${outcome.failed.joinToString("；")}），")
+                            append("已自动切到${outcome.profile.label}模式启动")
+                        }
+                        container.session.preflightNote?.let { append("；").append(it) }
+                    }
                 }
                 is LaunchOutcome.Rejected -> outcome.report.errors.joinToString("\n") { it.message }
                 is LaunchOutcome.Failed -> listOfNotNull(outcome.message, outcome.hint).joinToString("\n")

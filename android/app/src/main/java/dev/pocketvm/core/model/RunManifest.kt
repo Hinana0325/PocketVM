@@ -29,6 +29,10 @@ data class RunManifest(
     val vncPasswordProtected: Boolean = false,
     val qmpSocketPath: String? = null,
     val logPath: String? = null,
+    /** Which acceleration profile produced this attempt (see LaunchProfile). */
+    val profile: String? = null,
+    /** 1-based index of this attempt in the fallback ladder. */
+    val attempt: Int = 1,
     val exitCode: Int? = null,
     val outcome: Outcome = Outcome.STARTING,
     val failureHint: String? = null,

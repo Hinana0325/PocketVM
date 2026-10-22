@@ -34,6 +34,11 @@ data class VmConfig(
     /** See [StorageController]: NVMe works with the stock Windows installer. */
     val storageController: StorageController = StorageController.NVME,
     /**
+     * How the launcher may degrade when the preferred acceleration profile fails.
+     * [LaunchMode.AUTO] tries 标准 → 兼容 → 最小 and keeps whichever starts.
+     */
+    val launchMode: LaunchMode = LaunchMode.AUTO,
+    /**
      * Escape hatch for experimentation. Arguments are appended verbatim and are
      * *not* validated, because the whole point is to try unmodelled options.
      */

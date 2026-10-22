@@ -2,9 +2,11 @@ package dev.pocketvm.runtime
 
 import android.app.ActivityManager
 import android.content.Context
+import android.os.Build
 import dev.pocketvm.core.config.ConfigValidator
 import dev.pocketvm.core.config.ValidationInput
 import dev.pocketvm.core.config.ValidationReport
+import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmRuntimeState
@@ -35,7 +37,14 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 sealed interface LaunchOutcome {
-    data object Started : LaunchOutcome
+    /**
+     * [profile] is the one that actually worked; [failed] lists earlier attempts
+     * in the fallback ladder, so the UI can say "标准模式失败，已用兼容模式启动".
+     */
+    data class Started(
+        val profile: LaunchProfile = LaunchProfile.STANDARD,
+        val failed: List<String> = emptyList(),
+    ) : LaunchOutcome
     data class Rejected(val report: ValidationReport) : LaunchOutcome
     data class Failed(val message: String, val hint: String? = null) : LaunchOutcome
 }
@@ -103,6 +112,9 @@ class VmSession(
             appendLine("systemBinary=${probe.systemBinary?.file?.absolutePath} version=${probe.systemBinary?.version}")
             appendLine("imageBinary=${probe.imageBinary?.file?.absolutePath} diagnostic=${probe.imageBinary?.diagnostic}")
             appendLine("staticExecProbe=${probe.staticExecOk}")
+            appendLine("device=${DeviceInfo.vendor()} ${Build.MODEL} soc=${DeviceInfo.socLabel()} abi=${DeviceInfo.abi()}")
+            appendLine("pageSizeKb=${DeviceInfo.pageSizeKb()} totalMemMb=${deviceMemoryMb()}")
+            appendLine("launchMode=${config.launchMode}")
             probe.abortReason?.let { appendLine("abortReason=$it") }
         }
 
@@ -173,10 +185,8 @@ class VmSession(
             ?.absolutePath
             ?: environment.dataDir(layout)
 
-        val runId = UUID.randomUUID().toString().take(8)
-        val logFile = layout.logFile(config.id, runId).also { it.parentFile?.mkdirs() }
+        // Control channel and file access are profile-independent: check once.
         val socket = layout.qmpSocket(config.id).also { it.delete() }
-        currentLog = logFile
 
         // Emulated storage is FUSE, which cannot host unix sockets. If the path
         // is wrong, QEMU exits 1 with a bare "Failed to bind socket: Permission
@@ -210,82 +220,139 @@ class VmSession(
             return@withLock fail(config.id, fileProblem, "路径位于外部存储时，请确认应用仍有存储访问权限。")
         }
 
-        val argv = commandBuilder.build(
-            LaunchRequest(
-                executable = binary.file.absolutePath,
-                firmware = firmware,
+        // Fallback ladder: 标准 → 兼容 → 最小 (or a single profile when the user
+        // pinned one). Each attempt gets its own log and manifest, so a failed
+        // profile does not erase the evidence of why it failed.
+        val ladder = LaunchProfile.ladder(config.launchMode)
+        val failedAttempts = mutableListOf<String>()
+        var lastHint: String? = null
+
+        for ((index, profile) in ladder.withIndex()) {
+            _state.value = VmRuntimeState.Preparing(
+                config.id,
+                if (index == 0) "启动 QEMU（${profile.label}）" else "尝试${profile.label}模式",
+            )
+
+            val runId = UUID.randomUUID().toString().take(8)
+            val logFile = layout.logFile(config.id, runId).also { it.parentFile?.mkdirs() }
+            socket.delete()
+            currentLog = logFile
+
+            val argv = commandBuilder.build(
+                LaunchRequest(
+                    executable = binary.file.absolutePath,
+                    firmware = firmware,
+                    diskPath = diskReady.file.absolutePath,
+                    diskFormat = diskReady.format,
+                    isoPath = iso?.absolutePath,
+                    cpuCores = config.cpuCores,
+                    memoryMb = config.memoryMb,
+                    vncPort = config.vncPort,
+                    vncBindAddress = if (config.vncAccess == VncAccess.LAN) "0.0.0.0" else "127.0.0.1",
+                    vncPasswordProtected = !config.vncPassword.isNullOrBlank(),
+                    qmpSocketPath = socket.absolutePath,
+                    bootFromCd = config.bootFromCd,
+                    vmName = config.name,
+                    storageController = config.storageController,
+                    profile = profile,
+                    dataDir = dataDir,
+                    extraArgs = config.extraArgs,
+                ),
+            )
+
+            val manifest = RunManifest(
+                runId = runId,
+                vmId = config.id,
+                vmName = config.name,
+                appVersion = appVersion(),
+                startedAtEpochMs = System.currentTimeMillis(),
+                executablePath = binary.file.absolutePath,
+                executableVersion = binary.version,
+                argv = argv,
+                firmwareCodePath = firmware.codePath,
+                firmwareVarsPath = firmware.varsPath,
                 diskPath = diskReady.file.absolutePath,
                 diskFormat = diskReady.format,
                 isoPath = iso?.absolutePath,
-                cpuCores = config.cpuCores,
-                memoryMb = config.memoryMb,
                 vncPort = config.vncPort,
                 vncBindAddress = if (config.vncAccess == VncAccess.LAN) "0.0.0.0" else "127.0.0.1",
                 vncPasswordProtected = !config.vncPassword.isNullOrBlank(),
                 qmpSocketPath = socket.absolutePath,
-                bootFromCd = config.bootFromCd,
-                vmName = config.name,
-                storageController = config.storageController,
-                dataDir = dataDir,
-                extraArgs = config.extraArgs,
-            ),
-        )
-
-        val manifest = RunManifest(
-            runId = runId,
-            vmId = config.id,
-            vmName = config.name,
-            appVersion = appVersion(),
-            startedAtEpochMs = System.currentTimeMillis(),
-            executablePath = binary.file.absolutePath,
-            executableVersion = binary.version,
-            argv = argv,
-            firmwareCodePath = firmware.codePath,
-            firmwareVarsPath = firmware.varsPath,
-            diskPath = diskReady.file.absolutePath,
-            diskFormat = diskReady.format,
-            isoPath = iso?.absolutePath,
-            vncPort = config.vncPort,
-            vncBindAddress = if (config.vncAccess == VncAccess.LAN) "0.0.0.0" else "127.0.0.1",
-            vncPasswordProtected = !config.vncPassword.isNullOrBlank(),
-            qmpSocketPath = socket.absolutePath,
-            logPath = logFile.absolutePath,
-        )
-        currentManifest = manifest
-        manifests.write(manifest)
-
-        _state.value = VmRuntimeState.Preparing(config.id, "启动 QEMU")
-        val launched = try {
-            ProcessBuilder(argv)
-                .directory(vmDir)
-                .redirectErrorStream(true)
-                .redirectOutput(logFile)
-                .apply { environment().putAll(environment.childEnvironment(layout)) }
-                .start()
-        } catch (t: Throwable) {
-            manifests.write(
-                manifest.copy(
-                    finishedAtEpochMs = System.currentTimeMillis(),
-                    outcome = RunManifest.Outcome.LAUNCH_FAILED,
-                    failureHint = t.message,
-                ),
+                logPath = logFile.absolutePath,
+                profile = profile.name,
+                attempt = index + 1,
             )
-            return@withLock fail(config.id, "无法启动 QEMU：${t.message}", t.message)
-        }
+            currentManifest = manifest
+            manifests.write(manifest)
 
-        qemuProcess = launched
-        activeVmId = config.id
+            val launched = try {
+                ProcessBuilder(argv)
+                    .directory(vmDir)
+                    .redirectErrorStream(true)
+                    .redirectOutput(logFile)
+                    .apply { environment().putAll(environment.childEnvironment(layout)) }
+                    .start()
+            } catch (t: Throwable) {
+                manifests.write(
+                    manifest.copy(
+                        finishedAtEpochMs = System.currentTimeMillis(),
+                        outcome = RunManifest.Outcome.LAUNCH_FAILED,
+                        failureHint = t.message,
+                    ),
+                )
+                // Exec failure (EACCES, ENOEXEC) will not be fixed by a smaller
+                // tb-size; stop the ladder instead of retrying it three times.
+                return@withLock fail(config.id, "无法启动 QEMU：${t.message}", t.message)
+            }
 
-        // 2. Confirm. "Process alive" is not proof of a working VM: QEMU can abort
-        //    during machine init and still take a moment to die.
-        val client = QmpClient(socket.absolutePath)
-        val confirmed = withContext(Dispatchers.IO) { client.connect(totalWaitMs = 20_000) }
-        if (!confirmed || !launched.isAlive) {
+            qemuProcess = launched
+            activeVmId = config.id
+
+            // "Process alive" is not proof of a working VM: QEMU can abort during
+            // machine init, and it also takes a moment to die. connect() gives up
+            // as soon as the child is gone instead of waiting out the timeout.
+            val client = QmpClient(socket.absolutePath)
+            val confirmed = withContext(Dispatchers.IO) {
+                client.connect(totalWaitMs = 20_000) { launched.isAlive }
+            }
+            // The QMP greeting is sent while chardevs initialise, *before* machine
+            // init finishes. A bad device or pflash image can therefore survive
+            // the handshake and die a moment later — requiring a short stability
+            // window before this profile is declared good.
+            var healthy = confirmed && launched.isAlive
+            if (healthy) {
+                healthy = withContext(Dispatchers.IO) {
+                    !launched.waitFor(2_500, TimeUnit.MILLISECONDS) && launched.isAlive
+                }
+            }
+            if (healthy) {
+                // Arm the password before announcing "running": with password=on
+                // and no key set every client is rejected, so the window must be
+                // as short as possible and is never observable by the UI.
+                config.vncPassword?.takeIf { it.isNotBlank() }?.let { password ->
+                    withContext(Dispatchers.IO) { client.setVncPassword(password) }
+                }
+
+                qmp = client
+                manifests.write(manifest.copy(outcome = RunManifest.Outcome.RUNNING))
+                _state.value = VmRuntimeState.Running(
+                    vmId = config.id,
+                    pid = pidOf(launched),
+                    startedAtEpochMs = System.currentTimeMillis(),
+                    vncPort = config.vncPort,
+                    logPath = logFile.absolutePath,
+                )
+                monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
+                return@withLock LaunchOutcome.Started(profile, failedAttempts.toList())
+            }
+
+            // This profile failed. Keep the log, clean up, try the next one.
             val code = exitCodeOf(launched)
             runCatching { launched.destroyForcibly() }
             qemuProcess = null
             activeVmId = null
             client.close()
+            socket.delete()
             val hint = FailureHints.fromLog(
                 LogTail.read(logFile, maxBytes = 16 * 1024, maxLines = 200),
                 code,
@@ -298,29 +365,17 @@ class VmSession(
                     failureHint = hint,
                 ),
             )
-            _state.value = VmRuntimeState.Failed(config.id, "QEMU 启动后立即退出（exit=$code）。", hint)
-            return@withLock LaunchOutcome.Failed("QEMU 启动后立即退出（exit=$code）。", hint)
+            lastHint = hint
+            failedAttempts += "${profile.label}（exit=$code）"
         }
 
-        // Arm the password before announcing "running": with password=on and no
-        // key set, every client is rejected, so the window must be as short as
-        // possible and is never observable by the UI.
-        config.vncPassword?.takeIf { it.isNotBlank() }?.let { password ->
-            withContext(Dispatchers.IO) { client.setVncPassword(password) }
+        val summary = if (failedAttempts.size == 1) {
+            "QEMU 启动后立即退出（${failedAttempts.first()}）。"
+        } else {
+            "所有启动模式都失败：${failedAttempts.joinToString("；")}"
         }
-
-        qmp = client
-        manifests.write(manifest.copy(outcome = RunManifest.Outcome.RUNNING))
-        _state.value = VmRuntimeState.Running(
-            vmId = config.id,
-            pid = pidOf(launched),
-            startedAtEpochMs = System.currentTimeMillis(),
-            vncPort = config.vncPort,
-            logPath = logFile.absolutePath,
-        )
-
-        monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
-        LaunchOutcome.Started
+        _state.value = VmRuntimeState.Failed(config.id, summary, lastHint)
+        return@withLock LaunchOutcome.Failed(summary, lastHint)
     }
 
     /**
