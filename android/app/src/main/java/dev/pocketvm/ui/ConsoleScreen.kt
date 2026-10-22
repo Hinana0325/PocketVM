@@ -56,6 +56,7 @@ fun ConsoleScreen(
     onRefresh: () -> Unit,
     onExport: () -> Unit,
     onEject: () -> Unit,
+    onSendKey: () -> Unit,
     onBack: () -> Unit,
 ) {
     val sessionRuntime = state.runtime
@@ -193,6 +194,7 @@ fun ConsoleScreen(
                         Text(if (running) "停止" else "启动", modifier = Modifier.padding(start = 6.dp))
                     }
                     OutlinedButton(onClick = onExport) { Text("导出诊断包") }
+                    TextButton(onClick = onSendKey) { Text("发送回车") }
                 }
                 otherRunning?.let {
                     Text(
