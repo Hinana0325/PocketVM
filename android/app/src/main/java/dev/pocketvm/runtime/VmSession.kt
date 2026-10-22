@@ -44,6 +44,8 @@ sealed interface LaunchOutcome {
     data class Started(
         val profile: LaunchProfile = LaunchProfile.STANDARD,
         val failed: List<String> = emptyList(),
+        /** Port actually used; differs from the config when the preferred one was busy. */
+        val vncPort: Int = 5900,
     ) : LaunchOutcome
     data class Rejected(val report: ValidationReport) : LaunchOutcome
     data class Failed(val message: String, val hint: String? = null) : LaunchOutcome
@@ -220,6 +222,16 @@ class VmSession(
             return@withLock fail(config.id, fileProblem, "路径位于外部存储时，请确认应用仍有存储访问权限。")
         }
 
+        // A busy VNC port fails every profile identically, which looks exactly
+        // like "the emulator cannot start". Pick a free one and carry it through
+        // the whole launch so the manifest and UI tell the truth.
+        val effectivePort = withContext(Dispatchers.IO) {
+            pickVncPort(config.vncPort, allInterfaces = config.vncAccess == VncAccess.LAN)
+        }
+        if (effectivePort != config.vncPort) {
+            preflightNote = "VNC 端口 ${config.vncPort} 被占用，本次改用 $effectivePort"
+        }
+
         // Fallback ladder: 标准 → 兼容 → 最小 (or a single profile when the user
         // pinned one). Each attempt gets its own log and manifest, so a failed
         // profile does not erase the evidence of why it failed.
@@ -247,7 +259,7 @@ class VmSession(
                     isoPath = iso?.absolutePath,
                     cpuCores = config.cpuCores,
                     memoryMb = config.memoryMb,
-                    vncPort = config.vncPort,
+                    vncPort = effectivePort,
                     vncBindAddress = if (config.vncAccess == VncAccess.LAN) "0.0.0.0" else "127.0.0.1",
                     vncPasswordProtected = !config.vncPassword.isNullOrBlank(),
                     qmpSocketPath = socket.absolutePath,
@@ -274,7 +286,7 @@ class VmSession(
                 diskPath = diskReady.file.absolutePath,
                 diskFormat = diskReady.format,
                 isoPath = iso?.absolutePath,
-                vncPort = config.vncPort,
+                vncPort = effectivePort,
                 vncBindAddress = if (config.vncAccess == VncAccess.LAN) "0.0.0.0" else "127.0.0.1",
                 vncPasswordProtected = !config.vncPassword.isNullOrBlank(),
                 qmpSocketPath = socket.absolutePath,
@@ -339,11 +351,11 @@ class VmSession(
                     vmId = config.id,
                     pid = pidOf(launched),
                     startedAtEpochMs = System.currentTimeMillis(),
-                    vncPort = config.vncPort,
+                    vncPort = effectivePort,
                     logPath = logFile.absolutePath,
                 )
                 monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
-                return@withLock LaunchOutcome.Started(profile, failedAttempts.toList())
+                return@withLock LaunchOutcome.Started(profile, failedAttempts.toList(), effectivePort)
             }
 
             // This profile failed. Keep the log, clean up, try the next one.
@@ -353,26 +365,34 @@ class VmSession(
             activeVmId = null
             client.close()
             socket.delete()
-            val hint = FailureHints.fromLog(
-                LogTail.read(logFile, maxBytes = 16 * 1024, maxLines = 200),
-                code,
-            )
+            val logText = LogTail.read(logFile, maxBytes = 16 * 1024, maxLines = 200)
+            val hint = FailureHints.fromLog(logText, code)
+            // The single most useful thing in the whole failure path: QEMU's own
+            // first error line ("-drive ...: Could not open ..." / "Failed to
+            // bind ..."). Without it every diagnosis is guesswork.
+            val detail = firstErrorLine(logText)
             manifests.write(
                 manifest.copy(
                     finishedAtEpochMs = System.currentTimeMillis(),
                     exitCode = code,
                     outcome = RunManifest.Outcome.LAUNCH_FAILED,
                     failureHint = hint,
+                    logExcerpt = detail,
                 ),
             )
             lastHint = hint
-            failedAttempts += "${profile.label}（exit=$code）"
+            failedAttempts += buildString {
+                append(profile.label)
+                append("（exit=").append(code)
+                append("：").append(detail ?: if (logText.isBlank()) "无任何输出" else "见日志")
+                append("）")
+            }
         }
 
         val summary = if (failedAttempts.size == 1) {
-            "QEMU 启动后立即退出（${failedAttempts.first()}）。"
+            "QEMU 启动失败（${failedAttempts.first()}）"
         } else {
-            "所有启动模式都失败：${failedAttempts.joinToString("；")}"
+            "所有启动模式都失败：\n" + failedAttempts.joinToString("\n") { "· $it" }
         }
         _state.value = VmRuntimeState.Failed(config.id, summary, lastHint)
         return@withLock LaunchOutcome.Failed(summary, lastHint)
@@ -486,6 +506,38 @@ class VmSession(
         null
     } catch (t: Throwable) {
         "$label 不可写：${file.absolutePath}（${t.javaClass.simpleName}: ${t.message}）"
+    }
+
+    /** First line QEMU actually complained about, for the failure message. */
+    private fun firstErrorLine(log: String): String? = log.lineSequence()
+        .map { it.trim() }
+        .firstOrNull {
+            it.startsWith("qemu-system-aarch64:") ||
+                it.startsWith("ERROR") ||
+                it.contains("Could not open") ||
+                it.contains("Failed to") ||
+                it.contains("cannot ")
+        }
+        ?.take(160)
+
+    /**
+     * Probes whether [preferred] can be bound, then scans 5900-5999. A busy port
+     * would fail *every* profile identically, which is indistinguishable from
+     * "the emulator cannot start" — and the user has no way to know why.
+     */
+    private fun pickVncPort(preferred: Int, allInterfaces: Boolean): Int {
+        fun free(port: Int): Boolean = try {
+            val address = if (allInterfaces) null else java.net.InetAddress.getLoopbackAddress()
+            java.net.ServerSocket(port, 1, address).close()
+            true
+        } catch (t: Throwable) {
+            false
+        }
+
+        if (free(preferred)) return preferred
+        for (port in preferred + 1..5999) if (free(port)) return port
+        for (port in 5900 until preferred) if (free(port)) return port
+        return preferred
     }
 
     /** @return null when a unix socket can be bound at [path], else the reason. */

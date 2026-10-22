@@ -234,6 +234,12 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             val message = when (outcome) {
                 is LaunchOutcome.Started -> {
                     VmKeepAliveService.start(getApplication())
+                    if (outcome.vncPort != vm.vncPort) {
+                        // Persist the port we actually bound so the next start and
+                        // the VNC hint stay in sync with reality.
+                        container.configStore.save(vm.copy(vncPort = outcome.vncPort))
+                        refresh()
+                    }
                     buildString {
                         if (outcome.failed.isEmpty()) {
                             append("QEMU 已启动（${outcome.profile.label}），固件画面就绪后连接 VNC")

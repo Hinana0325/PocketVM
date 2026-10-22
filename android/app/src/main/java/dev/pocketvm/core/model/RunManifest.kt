@@ -36,6 +36,8 @@ data class RunManifest(
     val exitCode: Int? = null,
     val outcome: Outcome = Outcome.STARTING,
     val failureHint: String? = null,
+    /** QEMU's own first error line, verbatim. */
+    val logExcerpt: String? = null,
 ) {
     enum class Outcome {
         STARTING,

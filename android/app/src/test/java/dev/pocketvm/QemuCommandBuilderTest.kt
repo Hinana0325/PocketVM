@@ -197,11 +197,29 @@ class QemuCommandBuilderTest {
     }
 
     @Test
-    fun `auto mode ladder escalates from standard to minimal`() {
+    fun `auto mode ladder escalates from standard to a media-less last resort`() {
         assertEquals(
-            listOf(LaunchProfile.STANDARD, LaunchProfile.COMPAT, LaunchProfile.MINIMAL),
+            listOf(
+                LaunchProfile.STANDARD,
+                LaunchProfile.COMPAT,
+                LaunchProfile.MINIMAL,
+                LaunchProfile.MINIMAL_NO_MEDIA,
+            ),
             LaunchProfile.ladder(LaunchMode.AUTO),
         )
-        assertEquals(listOf(LaunchProfile.MINIMAL), LaunchProfile.ladder(LaunchMode.MINIMAL))
+        // Pinning 最小 still allows dropping the CD as a last step.
+        assertEquals(
+            listOf(LaunchProfile.MINIMAL, LaunchProfile.MINIMAL_NO_MEDIA),
+            LaunchProfile.ladder(LaunchMode.MINIMAL),
+        )
+    }
+
+    @Test
+    fun `media-less profile attaches no cdrom at all`() {
+        val args = builder.build(request().copy(profile = LaunchProfile.MINIMAL_NO_MEDIA))
+        assertFalse("不应再有光驱", args.any { it.startsWith("usb-storage,drive=cd0") })
+        assertFalse(args.any { it.contains("id=cd0") })
+        assertEquals("order=c", valueOf(args, "-boot"))
+        assertTrue("磁盘仍在", args.any { it.startsWith("nvme,drive=disk0") })
     }
 }
