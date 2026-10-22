@@ -32,6 +32,8 @@ enum class LaunchProfile(
     val cpu: String,
     val rng: Boolean,
     val net: Boolean,
+    /** Skip the ISO/CD entirely — isolates problems on the media path. */
+    val dropMedia: Boolean = false,
 ) {
     STANDARD("标准", "tcg,thread=multi,tb-size=512", "max", rng = true, net = true),
     COMPAT("兼容", "tcg,thread=single,tb-size=128", "cortex-a76", rng = false, net = true),
@@ -39,15 +41,24 @@ enum class LaunchProfile(
     // which a72 does not have — a rescue profile that cannot boot the guest is
     // worse than useless.
     MINIMAL("最小", "tcg,thread=single,tb-size=64", "cortex-a76", rng = false, net = false),
+    /**
+     * Last resort: same as [MINIMAL] but the CD is not attached at all. If this
+     * one starts, the failure lives on the ISO/media path (FUSE, huge raw file)
+     * rather than in the emulator core.
+     */
+    MINIMAL_NO_MEDIA(
+        "最小（不挂介质）", "tcg,thread=single,tb-size=64", "cortex-a76",
+        rng = false, net = false, dropMedia = true,
+    ),
     ;
 
     companion object {
         /** Ordered attempts for [mode]; the last one that starts is kept. */
         fun ladder(mode: LaunchMode): List<LaunchProfile> = when (mode) {
-            LaunchMode.AUTO -> listOf(STANDARD, COMPAT, MINIMAL)
+            LaunchMode.AUTO -> listOf(STANDARD, COMPAT, MINIMAL, MINIMAL_NO_MEDIA)
             LaunchMode.STANDARD -> listOf(STANDARD)
             LaunchMode.COMPAT -> listOf(COMPAT)
-            LaunchMode.MINIMAL -> listOf(MINIMAL)
+            LaunchMode.MINIMAL -> listOf(MINIMAL, MINIMAL_NO_MEDIA)
         }
     }
 }

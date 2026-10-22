@@ -74,15 +74,17 @@ fun ConsoleScreen(
     val otherRunning = (sessionRuntime as? VmRuntimeState.Running)?.takeIf { it.vmId != vm.id }
     var showArgv by remember { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
+    var copiedError by remember { mutableStateOf(false) }
     var followLog by remember { mutableStateOf(true) }
     val clipboard = LocalClipboardManager.current
     val logScroll = rememberScrollState()
     val usedBytes = state.diskUsage[vm.id] ?: 0L
 
-    LaunchedEffect(copied) {
-        if (copied) {
+    LaunchedEffect(copied, copiedError) {
+        if (copied || copiedError) {
             delay(1500)
             copied = false
+            copiedError = false
         }
     }
     // A console that does not follow its own output is useless during setup.
@@ -138,6 +140,12 @@ fun ConsoleScreen(
                             VmRuntimeState.Idle -> Tone.Idle
                         },
                     )
+                    TextButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(errorReport(runtime, state.log)))
+                            copiedError = true
+                        },
+                    ) { Text(if (copiedError) "已复制" else "复制错误") }
                     TextButton(onClick = onRefresh) { Text("刷新日志") }
                 }
 
@@ -314,4 +322,23 @@ fun ConsoleScreen(
             }
         }
     }
+}
+
+/**
+ * Everything needed to diagnose a failed launch, in one clipboard paste:
+ * the aggregated per-profile failure reasons plus the raw QEMU output.
+ */
+private fun errorReport(runtime: VmRuntimeState, log: String): String = buildString {
+    appendLine("PocketVM 启动诊断")
+    when (runtime) {
+        is VmRuntimeState.Failed -> {
+            appendLine(runtime.reason)
+            runtime.hint?.let { appendLine("提示：$it") }
+        }
+        is VmRuntimeState.Exited ->
+            appendLine("已退出 exit=${runtime.exitCode} ${runtime.hint.orEmpty()}")
+        else -> appendLine("状态：$runtime")
+    }
+    appendLine("--- QEMU 输出尾部 ---")
+    append(if (log.isBlank()) "（无输出：进程在产生任何日志之前就退出了）" else log.takeLast(4000))
 }

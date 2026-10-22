@@ -81,13 +81,15 @@ class QemuCommandBuilder {
         val diskDrive =
             "if=none,id=disk0,format=${request.diskFormat},cache=writeback,discard=unmap,file=${escapeOption(request.diskPath)}"
 
+        val mediaPath = request.isoPath?.takeUnless { request.profile.dropMedia }
+
         when (request.storageController) {
             StorageController.NVME -> {
                 // stornvme is in the Windows installer; virtio-blk is not.
                 args += listOf("-drive", diskDrive)
                 args += listOf("-device", "nvme,drive=disk0,serial=PVMDISK0,bootindex=1")
 
-                request.isoPath?.let { iso ->
+                mediaPath?.let { iso ->
                     // USB mass storage likewise needs no extra driver, in the
                     // installer *or* in edk2, so the USB CD can be booted from.
                     args += listOf("-device", "qemu-xhci,id=xhci")
@@ -101,7 +103,7 @@ class QemuCommandBuilder {
                 args += listOf("-drive", diskDrive)
                 args += listOf("-device", "virtio-blk-pci,drive=disk0,bootindex=1")
 
-                request.isoPath?.let { iso ->
+                mediaPath?.let { iso ->
                     args += listOf("-drive", "if=none,id=cd0,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
                     args += listOf("-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=2")
                 }
@@ -129,7 +131,7 @@ class QemuCommandBuilder {
         args += listOf("-qmp", "unix:${escapeOption(request.qmpSocketPath)},server=on,wait=off")
         args += listOf(
             "-boot",
-            if (request.bootFromCd && request.isoPath != null) "order=d" else "order=c",
+            if (request.bootFromCd && mediaPath != null) "order=d" else "order=c",
         )
 
         request.extraArgs.filter { it.isNotBlank() }.forEach { args += it }

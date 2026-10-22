@@ -87,10 +87,8 @@ def main():
                 json={"base_tree": base_tree, "tree": blobs})
     commit = call("POST", f"{API}/git/commits",
                   json={
-                      "message": "PocketVM 0.6.2：Android 无 Root 运行 Windows ARM64\n\n"
-                                 "动态链接 QEMU 9.2.3（glib/pixman/slirp 全部打包，SONAME 改为 lib*.so），\n"
-                                 "QMP 控制通道移到内部存储（FUSE 不支持 Unix socket），\n"
-                                 "启动前自检 + 崩溃后 qemu-img 一致性检查，51 个单元测试。",
+                      "message": subprocess.run(["git", "log", "-1", "--format=%B"],
+                                                cwd=root, capture_output=True, text=True).stdout.strip(),
                       "tree": tree["sha"],
                       "parents": [base_sha],
                   })
