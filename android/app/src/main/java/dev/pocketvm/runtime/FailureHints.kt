@@ -43,6 +43,9 @@ object FailureHints {
             "内存不足。降低虚拟机内存，或先关闭后台应用；TCG 还会额外占用内存做代码翻译缓存。",
         Regex("No space left on device", RegexOption.IGNORE_CASE) to
             "存储空间不足。qcow2 是精简置备，但写入时仍会增长。",
+        Regex("requires \\d+ bytes, pflash\\d* block backend provides|pflash.*block backend provides") to
+            "固件不是 64 MiB 的 pflash 镜像（当前多半是 2 MiB 的 -bios 文件）。" +
+                "virt 的 pflash 固定 64 MiB，请在编辑页重新导入 QEMU_EFI.fd。",
         Regex("pflash.*(size|mismatch)|invalid size", RegexOption.IGNORE_CASE) to
             "UEFI 固件与变量存储大小不一致。两者必须完全等长。",
         Regex("Could not read keymap|keymaps", RegexOption.IGNORE_CASE) to

@@ -125,11 +125,13 @@ class ConfigValidator {
                 )
             !code.isFile ->
                 issues += Issue(Severity.ERROR, "FIRMWARE_NOT_FOUND", "固件文件不存在：${code.absolutePath}")
-            code.length() < 256 * 1024 ->
+            code.length() < 32L * 1024 * 1024 ->
                 issues += Issue(
                     Severity.ERROR,
                     "FIRMWARE_IMPLAUSIBLE",
-                    "固件只有 ${code.length()} 字节，不像 ARM64 pflash 镜像。",
+                    "固件只有 ${code.length() / (1024 * 1024)} MB。virt 的 pflash 需要 64 MiB，" +
+                        "2 MiB 的那份是 -bios 镜像，QEMU 会直接报 " +
+                        "\"requires 67108864 bytes\"。请在编辑页重新导入 QEMU_EFI.fd。",
                 )
         }
 

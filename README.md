@@ -135,6 +135,10 @@ APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 3
 | 运行时数据 | `assets/qemu/keymaps/*`，首次启动解压到 `files/qemu/share`，作为 `-L` |
 | UEFI 固件 | `assets/firmware/QEMU_EFI.fd`（edk2 2024.02，**64 MiB pflash**），首次启动释放到 `files/firmware/`，变量存储按同尺寸生成 |
 
+固件自愈：解压标记只有在目录里存在 ≥32 MB 的 `.fd` 时才被采信；旧版残留的 2 MiB
+`-bios` 镜像会先被删除再重新释放。变量存储与固件尺寸不一致时会自动重建，不需要
+用户手动清数据。
+
 重建（需要 Linux + NDK r27c + patchelf，约 5–10 分钟 / 24 核）：
 
 ```bash

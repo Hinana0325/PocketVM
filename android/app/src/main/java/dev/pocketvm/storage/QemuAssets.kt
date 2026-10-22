@@ -18,8 +18,13 @@ object QemuAssets {
 
     private const val ASSET_ROOT = "qemu"
     private const val FIRMWARE_ROOT = "firmware"
-    // v2: 内置固件从 2 MiB（-bios 用）换成 64 MiB pflash，必须覆盖旧文件。
-    private const val MARKER = ".extracted-v2"
+    // v3: previous builds could leave a 2 MiB -bios image behind with a valid
+    // marker, which made QEMU fail with "pflash0 block backend provides 2097152
+    // bytes". The marker is now only trusted together with a size check.
+    private const val MARKER = ".extracted-v3"
+
+    /** virt's pflash device is 64 MiB; anything far below that is a -bios image. */
+    private const val MIN_PFLASH_BYTES = 32L * 1024 * 1024
 
     /** @return the directory to pass as `-L`, or null when nothing was packaged. */
     fun ensureSharedData(context: Context, layout: VmStorageLayout): File? {
@@ -47,7 +52,24 @@ object QemuAssets {
         return try {
             val target = layout.firmwareDir
             val marker = File(target, MARKER)
-            if (marker.isFile) return target
+            val plausible = hasPlausibleFirmware(target)
+            if (marker.isFile && plausible) return target
+
+            // A user-supplied 64 MiB image is kept; only stale small ones (the
+            // old 2 MiB -bios file) are removed, because they shadow the bundle.
+            if (!plausible) {
+                target.listFiles()
+                    ?.filter { it.isFile && it.name.endsWith(".fd", ignoreCase = true) }
+                    ?.filter { !it.name.contains("vars", ignoreCase = true) }
+                    ?.filter { it.length() < MIN_PFLASH_BYTES }
+                    ?.forEach { it.delete() }
+            }
+            if (hasPlausibleFirmware(target)) {
+                marker.parentFile?.mkdirs()
+                marker.writeText("ok")
+                return target
+            }
+
             if (!hasAssets(context.assets, FIRMWARE_ROOT)) return null
             target.mkdirs()
             copyTree(context.assets, FIRMWARE_ROOT, target)
@@ -57,6 +79,12 @@ object QemuAssets {
             null
         }
     }
+
+    private fun hasPlausibleFirmware(dir: File): Boolean = dir.listFiles()?.any {
+        it.isFile && it.name.endsWith(".fd", ignoreCase = true) &&
+            !it.name.contains("vars", ignoreCase = true) &&
+            it.length() >= MIN_PFLASH_BYTES
+    } == true
 
     private fun hasAssets(assets: AssetManager, path: String): Boolean =
         runCatching { assets.list(path)?.isNotEmpty() == true }.getOrDefault(false)
