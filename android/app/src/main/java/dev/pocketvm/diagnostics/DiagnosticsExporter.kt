@@ -82,6 +82,8 @@ class DiagnosticsExporter(
             appendLine("device=${Build.DEVICE} product=${Build.PRODUCT}")
             appendLine("android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}")
             appendLine("abis=${Build.SUPPORTED_ABIS.joinToString(",")}")
+            appendLine("soc=${dev.pocketvm.runtime.DeviceInfo.socLabel()}")
+            appendLine("pageSizeKb=${dev.pocketvm.runtime.DeviceInfo.pageSizeKb()}")
             appendLine("nativeLibraryDir=${appContext.applicationInfo.nativeLibraryDir}")
             appendLine("totalMemMb=${mem.totalMem / (1024 * 1024)}")
             appendLine("availMemMb=${mem.availMem / (1024 * 1024)}")
