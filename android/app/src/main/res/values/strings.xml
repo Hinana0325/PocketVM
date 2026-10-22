@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PocketVM</string>
+    <string name="vm_channel_name">虚拟机运行中</string>
+    <string name="vm_channel_description">保持 QEMU 进程存活，避免后台被系统回收</string>
+    <string name="vm_running_title">PocketVM 正在运行虚拟机</string>
+</resources>

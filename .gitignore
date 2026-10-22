@@ -1,0 +1,13 @@
+*.iml
+.gradle/
+local.properties
+build/
+.idea/
+.DS_Store
+*.apk
+*.aab
+.kotlin/
+# 交叉编译工作区（NDK + 源码 + 中间产物，几个 GB）
+.build-qemu/
+# 构建产物与本地 APK 集合
+dist/
