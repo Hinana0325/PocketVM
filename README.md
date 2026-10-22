@@ -1,7 +1,7 @@
 # PocketVM
 
-在未 Root 的小米 14 Pro（Snapdragon 8 Gen 3 / arm64）上，用 **QEMU TCG** 跑 Windows ARM64。
-0.1.x 只做一件事：**把启动链做成可重复验证的**，而不是先堆界面。
+在未 Root 的 Redmi K70 Pro / 小米 14 Pro（Snapdragon 8 Gen 3，SM8650 / arm64）上，用 **QEMU TCG** 跑 Windows ARM64。
+项目只做一件事：**把启动链做成可重复验证的**，而不是先堆界面。
 
 当前代码对应计划中的 **P0（执行环境）** 与 **P1 的前半段**：
 
@@ -18,6 +18,21 @@
 | 日志尾部读取 + 失败归因 + 诊断包 zip | 已实现 |
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
+
+## 0.9.x 现状（真机推进记录）
+
+| 版本 | 关键变化 |
+| --- | --- |
+| 0.6.x | 执行层改为**动态链接 PIE**（静态 bionic 在本机 self-boot 即 SIGSEGV）；QMP 套接字移到内部 ext4（FUSE 不支持 unix socket）；patchelf 统一 SONAME/DT_NEEDED |
+| 0.7.x | 失败原因可见（取 QEMU 原始错误行，按程序名 basename 匹配）；VNC 端口自动避让；新增「不挂介质」档定位介质路径问题 |
+| 0.8.x | pflash 固件自愈（2 MiB 残留不再遮蔽 64 MiB）；补齐 `efi-virtio.rom` 并放到 `-L` 根目录（BIOS 类型不搜子目录） |
+| 0.9.0 | 从 ISO 提取 El Torito EFI 引导镜像，交给固件直接引导，绕开 ISO9660/UDF 驱动 |
+| 0.9.1 | 修复 0.9.0 的 **SIGILL（exit=132）**：引导镜像从 `usb-storage` 改挂 `virtio-blk`，失败时运行时摘除并回退光盘引导 |
+| 0.9.2 | **UEFI Shell 串口自动恢复**：后台监听固件串口，检测到 `Shell>` 即自动输入 `fs0..fs3:\EFI\BOOT\BOOTAA64.EFI`；串口输出写入 `run-*.serial.log` 并并入诊断包 |
+
+真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
+0.9.2 起，固件若落入 UEFI Shell 不再需要用户手动敲路径——App 会自动接管（串口检测 + 自动键入）；
+若自动恢复未命中，控制台里的「在 Shell 中引导 Windows」按钮可手动触发。
 
 ## 为什么 QEMU 必须叫 `libqemu-system-aarch64.so`
 
@@ -162,8 +177,10 @@ cd android && ./gradlew :app:assembleDebug
 | 标准 | `tcg,thread=multi,tb-size=512` | `max` | virtio-rng + 网络 |
 | 兼容 | `tcg,thread=single,tb-size=128` | `cortex-a76` | 网络 |
 | 最小 | `tcg,thread=single,tb-size=64` | `cortex-a76` | 无 |
+| 最小（不挂介质） | `tcg,thread=single,tb-size=64` | `cortex-a76` | 无，且不挂 ISO/CD |
 
-- 默认「自动」：标准 → 兼容 → 最小，某档在 QMP 握手后再稳定 2.5 秒即采用
+- 默认「自动」：标准 → 兼容 → 最小 → 最小（不挂介质），某档在 QMP 握手后再稳定 2.5 秒即采用
+- 引导镜像（0.9.0+）若导致进程被信号杀死，会先摘除该镜像并在**同一档**重试光盘引导，而不是浪费整个阶梯
 - **磁盘控制器、内存、vCPU 数不参与降级**：换控制器会让已装好的系统无法启动，
   改内存则可能引入新的失败
 - QMP 握手发生在机器初始化之前，所以有 2.5 秒稳定性窗口，避免把"握手成功但随即
@@ -202,14 +219,16 @@ docs/                       架构与排障
 
 | 项 | 结论 |
 | --- | --- |
-| 编译（aarch64 静态链接） | 通过，`nm -u` 为 0 |
-| 单元测试 | 37 个通过 |
-| APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
-| 真机启动 QEMU | **未验证**（沙箱无 Android 设备；静态 bionic 二进制也无法在 Linux 用户态模拟下运行） |
-| Windows 安装全流程 | **未验证**，依赖真机结果 |
+| 编译（aarch64 动态链接 PIE） | 通过；`ET_DYN` + `PT_INTERP=/system/bin/linker64` |
+| 单元测试 | 通过（含 QCOW2、El Torito 解析、参数构建、失败归因） |
+| APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps + `efi-virtio.rom`，`extractLegacyNativeLibs=true` |
+| 真机启动 QEMU | **已通过**：进程稳定运行、edk2 固件画面出现、VNC 可连 |
+| 固件自动引导 | 0.9.1 消除 SIGILL；0.9.2 增加串口自动恢复 UEFI Shell |
+| Windows 安装全流程 | **进行中**：依赖真机继续验证引导与安装 |
 
-第一次上机时最值得盯的三件事：`QemuEnvironment` 是否报 `QEMU_MISSING`（找不到 .so）、
-日志里有没有 `Could not read keymap`、以及 VNC 端口是否真的在监听。
+如果再次失败，优先看三处：`run-<id>.log` 里的 QEMU 原始错误行、
+`run-<id>.serial.log` 里的固件串口输出（能直接看到 `Shell>` 与 `map` 结果），
+以及「导出诊断包」里的 `qemu-probe.txt`。
 
 ## 已知限制
 
