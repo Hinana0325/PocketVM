@@ -23,6 +23,13 @@ object QemuAssets {
     // bytes". The marker is now only trusted together with a size check.
     private const val MARKER = ".extracted-v3"
 
+    /**
+     * Independent marker for the `-L` data dir. v2 added `pc-bios/efi-virtio.rom`
+     * (virtio-net-pci hardcodes that romfile); without the bump, existing
+     * installs would keep the old keymaps-only tree and still fail.
+     */
+    private const val SHARE_MARKER = ".extracted-qemu-v2"
+
     /** virt's pflash device is 64 MiB; anything far below that is a -bios image. */
     private const val MIN_PFLASH_BYTES = 32L * 1024 * 1024
 
@@ -30,7 +37,7 @@ object QemuAssets {
     fun ensureSharedData(context: Context, layout: VmStorageLayout): File? {
         return try {
             val target = layout.qemuShareDir
-            val marker = File(target, MARKER)
+            val marker = File(target, SHARE_MARKER)
             if (marker.isFile) return target
 
             if (!hasAssets(context.assets, ASSET_ROOT)) return null
