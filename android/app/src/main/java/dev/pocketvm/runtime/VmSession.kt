@@ -186,10 +186,17 @@ class VmSession(
             }
         }
 
-        // QEMU needs its runtime data (keymaps) or VNC keystrokes are dropped.
+        // QEMU needs its runtime data (keymaps + pc-bios ROMs) or VNC keystrokes
+        // are dropped and virtio-net cannot initialise.
         val dataDir = withContext(Dispatchers.IO) { QemuAssets.ensureSharedData(appContext, layout) }
             ?.absolutePath
             ?: environment.dataDir(layout)
+        val romPresent = dataDir?.let { File(it, "efi-virtio.rom").isFile } == true
+        if (!romPresent) {
+            notes += "缺少 efi-virtio.rom，本次启动已禁用网卡"
+        }
+        environmentSummary = (environmentSummary ?: "") +
+            "qemuShare=$dataDir romPresent=$romPresent\n"
 
         // Control channel and file access are profile-independent: check once.
         val socket = layout.qmpSocket(config.id).also { it.delete() }
@@ -272,6 +279,8 @@ class VmSession(
                     vmName = config.name,
                     storageController = config.storageController,
                     profile = profile,
+                    // A missing option ROM must not block the VM itself.
+                    enableNet = if (romPresent) null else false,
                     dataDir = dataDir,
                     extraArgs = config.extraArgs,
                 ),

@@ -26,6 +26,11 @@ data class LaunchRequest(
     val vmName: String = "PocketVM",
     /** Acceleration/CPU profile; see [LaunchProfile]. */
     val profile: LaunchProfile = LaunchProfile.STANDARD,
+    /**
+     * Overrides [LaunchProfile.net] when the option ROM is missing: a NIC that
+     * cannot be initialised must not block the whole VM from starting.
+     */
+    val enableNet: Boolean? = null,
     /** QEMU's `-L` data directory (BIOS, keymaps). Null for a self-contained build. */
     val dataDir: String? = null,
     val tmpDir: String? = null,
@@ -110,7 +115,7 @@ class QemuCommandBuilder {
             }
         }
 
-        if (request.profile.net) {
+        if (request.enableNet ?: request.profile.net) {
             args += listOf("-netdev", "user,id=net0")
             args += listOf("-device", "virtio-net-pci,netdev=net0")
         }

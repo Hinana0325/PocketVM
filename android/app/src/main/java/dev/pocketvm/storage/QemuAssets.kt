@@ -24,11 +24,11 @@ object QemuAssets {
     private const val MARKER = ".extracted-v3"
 
     /**
-     * Independent marker for the `-L` data dir. v2 added `pc-bios/efi-virtio.rom`
-     * (virtio-net-pci hardcodes that romfile); without the bump, existing
-     * installs would keep the old keymaps-only tree and still fail.
+     * Independent marker for the `-L` data dir. v3 puts `efi-virtio.rom` at the
+     * **root** of the data dir: QEMU's qemu_find_file() uses subdir "" for
+     * QEMU_FILE_TYPE_BIOS, so `<data_dir>/pc-bios/...` is never searched.
      */
-    private const val SHARE_MARKER = ".extracted-qemu-v2"
+    private const val SHARE_MARKER = ".extracted-qemu-v3"
 
     /** virt's pflash device is 64 MiB; anything far below that is a -bios image. */
     private const val MIN_PFLASH_BYTES = 32L * 1024 * 1024
@@ -38,15 +38,33 @@ object QemuAssets {
         return try {
             val target = layout.qemuShareDir
             val marker = File(target, SHARE_MARKER)
-            if (marker.isFile) return target
+            // The marker alone is not proof: a previous copy could have missed a
+            // subtree (AssetManager.list() is not guaranteed to enumerate it) yet
+            // still written the marker, which then short-circuits every retry.
+            if (marker.isFile && File(target, ROM_SENTINEL).isFile) return target
 
             if (!hasAssets(context.assets, ASSET_ROOT)) return null
             target.mkdirs()
             copyTree(context.assets, ASSET_ROOT, target)
-            marker.writeText("ok")
+            // Copy the ROM by exact path too: this file decides whether the VM
+            // can start with a NIC, so it must not depend on directory listing.
+            if (!File(target, ROM_SENTINEL).isFile) {
+                copyFileAsset(context.assets, "$ASSET_ROOT/$ROM_SENTINEL", File(target, ROM_SENTINEL))
+            }
+            if (File(target, ROM_SENTINEL).isFile) marker.writeText("ok")
             target
         } catch (t: Throwable) {
             null
+        }
+    }
+
+    /** ROM that virtio-net-pci hardcodes; also the sentinel for a complete -L tree. */
+    private const val ROM_SENTINEL = "efi-virtio.rom"
+
+    private fun copyFileAsset(assets: AssetManager, assetPath: String, out: File) {
+        out.parentFile?.mkdirs()
+        assets.open(assetPath).use { input ->
+            out.outputStream().use { output -> input.copyTo(output) }
         }
     }
 
