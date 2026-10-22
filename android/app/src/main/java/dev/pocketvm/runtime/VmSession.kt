@@ -616,11 +616,27 @@ class VmSession(
         appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName
     }.getOrNull() ?: "unknown"
 
-    /** `Process.pid()` is API 26+ on Android but returns int, not long. */
-    private fun pidOf(process: Process): Int = runCatching {
-        val method = process.javaClass.getMethod("pid")
-        (method.invoke(process) as Number).toInt()
-    }.getOrDefault(-1)
+    /**
+     * Child PID for display only. `Process.pid()` may be missing or hidden on
+     * some ART versions, in which case the implementation field is used. A
+     * failure here must never affect the launch, hence -1.
+     */
+    private fun pidOf(process: Process): Int {
+        runCatching {
+            val method = process.javaClass.methods
+                .firstOrNull { it.name == "pid" && it.parameterCount == 0 }
+            if (method != null) return (method.invoke(process) as Number).toInt()
+        }
+        var type: Class<*>? = process.javaClass
+        while (type != null) {
+            runCatching {
+                val field = type!!.getDeclaredField("pid").apply { isAccessible = true }
+                return field.getInt(process)
+            }
+            type = type.superclass
+        }
+        return -1
+    }
 
     private fun exitCodeOf(process: Process): Int = runCatching {
         if (process.waitFor(2, TimeUnit.SECONDS)) process.exitValue() else -1

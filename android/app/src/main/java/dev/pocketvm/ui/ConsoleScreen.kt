@@ -126,7 +126,8 @@ fun ConsoleScreen(
                 ) {
                     StatusChip(
                         text = when (runtime) {
-                            is VmRuntimeState.Running -> "运行中 · PID ${runtime.pid}"
+                            is VmRuntimeState.Running ->
+                                if (runtime.pid > 0) "运行中 · PID ${runtime.pid}" else "运行中"
                             is VmRuntimeState.Preparing -> runtime.step
                             is VmRuntimeState.Stopping -> "正在关机"
                             is VmRuntimeState.Exited -> "已退出 (exit=${runtime.exitCode})"
@@ -310,7 +311,12 @@ fun ConsoleScreen(
                     )
                 }
                 Text(
-                    state.log.ifBlank { "（暂无输出）" },
+                    state.log.ifBlank {
+                        // QEMU is silent on success; an empty pane is normal and
+                        // used to look like "it died immediately".
+                        if (running) "（QEMU 正常运行时不会输出内容，画面请用 VNC 客户端连接）"
+                        else "（暂无输出）"
+                    },
                     style = MonoTextStyle,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -340,5 +346,13 @@ private fun errorReport(runtime: VmRuntimeState, log: String): String = buildStr
         else -> appendLine("状态：$runtime")
     }
     appendLine("--- QEMU 输出尾部 ---")
-    append(if (log.isBlank()) "（无输出：进程在产生任何日志之前就退出了）" else log.takeLast(4000))
+    append(
+        if (log.isNotBlank()) {
+            log.takeLast(4000)
+        } else if (runtime is VmRuntimeState.Running) {
+            "（运行中；QEMU 正常时不输出任何内容，画面请用 VNC 客户端连接）"
+        } else {
+            "（无输出：进程在产生任何日志之前就退出了）"
+        },
+    )
 }
