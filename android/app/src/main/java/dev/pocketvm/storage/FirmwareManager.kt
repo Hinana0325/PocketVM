@@ -7,9 +7,18 @@ import java.io.File
 import java.io.RandomAccessFile
 
 sealed interface FirmwareResult {
-    data class Ready(val files: FirmwareFiles, val createdVars: Boolean) : FirmwareResult
+    data class Ready(
+        val files: FirmwareFiles,
+        val createdVars: Boolean,
+        /** Something the user should know (e.g. the variable store was rebuilt). */
+        val note: String? = null,
+    ) : FirmwareResult
+
     data class Failure(val message: String) : FirmwareResult
 }
+
+/** virt's pflash device is fixed at 64 MiB; below this it cannot be a pflash image. */
+private const val MIN_PFLASH_BYTES = 32L * 1024 * 1024
 
 /**
  * UEFI flash management.
@@ -45,9 +54,13 @@ class FirmwareManager(
         ?: emptyList()
 
     fun resolve(config: VmConfig): File? {
+        // A configured path is only trusted when the file can actually serve as
+        // a pflash image. The old 2 MiB -bios file exists and is readable, so a
+        // plain isFile() check kept returning it and the bundled 64 MiB image
+        // was never extracted.
         config.firmwareCodePath?.let { path ->
             val file = File(path)
-            if (file.isFile) return file
+            if (file.isFile && file.length() >= MIN_PFLASH_BYTES) return file
         }
         return available().firstOrNull()
     }
@@ -58,11 +71,15 @@ class FirmwareManager(
                 "未找到 UEFI 固件。请把 QEMU_EFI.fd 放入 ${layout.firmwareDir.absolutePath}",
             )
         if (!code.isFile) return FirmwareResult.Failure("固件不存在：${code.absolutePath}")
-        if (code.length() < 256L * 1024) {
-            return FirmwareResult.Failure("${code.name} 只有 ${code.length()} 字节，不像 pflash 镜像")
+        if (code.length() < MIN_PFLASH_BYTES) {
+            return FirmwareResult.Failure(
+                "${code.name} 只有 ${code.length() / (1024 * 1024)} MB，而 virt 的 pflash 需要 64 MiB。" +
+                    "这多半是旧的 2 MiB -bios 镜像；在「编辑 → 固件」里重新导入 QEMU_EFI.fd 即可。",
+            )
         }
 
         var createdVars = false
+        var note: String? = null
         if (!vars.exists()) {
             vars.parentFile?.mkdirs()
             runCatching {
@@ -74,15 +91,25 @@ class FirmwareManager(
         }
 
         if (vars.length() != code.length()) {
-            return FirmwareResult.Failure(
-                "UEFI 变量存储大小 ${vars.length()} 与固件 ${code.length()} 不一致。" +
-                    "删除 ${vars.name} 后重新启动可自动重建（会丢失启动项）。",
-            )
+            // The only way this happens is an older firmware generation (2 MiB
+            // vars next to a 64 MiB code image, or vice versa). Those variables
+            // are unusable either way, so rebuild instead of blocking the launch
+            // and asking the user to delete a file by hand.
+            note = "UEFI 变量存储大小 ${vars.length() / (1024 * 1024)} MB 与固件 " +
+                "${code.length() / (1024 * 1024)} MB 不一致，已重建（启动项会重新枚举）"
+            runCatching {
+                vars.delete()
+                RandomAccessFile(vars, "rw").use { it.setLength(code.length()) }
+            }.onFailure {
+                return FirmwareResult.Failure("无法重建 UEFI 变量存储：${it.message}")
+            }
+            createdVars = true
         }
 
         return FirmwareResult.Ready(
             files = FirmwareFiles(codePath = code.absolutePath, varsPath = vars.absolutePath),
             createdVars = createdVars,
+            note = note,
         )
     }
 }

@@ -112,6 +112,15 @@ class ConfigValidatorTest {
     }
 
     @Test
+    fun `the old 2 MiB bios image is rejected as a pflash firmware`() {
+        // Exactly the file that made QEMU report "pflash0 block backend provides
+        // 2097152 bytes" on a real device.
+        val old = temp.newFile("QEMU_EFI.fd").apply { setLength(this, 2L * 1024 * 1024) }
+        val report = validator.validate(input(firmwareCode = old))
+        assertTrue(report.errors.any { it.code == "FIRMWARE_IMPLAUSIBLE" })
+    }
+
+    @Test
     fun `vars size must match firmware size`() {
         val code = firmware(64L * 1024 * 1024)
         val vars = temp.newFile("vars.fd").apply { setLength(this, 2L * 1024 * 1024) }

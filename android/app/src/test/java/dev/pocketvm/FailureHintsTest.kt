@@ -39,6 +39,15 @@ class FailureHintsTest {
     }
 
     @Test
+    fun `pflash size mismatch names the stale 2 MiB image`() {
+        val hint = FailureHints.fromLog(
+            "libqemu-system-aarch64.so: cfi.pflash01 device '/machine/virt.flash0' " +
+                "requires 67108864 bytes, pflash0 block backend provides 2097152 bytes",
+        )
+        assertTrue(hint!!.contains("64 MiB"))
+    }
+
+    @Test
     fun `clean exit has no hint`() {
         assertNull(FailureHints.fromLog("", 0))
     }

@@ -108,6 +108,8 @@ class VmSession(
         if (isRunning()) return@withLock LaunchOutcome.Failed("已有虚拟机在运行，请先停止。")
 
         stopRequested = false
+        preflightNote = null
+        val notes = mutableListOf<String>()
         val probe = withContext(Dispatchers.IO) { environment.resolve(layout) }
         environmentSummary = buildString {
             appendLine("nativeLibraryDir=${appContext.applicationInfo.nativeLibraryDir}")
@@ -151,7 +153,10 @@ class VmSession(
         _state.value = VmRuntimeState.Preparing(config.id, "准备 UEFI 固件")
         val firmware = when (val result = withContext(Dispatchers.IO) { firmwareManager.prepare(config, vars) }) {
             is FirmwareResult.Failure -> return@withLock fail(config.id, result.message)
-            is FirmwareResult.Ready -> result.files
+            is FirmwareResult.Ready -> {
+                result.note?.let { notes += it }
+                result.files
+            }
         }
 
         _state.value = VmRuntimeState.Preparing(config.id, "准备虚拟磁盘")
@@ -163,7 +168,6 @@ class VmSession(
         // A previous session that died (killed by Android, crash, power loss) can
         // leave a qcow2 with leaked or inconsistent metadata. Booting on top of
         // that is how a repairable image becomes an unrecoverable one.
-        preflightNote = null
         val unclean = withContext(Dispatchers.IO) {
             !diskReady.created && lastRunWasUnclean(config.id)
         }
@@ -171,9 +175,9 @@ class VmSession(
             _state.value = VmRuntimeState.Preparing(config.id, "检查虚拟磁盘一致性")
             val check = withContext(Dispatchers.IO) { diskProvisioner.check(diskReady.file) }
             when (check.outcome) {
-                CheckOutcome.CLEAN -> preflightNote = "上次异常退出，磁盘检查通过"
-                CheckOutcome.REPAIRED -> preflightNote = "上次异常退出，已修复磁盘元数据：${check.detail.orEmpty()}"
-                CheckOutcome.SKIPPED -> preflightNote = "上次异常退出，${check.detail ?: "未做磁盘检查"}"
+                CheckOutcome.CLEAN -> notes += "上次异常退出，磁盘检查通过"
+                CheckOutcome.REPAIRED -> notes += "上次异常退出，已修复磁盘元数据：${check.detail.orEmpty()}"
+                CheckOutcome.SKIPPED -> notes += "上次异常退出，${check.detail ?: "未做磁盘检查"}"
                 CheckOutcome.BROKEN -> return@withLock fail(
                     config.id,
                     "虚拟磁盘一致性检查失败，已阻止启动以免进一步损坏。",
@@ -229,7 +233,7 @@ class VmSession(
             pickVncPort(config.vncPort, allInterfaces = config.vncAccess == VncAccess.LAN)
         }
         if (effectivePort != config.vncPort) {
-            preflightNote = "VNC 端口 ${config.vncPort} 被占用，本次改用 $effectivePort"
+            notes += "VNC 端口 ${config.vncPort} 被占用，本次改用 $effectivePort"
         }
 
         // Fallback ladder: 标准 → 兼容 → 最小 (or a single profile when the user
@@ -356,6 +360,7 @@ class VmSession(
                     logPath = logFile.absolutePath,
                 )
                 monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
+                preflightNote = notes.takeIf { it.isNotEmpty() }?.joinToString("；")
                 return@withLock LaunchOutcome.Started(profile, failedAttempts.toList(), effectivePort)
             }
 
