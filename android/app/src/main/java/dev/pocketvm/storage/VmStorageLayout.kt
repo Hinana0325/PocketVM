@@ -64,9 +64,19 @@ class VmStorageLayout(context: Context) {
 
     fun qmpSocket(vmId: String): File = File(runDir, "${safeVmId(vmId)}.sock")
 
+    /**
+     * Firmware/guest serial console. Internal storage only, like [qmpSocket]:
+     * it is a Unix domain socket and FUSE cannot host one. Used to detect a
+     * UEFI Shell drop and recover from it automatically (see VmSession).
+     */
+    fun serialSocket(vmId: String): File = File(runDir, "${safeVmId(vmId)}.serial.sock")
+
     fun logDir(vmId: String): File = dir("vms/${safeVmId(vmId)}/logs")
 
     fun logFile(vmId: String, runId: String): File = File(logDir(vmId), "run-$runId.log")
+
+    /** Captured serial console for one launch; shipped in the diagnostics zip. */
+    fun serialLogFile(vmId: String, runId: String): File = File(logDir(vmId), "run-$runId.serial.log")
 
     fun manifestFile(vmId: String, runId: String): File = File(logDir(vmId), "run-$runId.json")
 

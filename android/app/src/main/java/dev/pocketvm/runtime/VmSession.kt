@@ -2,6 +2,8 @@ package dev.pocketvm.runtime
 
 import android.app.ActivityManager
 import android.content.Context
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.os.Build
 import dev.pocketvm.core.config.ConfigValidator
 import dev.pocketvm.core.config.ValidationInput
@@ -35,6 +37,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.OutputStream
+import java.net.SocketTimeoutException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -81,6 +85,7 @@ class VmSession(
 
     private var qemuProcess: Process? = null
     private var monitorJob: Job? = null
+    private var serialWatcherJob: Job? = null
     private var qmp: QmpClient? = null
     private var currentManifest: RunManifest? = null
     private var currentLog: File? = null
@@ -218,6 +223,14 @@ class VmSession(
         // Control channel and file access are profile-independent: check once.
         val socket = layout.qmpSocket(config.id).also { it.delete() }
 
+        // Serial console (firmware + guest output). Only attached when a CD is in
+        // play, because it is what lets us auto-recover from a UEFI Shell drop.
+        val serialSocketPath = if (config.bootFromCd && iso != null) {
+            layout.serialSocket(config.id).also { it.delete() }.absolutePath
+        } else {
+            null
+        }
+
         // Emulated storage is FUSE, which cannot host unix sockets. If the path
         // is wrong, QEMU exits 1 with a bare "Failed to bind socket: Permission
         // denied" that looks like an exec-permission problem. Catch it here.
@@ -297,6 +310,7 @@ class VmSession(
             val runId = UUID.randomUUID().toString().take(8)
             val logFile = layout.logFile(config.id, runId).also { it.parentFile?.mkdirs() }
             socket.delete()
+            layout.serialSocket(config.id).delete()
             currentLog = logFile
 
             val argv = commandBuilder.build(
@@ -320,6 +334,7 @@ class VmSession(
                     // A missing option ROM must not block the VM itself.
                     enableNet = if (romPresent) null else false,
                     dataDir = dataDir,
+                    serialSocketPath = serialSocketPath,
                     extraArgs = config.extraArgs,
                 ),
             )
@@ -407,6 +422,10 @@ class VmSession(
                     logPath = logFile.absolutePath,
                 )
                 monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
+                // Watch the firmware serial console for a UEFI Shell drop and
+                // recover automatically — the backup plan for devices whose edk2
+                // will not auto-boot the CD.
+                startSerialWatcher(launched, serialSocketPath, layout.serialLogFile(config.id, runId), logFile)
                 if (config.bootFromCd) {
                     scope.launch {
                         delay(7_000)
@@ -425,6 +444,7 @@ class VmSession(
             // This profile failed. Keep the log, clean up, try the next one.
             val code = exitCodeOf(launched)
             runCatching { launched.destroyForcibly() }
+            runCatching { serialWatcherJob?.cancel() }
             qemuProcess = null
             activeVmId = null
             client.close()
@@ -536,6 +556,110 @@ class VmSession(
 
     fun readLog(maxLines: Int = 400): String = currentLog?.let { LogTail.read(it, maxLines = maxLines) } ?: ""
 
+    /**
+     * Watches the firmware serial console and auto-recovers from a UEFI Shell drop.
+     *
+     * On some Snapdragon devices edk2 lands in the UEFI Shell instead of booting
+     * the CD. Rather than make the user hunt-and-peck [bootFromShell] on a phone
+     * keyboard, we detect `Shell>` on the serial line and type the EFI boot
+     * command ourselves — trying each filesystem the firmware is likely to have
+     * mounted the CD or the extracted boot image on. Every byte is also written to
+     * [serialLog] (always), so a still-failing launch ships a readable trace in
+     * the diagnostics zip.
+     *
+     * The serial chardev is a Unix socket QEMU opens as a server; we connect as a
+     * client and read raw bytes. Carriage returns are the shell's Enter key, so
+     * `fs0:\EFI\BOOT\BOOTAA64.EFI\r` is exactly what a person would type.
+     */
+    private fun startSerialWatcher(
+        process: Process,
+        socketPath: String?,
+        serialLog: File?,
+        qemuLog: File?,
+    ) {
+        serialWatcherJob?.cancel()
+        val path = socketPath ?: return
+        val logFile = serialLog ?: return
+        serialWatcherJob = scope.launch(Dispatchers.IO) {
+            // The chardev may not be open the instant QMP reports ready: retry.
+            val socket = runCatching {
+                var s: LocalSocket? = null
+                for (attempt in 0 until 20) {
+                    if (!process.isAlive) return@runCatching null
+                    s = try {
+                        LocalSocket().apply {
+                            connect(LocalSocketAddress(path, LocalSocketAddress.Namespace.FILESYSTEM))
+                        }
+                    } catch (t: Throwable) {
+                        delay(500)
+                        null
+                    }
+                    if (s != null) break
+                }
+                s
+            }.getOrNull() ?: return@launch
+
+            val input = socket.inputStream
+            val output = socket.outputStream
+            runCatching { socket.soTimeout = 1500 }
+            val log = runCatching {
+                logFile.bufferedWriter().also {
+                    it.write("=== PocketVM serial console capture ===\n")
+                    it.flush()
+                }
+            }.getOrNull()
+            val serial = StringBuilder(8192)
+            val candidates = listOf("fs0", "fs1", "fs2", "fs3")
+            var recovered = false
+            val bytes = ByteArray(256)
+            try {
+                while (process.isAlive) {
+                    val n = runCatching { input.read(bytes) }.getOrElse { -1 }
+                    if (n < 0) break
+                    val chunk = String(bytes, 0, n, Charsets.US_ASCII)
+                    serial.append(chunk)
+                    log?.write(chunk)
+                    log?.flush()
+                    // Keep only the recent tail; "Shell>" survives well within it.
+                    if (serial.length > 8192) serial.delete(0, serial.length - 8192)
+                    if (!recovered && serial.contains("Shell>")) {
+                        recovered = true
+                        // List devices first so the diagnostics zip shows which
+                        // volume actually holds \EFI\BOOT\BOOTAA64.EFI.
+                        sendSerial(output, "map\r")
+                        delay(1_200)
+                        for (fs in candidates) {
+                            sendSerial(output, "$fs:\\EFI\\BOOT\\BOOTAA64.EFI\r")
+                            delay(1_500)
+                        }
+                        qemuLog?.let {
+                            appendLogMarker(
+                                it,
+                                "检测到 UEFI Shell，已自动尝试引导 ${candidates.joinToString("/")}{\\EFI\\BOOT\\BOOTAA64.EFI",
+                            )
+                        }
+                    }
+                }
+            } catch (_: SocketTimeoutException) {
+                // read() timed out with no data: loop and re-check liveness.
+            } finally {
+                runCatching { log?.close() }
+                runCatching { socket.close() }
+            }
+        }
+    }
+
+    /** Writes [text] to the guest's serial input as keystrokes. */
+    private fun sendSerial(out: OutputStream, text: String) = runCatching {
+        out.write(text.toByteArray(Charsets.US_ASCII))
+        out.flush()
+    }
+
+    /** Appends a one-line marker to the QEMU log so the live console shows recovery. */
+    private fun appendLogMarker(logFile: File, line: String) = runCatching {
+        File(logFile.absolutePath).appendText("[PocketVM] $line\n")
+    }
+
     fun exportDiagnostics(vmId: String): Result<File> = diagnostics.export(vmId, environmentSummary)
 
     private suspend fun awaitExit(process: Process, manifest: RunManifest, logFile: File) {
@@ -546,6 +670,7 @@ class VmSession(
         val ownsSession = qemuProcess === process
         if (ownsSession) {
             runCatching { qmp?.close() }
+            runCatching { serialWatcherJob?.cancel() }
             qmp = null
             qemuProcess = null
             activeVmId = null

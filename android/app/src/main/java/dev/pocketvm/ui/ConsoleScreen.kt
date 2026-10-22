@@ -286,10 +286,13 @@ fun ConsoleScreen(
                 )
                 if (running) {
                     // The firmware sometimes lands in the UEFI Shell instead of
-                    // booting the CD. Typing that path on a phone keyboard is the
-                    // reason this app was called "好难用", so do it for the user.
+                    // booting the CD. PocketVM now watches the serial console and
+                    // auto-types the EFI boot command the moment it sees "Shell>",
+                    // so manual intervention is the exception, not the rule. The
+                    // button below is the manual fallback if auto-recovery misses.
                     Text(
-                        "画面停在 UEFI Shell？点下面按钮，App 会替你输入引导命令。",
+                        "固件若停在 UEFI Shell，App 会自动通过串口输入引导命令；" +
+                            "若仍停在 Shell，可点下面按钮手动触发。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

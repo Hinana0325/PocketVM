@@ -56,7 +56,13 @@ class DiagnosticsExporter(
 
             val vmDir = layout.vmDir(vmId)
             addFile("vm", File(vmDir, "config.json"))
-            layout.logDir(vmId).listFiles()?.sortedBy { it.name }?.forEach { addFile("vm/runs", it) }
+            val logs = layout.logDir(vmId).listFiles()
+                ?.sortedBy { it.name }
+                ?: emptyList()
+            // Serial console captures (run-*.serial.log) come first so a UEFI
+            // Shell drop is the first thing a reviewer sees in the zip.
+            logs.filter { it.name.endsWith(".serial.log") }.forEach { addFile("vm/runs", it) }
+            logs.forEach { addFile("vm/runs", it) }
         }
         out
     }

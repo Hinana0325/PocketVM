@@ -37,6 +37,13 @@ data class LaunchRequest(
      * cannot be initialised must not block the whole VM from starting.
      */
     val enableNet: Boolean? = null,
+    /**
+     * Unix socket for the firmware/guest serial console. Null disables it.
+     * When present, VmSession watches it and auto-recovers from a UEFI Shell
+     * drop by typing the EFI boot command — the "备用方案" for devices whose
+     * firmware will not auto-boot the CD.
+     */
+    val serialSocketPath: String? = null,
     /** QEMU's `-L` data directory (BIOS, keymaps). Null for a self-contained build. */
     val dataDir: String? = null,
     val tmpDir: String? = null,
@@ -154,6 +161,12 @@ class QemuCommandBuilder {
         }
         args += listOf("-vnc", vncSpec)
         args += listOf("-qmp", "unix:${escapeOption(request.qmpSocketPath)},server=on,wait=off")
+
+        // Serial console: lets PocketVM see (and recover from) a UEFI Shell drop.
+        // The chardev is a Unix socket on internal ext4 storage, like QMP.
+        request.serialSocketPath?.let {
+            args += listOf("-serial", "unix:${escapeOption(it)},server=on,wait=off")
+        }
         args += listOf(
             "-boot",
             if (request.bootFromCd && mediaPath != null) "order=d" else "order=c",
