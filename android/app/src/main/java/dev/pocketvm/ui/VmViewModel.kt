@@ -308,6 +308,12 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearNotice() = _ui.update { it.copy(notice = null) }
 
+    /** Answers a pending boot prompt / hits Enter in the guest. */
+    fun sendEnter() {
+        val ok = container.session.sendKey("ret")
+        _ui.update { it.copy(notice = if (ok) "已发送回车" else "按键发送失败（QMP 未连接）") }
+    }
+
     // ---------- media ----------
 
     fun importIso(uri: Uri) {

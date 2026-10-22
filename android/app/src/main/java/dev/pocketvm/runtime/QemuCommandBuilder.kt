@@ -27,6 +27,12 @@ data class LaunchRequest(
     /** Acceleration/CPU profile; see [LaunchProfile]. */
     val profile: LaunchProfile = LaunchProfile.STANDARD,
     /**
+     * El Torito EFI boot image extracted from the ISO. Attached as a small
+     * read-only USB disk with bootindex 1 so the firmware does not have to
+     * understand ISO9660/UDF.
+     */
+    val bootImagePath: String? = null,
+    /**
      * Overrides [LaunchProfile.net] when the option ROM is missing: a NIC that
      * cannot be initialised must not block the whole VM from starting.
      */
@@ -88,30 +94,40 @@ class QemuCommandBuilder {
 
         val mediaPath = request.isoPath?.takeUnless { request.profile.dropMedia }
 
+        // Boot order: extracted EFI boot image first, then the CD, then the disk.
+        val diskBootIndex = if (request.bootImagePath != null) 3 else 1
+        val needsUsb = request.bootImagePath != null || mediaPath != null
+        if (needsUsb) args += listOf("-device", "qemu-xhci,id=xhci")
+
         when (request.storageController) {
             StorageController.NVME -> {
                 // stornvme is in the Windows installer; virtio-blk is not.
                 args += listOf("-drive", diskDrive)
-                args += listOf("-device", "nvme,drive=disk0,serial=PVMDISK0,bootindex=1")
-
-                mediaPath?.let { iso ->
-                    // USB mass storage likewise needs no extra driver, in the
-                    // installer *or* in edk2, so the USB CD can be booted from.
-                    args += listOf("-device", "qemu-xhci,id=xhci")
-                    args += listOf("-drive", "if=none,id=cd0,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
-                    args += listOf("-device", "usb-storage,drive=cd0,bus=xhci.0,bootindex=2")
-                }
+                args += listOf("-device", "nvme,drive=disk0,serial=PVMDISK0,bootindex=$diskBootIndex")
             }
 
             StorageController.VIRTIO -> {
                 args += listOf("-device", "virtio-scsi-pci,id=scsi0")
                 args += listOf("-drive", diskDrive)
-                args += listOf("-device", "virtio-blk-pci,drive=disk0,bootindex=1")
+                args += listOf("-device", "virtio-blk-pci,drive=disk0,bootindex=$diskBootIndex")
+            }
+        }
 
-                mediaPath?.let { iso ->
-                    args += listOf("-drive", "if=none,id=cd0,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
-                    args += listOf("-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=2")
-                }
+        request.bootImagePath?.let { image ->
+            // A partition-less FAT image: edk2 treats it as removable media and
+            // boots \EFI\BOOT\BOOTAA64.EFI from it.
+            args += listOf("-drive", "if=none,id=boot0,media=disk,readonly=on,format=raw,file=${escapeOption(image)}")
+            args += listOf("-device", "usb-storage,drive=boot0,bus=xhci.0,bootindex=1")
+        }
+
+        mediaPath?.let { iso ->
+            // USB mass storage needs no extra driver, in the installer *or* in
+            // edk2, so the CD can be booted from / read by Setup.
+            args += listOf("-drive", "if=none,id=cd0,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
+            if (request.storageController == StorageController.VIRTIO) {
+                args += listOf("-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=2")
+            } else {
+                args += listOf("-device", "usb-storage,drive=cd0,bus=xhci.0,bootindex=2")
             }
         }
 

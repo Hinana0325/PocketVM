@@ -17,11 +17,13 @@ import dev.pocketvm.diagnostics.RunManifestStore
 import dev.pocketvm.storage.CheckOutcome
 import dev.pocketvm.storage.DiskProvisioner
 import dev.pocketvm.storage.DiskResult
+import dev.pocketvm.storage.IsoBootImage
 import dev.pocketvm.storage.FirmwareManager
 import dev.pocketvm.storage.FirmwareResult
 import dev.pocketvm.storage.QemuAssets
 import dev.pocketvm.storage.VmStorageLayout
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -103,6 +105,10 @@ class VmSession(
     fun runningVmId(): String? = if (isRunning()) activeVmId else null
 
     fun currentRun(): RunManifest? = currentManifest
+
+    /** Injects one keystroke into the guest (used for the boot prompt). */
+    fun sendKey(qcode: String = "ret"): Boolean =
+        runCatching { qmp?.sendKey(qcode) == true }.getOrDefault(false)
 
     suspend fun start(config: VmConfig): LaunchOutcome = mutex.withLock {
         if (isRunning()) return@withLock LaunchOutcome.Failed("已有虚拟机在运行，请先停止。")
@@ -243,6 +249,18 @@ class VmSession(
             notes += "VNC 端口 ${config.vncPort} 被占用，本次改用 $effectivePort"
         }
 
+        // Extract the El Torito EFI boot image and attach it as its own USB disk:
+        // firmware then boots a plain FAT image instead of having to read the
+        // whole ISO (which some edk2 builds over USB mass storage cannot do).
+        val bootImage = if (config.bootFromCd && iso != null) {
+            withContext(Dispatchers.IO) { IsoBootImage.ensure(iso, layout.imagesDir) }
+        } else {
+            null
+        }
+        if (bootImage != null) {
+            notes += "已从 ISO 提取引导镜像，固件不再依赖 ISO9660 支持"
+        }
+
         // Fallback ladder: 标准 → 兼容 → 最小 (or a single profile when the user
         // pinned one). Each attempt gets its own log and manifest, so a failed
         // profile does not erase the evidence of why it failed.
@@ -279,6 +297,7 @@ class VmSession(
                     vmName = config.name,
                     storageController = config.storageController,
                     profile = profile,
+                    bootImagePath = bootImage?.absolutePath,
                     // A missing option ROM must not block the VM itself.
                     enableNet = if (romPresent) null else false,
                     dataDir = dataDir,
@@ -369,6 +388,14 @@ class VmSession(
                     logPath = logFile.absolutePath,
                 )
                 monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
+                if (config.bootFromCd) {
+                    scope.launch {
+                        delay(7_000)
+                        runCatching { client.sendKey("ret") }
+                        delay(5_000)
+                        runCatching { client.sendKey("ret") }
+                    }
+                }
                 preflightNote = notes.takeIf { it.isNotEmpty() }?.joinToString("；")
                 return@withLock LaunchOutcome.Started(profile, failedAttempts.toList(), effectivePort)
             }

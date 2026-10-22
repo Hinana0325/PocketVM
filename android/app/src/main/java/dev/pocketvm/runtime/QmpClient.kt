@@ -123,6 +123,17 @@ class QmpClient(private val socketPath: String) : Closeable {
     /** ACPI shutdown request; the guest decides when to actually power off. */
     fun systemPowerdown(): Boolean = execute("system_powerdown")?.has("return") == true
 
+    /**
+     * Injects a keystroke, e.g. "ret" for Enter. Used to answer the Windows
+     * "Press any key to boot from CD" prompt, which otherwise times out while
+     * the user is still switching to their VNC client.
+     */
+    fun sendKey(qcode: String): Boolean = execute(
+        "send-key",
+        mapOf("keys" to listOf(mapOf("type" to "qcode", "data" to qcode))),
+        timeoutMs = 2000,
+    )?.has("return") == true
+
     /** Immediate exit. Safe only after the guest is down or unresponsive. */
     fun quit(): Boolean = execute("quit")?.has("return") == true
 
