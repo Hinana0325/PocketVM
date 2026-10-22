@@ -7,7 +7,7 @@
 
 | 能力 | 状态 |
 | --- | --- |
-| QEMU 9.2.3 aarch64 静态二进制（TCG + VNC + slirp + pixman） | **已编入 APK**（32 MB，零未解析符号） |
+| QEMU 11.1.2 aarch64 动态 PIE 二进制（TCG + VNC + slirp + pixman） | **已编入 APK**（约 33 MB，依赖闭包自检通过） |
 | QEMU 可执行文件探测（真跑 `--version`，不只看文件存在） | 已实现 |
 | 配置校验 + 可操作的中文错误 | 已实现 |
 | QCOW2 磁盘创建（无 `qemu-img` 时用内置写入器，始终精简置备） | 已实现 |
@@ -19,7 +19,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 0.9.x 现状（真机推进记录）
+## 0.9.x–0.10 现状（真机推进记录）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -29,6 +29,7 @@
 | 0.9.0 | 从 ISO 提取 El Torito EFI 引导镜像，交给固件直接引导，绕开 ISO9660/UDF 驱动 |
 | 0.9.1 | 修复 0.9.0 的 **SIGILL（exit=132）**：引导镜像从 `usb-storage` 改挂 `virtio-blk`，失败时运行时摘除并回退光盘引导 |
 | 0.9.2 | **UEFI Shell 串口自动恢复**：后台监听固件串口，检测到 `Shell>` 即自动输入 `fs0..fs3:\EFI\BOOT\BOOTAA64.EFI`；串口输出写入 `run-*.serial.log` 并并入诊断包 |
+| 0.10.0 | **升级到 QEMU 11.1.2**：用 Debian `+ds` 源码 + NDK r27c 重新交叉编译，产物仍是动态 PIE；修正新版的 meson 依赖（pixman 改为显式开启、`librt` 改为可选、dtc/pc-bios 固件复用旧树），RUNPATH 归一为 `$ORIGIN` |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 0.9.2 起，固件若落入 UEFI Shell 不再需要用户手动敲路径——App 会自动接管（串口检测 + 自动键入）；
@@ -122,7 +123,7 @@ Android/data/dev.pocketvm/files/
 
 ## 执行层（QEMU）
 
-APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 30 MB）加一组依赖库：
+APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 33 MB）加一组依赖库：
 
 | 文件 | 作用 |
 | --- | --- |
@@ -141,7 +142,7 @@ APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 3
 
 | 项 | 值 |
 | --- | --- |
-| QEMU | 9.2.3 |
+| QEMU | 11.1.2 |
 | 加速器 | TCG（`thread=multi`），无 KVM |
 | 显示 | `-vnc`（RFB 3.8），无 GTK/SDL |
 | 网络 | libslirp user-mode |
