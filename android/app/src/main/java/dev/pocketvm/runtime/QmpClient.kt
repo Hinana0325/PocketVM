@@ -25,8 +25,17 @@ class QmpClient(private val socketPath: String) : Closeable {
     /** Serializes [execute]: concurrent callers would interleave writes on the wire. */
     private val commandLock = Any()
 
-    /** @return true when the QMP greeting was received and capabilities negotiated. */
-    fun connect(timeoutMs: Int = 3000, totalWaitMs: Long = 15_000): Boolean {
+    /**
+     * @param alive polled between attempts; when the child has already died there
+     *   is no point waiting out [totalWaitMs] — the launch has failed and the
+     *   fallback ladder should move on immediately.
+     * @return true when the QMP greeting was received and capabilities negotiated.
+     */
+    fun connect(
+        timeoutMs: Int = 3000,
+        totalWaitMs: Long = 15_000,
+        alive: () -> Boolean = { true },
+    ): Boolean {
         val deadline = System.currentTimeMillis() + totalWaitMs
         while (System.currentTimeMillis() < deadline) {
             if (tryConnect(timeoutMs)) {
@@ -35,6 +44,7 @@ class QmpClient(private val socketPath: String) : Closeable {
                 if (negotiate()) return true
                 close()
             }
+            if (!alive()) return false
             Thread.sleep(200)
         }
         return false

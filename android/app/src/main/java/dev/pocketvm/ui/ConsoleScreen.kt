@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.core.model.VncAccess
@@ -144,6 +145,15 @@ fun ConsoleScreen(
                 KeyValueRow(
                     "控制器",
                     if (vm.storageController.name == "NVME") "NVMe + USB CD" else "virtio-blk + virtio-scsi",
+                )
+                KeyValueRow(
+                    "启动模式",
+                    when (vm.launchMode) {
+                        LaunchMode.AUTO -> "自动（标准 → 兼容 → 最小）"
+                        LaunchMode.STANDARD -> "标准（多线程 TCG）"
+                        LaunchMode.COMPAT -> "兼容（单线程 TCG / cortex-a76）"
+                        LaunchMode.MINIMAL -> "最小（无网络 / 无 rng）"
+                    },
                 )
 
                 (runtime as? VmRuntimeState.Failed)?.let { failed ->

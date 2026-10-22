@@ -147,6 +147,29 @@ cd android && ./gradlew :app:assembleDebug
 `--without-default-features` 会关掉 pixman、glib 的 gvdb 要单独补、jniLibs 只收 `lib*.so`
 所以必须用 patchelf 把 SONAME/DT_NEEDED 一起改掉），改参数前先读注释。
 
+### 启动降级（兼容模式）
+
+部分芯片/系统上，标准参数会在机器初始化阶段直接退出（`tb-size` 分配失败、`-cpu max`
+暴露的特性不受支持、rng 设备初始化失败等）。启动器因此内置了降级阶梯，每档独立
+日志与 manifest：
+
+| 档位 | 加速器 | CPU | 可选设备 |
+| --- | --- | --- | --- |
+| 标准 | `tcg,thread=multi,tb-size=512` | `max` | virtio-rng + 网络 |
+| 兼容 | `tcg,thread=single,tb-size=128` | `cortex-a76` | 网络 |
+| 最小 | `tcg,thread=single,tb-size=64` | `cortex-a76` | 无 |
+
+- 默认「自动」：标准 → 兼容 → 最小，某档在 QMP 握手后再稳定 2.5 秒即采用
+- **磁盘控制器、内存、vCPU 数不参与降级**：换控制器会让已装好的系统无法启动，
+  改内存则可能引入新的失败
+- QMP 握手发生在机器初始化之前，所以有 2.5 秒稳定性窗口，避免把"握手成功但随即
+  崩溃"误判为启动成功
+- 每次尝试写各自的 `run-<id>.log` / `run-<id>.json`，诊断包里能看到完整阶梯
+- 界面可手动锁定档位（编辑 → 启动模式），用于排查或避开已知有问题的机型
+
+`cortex-a76` 而不是 `a72`：Windows ARM64 需要 ARMv8.1 的 LSE 原子指令，a72 没有，
+一个跑不起来客户机的"救援档"没有意义。
+
 ## 目录
 
 ```

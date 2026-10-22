@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.pocketvm.core.config.Severity
+import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.StorageController
 import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.core.model.VmConfig
@@ -366,6 +367,50 @@ fun CreateVmScreen(
                     "磁盘走 NVMe、安装介质走 USB，两者都有 Windows 原生驱动，ISO 可直接装进虚拟磁盘。"
                 } else {
                     "virtio 更快且支持 TRIM，但安装界面会看不到磁盘，需要先加载 virtio-win 里的 viostor。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SectionCard(
+            title = "启动模式",
+            subtitle = "标准模式需要较大的 TCG 代码缓存；部分芯片/系统上分配不到时会启动即退出",
+        ) {
+            // Two rows: four buttons do not fit on a phone in one line.
+            listOf(
+                listOf(LaunchMode.AUTO to "自动", LaunchMode.STANDARD to "标准"),
+                listOf(LaunchMode.COMPAT to "兼容", LaunchMode.MINIMAL to "最小"),
+            ).forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    row.forEach { (mode, label) ->
+                        if (draft.launchMode == mode) {
+                            Button(onClick = { }, modifier = Modifier.weight(1f)) { Text(label) }
+                        } else {
+                            OutlinedButton(
+                                onClick = { onUpdate { it.copy(launchMode = mode) } },
+                                modifier = Modifier.weight(1f),
+                            ) { Text(label) }
+                        }
+                    }
+                }
+            }
+            Text(
+                when (draft.launchMode) {
+                    LaunchMode.AUTO ->
+                        "先按标准启动，失败后自动尝试兼容、最小模式；每次尝试都会单独记录日志。" +
+                            "这是默认值，建议保持。"
+                    LaunchMode.STANDARD ->
+                        "多线程 TCG、tb-size 512 MB、-cpu max，性能最好。若启动即退出，改回「自动」。"
+                    LaunchMode.COMPAT ->
+                        "单线程 TCG、tb-size 128 MB、cortex-a76、关闭 virtio-rng。" +
+                            "用于标准模式分配代码缓存失败或机型兼容性差的设备。"
+                    LaunchMode.MINIMAL ->
+                        "在兼容基础上再关闭网络、tb-size 64 MB。" +
+                            "只用于排查，装完系统后建议切回自动。"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

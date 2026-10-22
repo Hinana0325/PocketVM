@@ -83,6 +83,16 @@ class ConfigValidator {
                     "MEM_BELOW_WINDOWS_RECOMMENDED",
                     "Windows ARM64 安装程序建议 4096 MB 以上；当前 ${config.memoryMb} MB 可能在展开镜像阶段失败。",
                 )
+            // TCG adds a translation cache (tb-size) and a block cache on top of
+            // guest RAM; 8 GB on a 12 GB phone is the usual shape of "the system
+            // killed QEMU after the installer started".
+            config.memoryMb > 6144 ->
+                issues += Issue(
+                    Severity.WARNING,
+                    "MEM_TCG_OVERHEAD",
+                    "TCG 还要额外占用代码缓存与磁盘缓存，${config.memoryMb} MB 内存容易被系统回收；" +
+                        "启动后频繁被杀请降到 4096-6144 MB。",
+                )
         }
 
         when {

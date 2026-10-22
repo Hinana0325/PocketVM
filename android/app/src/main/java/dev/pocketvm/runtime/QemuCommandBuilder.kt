@@ -1,5 +1,6 @@
 package dev.pocketvm.runtime
 
+import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.StorageController
 
 /**
@@ -23,6 +24,8 @@ data class LaunchRequest(
     val bootFromCd: Boolean = true,
     val storageController: StorageController = StorageController.NVME,
     val vmName: String = "PocketVM",
+    /** Acceleration/CPU profile; see [LaunchProfile]. */
+    val profile: LaunchProfile = LaunchProfile.STANDARD,
     /** QEMU's `-L` data directory (BIOS, keymaps). Null for a self-contained build. */
     val dataDir: String? = null,
     val tmpDir: String? = null,
@@ -50,11 +53,12 @@ class QemuCommandBuilder {
         args += request.executable
         args += listOf("-name", sanitizeName(request.vmName))
         args += listOf("-machine", "virt,highmem=on")
-        args += listOf("-cpu", "max")
+        args += listOf("-cpu", request.profile.cpu)
         args += listOf("-smp", request.cpuCores.coerceIn(1, 8).toString())
         args += listOf("-m", request.memoryMb.coerceAtLeast(512).toString())
-        // Multi-threaded TCG is the only accelerator available without KVM.
-        args += listOf("-accel", "tcg,thread=multi,tb-size=512")
+        // Multi-threaded TCG is the only accelerator available without KVM, but
+        // it needs a large translation buffer; the fallback profiles shrink it.
+        args += listOf("-accel", request.profile.accel)
         args += listOf("-monitor", "none")
         args += listOf("-rtc", "base=localtime")
 
@@ -104,12 +108,16 @@ class QemuCommandBuilder {
             }
         }
 
-        args += listOf("-netdev", "user,id=net0")
-        args += listOf("-device", "virtio-net-pci,netdev=net0")
+        if (request.profile.net) {
+            args += listOf("-netdev", "user,id=net0")
+            args += listOf("-device", "virtio-net-pci,netdev=net0")
+        }
 
         // Windows blocks on entropy during first boot; virtio-rng avoids a 30s stall.
-        args += listOf("-object", "rng-random,filename=/dev/urandom,id=rng0")
-        args += listOf("-device", "virtio-rng-pci,rng=rng0")
+        if (request.profile.rng) {
+            args += listOf("-object", "rng-random,filename=/dev/urandom,id=rng0")
+            args += listOf("-device", "virtio-rng-pci,rng=rng0")
+        }
 
         val vncSpec = buildString {
             append(request.vncBindAddress)
