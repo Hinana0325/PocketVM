@@ -238,6 +238,7 @@ class VmSession(
         val ladder = LaunchProfile.ladder(config.launchMode)
         val failedAttempts = mutableListOf<String>()
         var lastHint: String? = null
+        var representativeDetail: String? = null
 
         for ((index, profile) in ladder.withIndex()) {
             _state.value = VmRuntimeState.Preparing(
@@ -381,21 +382,22 @@ class VmSession(
                 ),
             )
             lastHint = hint
-            failedAttempts += buildString {
-                append(profile.label)
-                append("（exit=").append(code)
-                append("：").append(detail ?: if (logText.isBlank()) "无任何输出" else "见日志")
-                append("）")
-            }
+            if (representativeDetail == null) representativeDetail = detail
+            failedAttempts += "${profile.label} exit=$code"
         }
 
-        val summary = if (failedAttempts.size == 1) {
-            "QEMU 启动失败（${failedAttempts.first()}）"
-        } else {
-            "所有启动模式都失败：\n" + failedAttempts.joinToString("\n") { "· $it" }
+        // One representative line beats four identical paragraphs: the ladder is
+        // only useful if the reader can see *why* every rung failed.
+        val summary = buildString {
+            if (failedAttempts.size == 1) {
+                append("启动失败（").append(failedAttempts.first()).append("）")
+            } else {
+                append("所有启动模式都失败（").append(failedAttempts.joinToString(" / ")).append("）")
+            }
+            append("\nQEMU：").append(representativeDetail ?: "没有任何输出")
         }
-        _state.value = VmRuntimeState.Failed(config.id, summary, lastHint)
-        return@withLock LaunchOutcome.Failed(summary, lastHint)
+        _state.value = VmRuntimeState.Failed(config.id, summary, lastHint ?: representativeDetail)
+        return@withLock LaunchOutcome.Failed(summary, lastHint ?: representativeDetail)
     }
 
     /**
@@ -508,17 +510,24 @@ class VmSession(
         "$label 不可写：${file.absolutePath}（${t.javaClass.simpleName}: ${t.message}）"
     }
 
-    /** First line QEMU actually complained about, for the failure message. */
-    private fun firstErrorLine(log: String): String? = log.lineSequence()
-        .map { it.trim() }
-        .firstOrNull {
-            it.startsWith("qemu-system-aarch64:") ||
-                it.startsWith("ERROR") ||
-                it.contains("Could not open") ||
-                it.contains("Failed to") ||
-                it.contains("cannot ")
+    /**
+     * First line QEMU actually complained about.
+     *
+     * The program name is the *executable's basename*, which here is
+     * `libqemu-system-aarch64.so` — matching on "qemu-system-aarch64:" silently
+     * failed for every error. Match on the generic `<prog>: ` shape instead, and
+     * fall back to the last non-blank line.
+     */
+    private fun firstErrorLine(log: String): String? {
+        val lines = log.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.isEmpty()) return null
+        val prefixed = lines.firstOrNull { line ->
+            val colon = line.indexOf(": ")
+            colon in 1..80 && (line.substring(0, colon).endsWith(".so") ||
+                line.substring(0, colon).contains("qemu"))
         }
-        ?.take(160)
+        return (prefixed ?: lines.last()).take(300)
+    }
 
     /**
      * Probes whether [preferred] can be bound, then scans 5900-5999. A busy port

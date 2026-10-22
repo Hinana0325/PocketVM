@@ -19,6 +19,14 @@ object FailureHints {
             "缺少文件或动态库。检查固件、ISO、磁盘路径，以及 LD_LIBRARY_PATH 是否指向 nativeLibraryDir。",
         Regex("cannot execute binary file|Exec format error", RegexOption.IGNORE_CASE) to
             "二进制架构不匹配。请确认打包的是 aarch64 版本，而不是 x86_64 或 armv7。",
+        Regex("is not a valid device model name|Parameter 'driver' expects|Bus '.*' not found") to
+            "设备模型不可用。这个精简构建没有编入该设备，或设备挂在了不存在的总线上。",
+        Regex("unable to find CPU model|invalid CPU model|Unsupported CPU", RegexOption.IGNORE_CASE) to
+            "CPU 模型不可用。该构建不支持所选 CPU，请切回「自动」或「标准」模式。",
+        Regex("Invalid parameter|Property '.*' not found|Invalid option", RegexOption.IGNORE_CASE) to
+            "启动参数不被这个 QEMU 构建支持，完整参数见控制台「查看启动参数」。",
+        Regex("could not initialize|cannot initialize|Failed to initialize", RegexOption.IGNORE_CASE) to
+            "设备或子系统初始化失败。若是 VNC/显示相关，先检查端口与密码设置。",
         Regex("Failed to bind socket|Failed to create socket|Failed to bind QMP|Operation not permitted") to
             "控制通道创建失败。Unix socket 不能放在 /storage/emulated（FUSE 文件系统），必须放在应用内部存储。",
         Regex("Permission denied") to
