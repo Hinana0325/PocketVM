@@ -30,6 +30,7 @@
 | 0.9.1 | 修复 0.9.0 的 **SIGILL（exit=132）**：引导镜像从 `usb-storage` 改挂 `virtio-blk`，失败时运行时摘除并回退光盘引导 |
 | 0.9.2 | **UEFI Shell 串口自动恢复**：后台监听固件串口，检测到 `Shell>` 即自动输入 `fs0..fs3:\EFI\BOOT\BOOTAA64.EFI`；串口输出写入 `run-*.serial.log` 并并入诊断包 |
 | 0.10.0 | **升级到 QEMU 11.1.2**：用 Debian `+ds` 源码 + NDK r27c 重新交叉编译，产物仍是动态 PIE；修正新版的 meson 依赖（pixman 改为显式开启、`librt` 改为可选、dtc/pc-bios 固件复用旧树），RUNPATH 归一为 `$ORIGIN` |
+| 0.10.1 | **修正 memfd 垫片**：`shm_open` 的名字总以 `/` 开头，而 `memfd_create` 拒绝含 `/` 的名字——剥掉前导斜杠，消除共享内存/CPR 路径上的潜在 `EINVAL`（原配置下不可达，但属于真实缺陷） |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 0.9.2 起，固件若落入 UEFI Shell 不再需要用户手动敲路径——App 会自动接管（串口检测 + 自动键入）；

@@ -161,7 +161,10 @@ patch_qemu() {
 #include <unistd.h>
 static inline int pocketvm_shm_open(const char *name, int oflag, mode_t mode)
 {
-    int fd = (int)syscall(__NR_memfd_create, name, 0U);
+    /* memfd_create rejects names containing '/', but every POSIX shm name
+     * starts with one ("/qemu-<pid>-shm-<n>"), so drop the leading slash. */
+    const char *memfd_name = (name && name[0] == '/') ? name + 1 : name;
+    int fd = (int)syscall(__NR_memfd_create, memfd_name, 0U);
     (void)mode;
     if (fd < 0) return -1;
     if ((oflag & O_TRUNC) && ftruncate(fd, 0) != 0) { close(fd); return -1; }
