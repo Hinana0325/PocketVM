@@ -57,6 +57,7 @@ fun ConsoleScreen(
     onExport: () -> Unit,
     onEject: () -> Unit,
     onSendKey: () -> Unit,
+    onBootFromShell: () -> Unit,
     onBack: () -> Unit,
 ) {
     val sessionRuntime = state.runtime
@@ -283,6 +284,20 @@ fun ConsoleScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (running) {
+                    // The firmware sometimes lands in the UEFI Shell instead of
+                    // booting the CD. Typing that path on a phone keyboard is the
+                    // reason this app was called "好难用", so do it for the user.
+                    Text(
+                        "画面停在 UEFI Shell？点下面按钮，App 会替你输入引导命令。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedButton(
+                        onClick = onBootFromShell,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("在 Shell 中引导 Windows") }
+                }
             }
         }
 

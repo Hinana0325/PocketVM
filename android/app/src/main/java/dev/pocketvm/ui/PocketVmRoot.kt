@@ -107,6 +107,7 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                             onExport = { vm.exportDiagnostics(target.id) },
                             onEject = { vm.ejectIso(target.id) },
                             onSendKey = vm::sendEnter,
+                            onBootFromShell = { vm.bootFromShell(target.id) },
                             onBack = vm::back,
                         )
                     }

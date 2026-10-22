@@ -222,4 +222,30 @@ class QemuCommandBuilderTest {
         assertEquals("order=c", valueOf(args, "-boot"))
         assertTrue("磁盘仍在", args.any { it.startsWith("nvme,drive=disk0") })
     }
+
+    @Test
+    fun `boot image goes on virtio-blk, never on the usb stack`() {
+        // The USB mass-storage path is what produced SIGILL (exit=132) on the
+        // test device; edk2 talks to virtio-blk directly, so the boot image must
+        // not drag in xhci -> usb-storage again.
+        val args = builder.build(request().copy(bootImagePath = "/images/win.boot.img"))
+        assertTrue(args.any { it.startsWith("virtio-blk-pci,drive=boot0,bootindex=1") })
+        assertFalse("引导镜像不能走 USB", args.any { it.contains("usb-storage,drive=boot0") })
+        assertEquals("磁盘让位到第三位", "nvme,drive=disk0,serial=PVMDISK0,bootindex=3", args.first { it.startsWith("nvme,") })
+    }
+
+    @Test
+    fun `without a boot image the disk boots first again`() {
+        val args = builder.build(request().copy(bootImagePath = null))
+        assertFalse(args.any { it.contains("boot0") })
+        assertEquals("nvme,drive=disk0,serial=PVMDISK0,bootindex=1", args.first { it.startsWith("nvme,") })
+    }
+
+    @Test
+    fun `usb is only present when a cdrom is attached`() {
+        val noMedia = builder.build(request(iso = null).copy(profile = LaunchProfile.MINIMAL_NO_MEDIA))
+        assertFalse("没有介质就不需要 xhci", noMedia.any { it == "qemu-xhci,id=xhci" })
+        val withCd = builder.build(request())
+        assertTrue(withCd.any { it == "qemu-xhci,id=xhci" })
+    }
 }

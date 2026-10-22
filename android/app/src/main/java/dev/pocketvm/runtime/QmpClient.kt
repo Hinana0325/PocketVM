@@ -134,6 +134,49 @@ class QmpClient(private val socketPath: String) : Closeable {
         timeoutMs = 2000,
     )?.has("return") == true
 
+    /**
+     * Types [text] one character at a time, via QMP `send-key`.
+     *
+     * Used for the UEFI Shell case: a phone keyboard in a VNC client is
+     * miserable, so the app can type `fs0:\EFI\BOOT\BOOTAA64.EFI` for the user.
+     * Only the US layout subset that appears in EFI paths is mapped; anything
+     * else returns false rather than typing the wrong command.
+     */
+    fun typeText(text: String, holdMs: Int = 40, gapMs: Long = 55): Boolean {
+        for (ch in text) {
+            val mapping = qcodeOf(ch) ?: return false
+            val keys = buildList {
+                if (mapping.second) add(mapOf("type" to "qcode", "data" to "shift"))
+                add(mapOf("type" to "qcode", "data" to mapping.first))
+            }
+            val ok = execute(
+                "send-key",
+                mapOf("keys" to keys, "hold-time" to holdMs),
+                timeoutMs = 2000,
+            )?.has("return") == true
+            if (!ok) return false
+            Thread.sleep(gapMs)
+        }
+        return true
+    }
+
+    /** qcode plus whether shift must be held; null when unmapped. */
+    private fun qcodeOf(ch: Char): Pair<String, Boolean>? = when {
+        ch in 'a'..'z' -> ch.toString() to false
+        ch in 'A'..'Z' -> ch.lowercaseChar().toString() to true
+        ch in '0'..'9' -> ch.toString() to false
+        ch == ' ' -> "spc" to false
+        ch == ':' -> "semicolon" to true
+        ch == ';' -> "semicolon" to false
+        ch == '\\' -> "backslash" to false
+        ch == '/' -> "slash" to false
+        ch == '.' -> "dot" to false
+        ch == '-' -> "minus" to false
+        ch == '_' -> "minus" to true
+        ch == '\n' || ch == '\r' -> "ret" to false
+        else -> null
+    }
+
     /** Immediate exit. Safe only after the guest is down or unresponsive. */
     fun quit(): Boolean = execute("quit")?.has("return") == true
 

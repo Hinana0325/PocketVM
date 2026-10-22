@@ -306,6 +306,32 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
 
     fun consumeShare() = _ui.update { it.copy(shareFile = null) }
 
+    /**
+     * Types `fs0:\EFI\BOOT\BOOTAA64.EFI` into a guest that is sitting at the
+     * UEFI Shell prompt. Only meaningful while running, and only when the
+     * firmware failed to pick a boot option on its own.
+     */
+    fun bootFromShell(vmId: String) {
+        viewModelScope.launch {
+            val running = (container.session.state.value as? VmRuntimeState.Running)?.vmId == vmId
+            if (!running) {
+                _ui.update { it.copy(notice = "虚拟机未运行") }
+                return@launch
+            }
+            _ui.update { it.copy(notice = "正在向 UEFI Shell 输入引导命令…") }
+            val ok = withContext(Dispatchers.IO) { container.session.bootFromShell("fs0") }
+            _ui.update {
+                it.copy(
+                    notice = if (ok) {
+                        "已输入 fs0:\\EFI\\BOOT\\BOOTAA64.EFI，切到 VNC 看画面；若提示找不到文件，改用 fs1"
+                    } else {
+                        "无法发送按键：QMP 通道不可用"
+                    },
+                )
+            }
+        }
+    }
+
     fun clearNotice() = _ui.update { it.copy(notice = null) }
 
     /** Answers a pending boot prompt / hits Enter in the guest. */

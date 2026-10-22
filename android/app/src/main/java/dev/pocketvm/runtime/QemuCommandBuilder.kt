@@ -96,7 +96,11 @@ class QemuCommandBuilder {
 
         // Boot order: extracted EFI boot image first, then the CD, then the disk.
         val diskBootIndex = if (request.bootImagePath != null) 3 else 1
-        val needsUsb = request.bootImagePath != null || mediaPath != null
+        // Only the CD needs USB now. The boot image goes on virtio-blk instead:
+        // edk2 drives virtio-blk directly, whereas usb-storage drags in the whole
+        // XHCI -> hub -> mass-storage chain, and on the device we tested that
+        // combination ended in SIGILL (exit=132) before QEMU wrote a single line.
+        val needsUsb = mediaPath != null
         if (needsUsb) args += listOf("-device", "qemu-xhci,id=xhci")
 
         when (request.storageController) {
@@ -114,10 +118,10 @@ class QemuCommandBuilder {
         }
 
         request.bootImagePath?.let { image ->
-            // A partition-less FAT image: edk2 treats it as removable media and
-            // boots \EFI\BOOT\BOOTAA64.EFI from it.
+            // A partition-less FAT image: edk2 mounts it and boots
+            // \EFI\BOOT\BOOTAA64.EFI from it without needing ISO9660/UDF.
             args += listOf("-drive", "if=none,id=boot0,media=disk,readonly=on,format=raw,file=${escapeOption(image)}")
-            args += listOf("-device", "usb-storage,drive=boot0,bus=xhci.0,bootindex=1")
+            args += listOf("-device", "virtio-blk-pci,drive=boot0,bootindex=1")
         }
 
         mediaPath?.let { iso ->

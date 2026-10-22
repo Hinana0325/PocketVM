@@ -110,6 +110,17 @@ class VmSession(
     fun sendKey(qcode: String = "ret"): Boolean =
         runCatching { qmp?.sendKey(qcode) == true }.getOrDefault(false)
 
+    /**
+     * Types the UEFI Shell boot command into the guest. When the firmware drops
+     * to the shell instead of booting the installer, this is the one line the
+     * user would otherwise have to hunt-and-peck on a phone keyboard.
+     *
+     * Blocking (roughly 40 ms per character); call it off the main thread.
+     */
+    fun bootFromShell(shellFs: String = "fs0"): Boolean = runCatching {
+        qmp?.typeText("$shellFs:\\EFI\\BOOT\\BOOTAA64.EFI\r") == true
+    }.getOrDefault(false)
+
     suspend fun start(config: VmConfig): LaunchOutcome = mutex.withLock {
         if (isRunning()) return@withLock LaunchOutcome.Failed("已有虚拟机在运行，请先停止。")
 
@@ -249,16 +260,17 @@ class VmSession(
             notes += "VNC 端口 ${config.vncPort} 被占用，本次改用 $effectivePort"
         }
 
-        // Extract the El Torito EFI boot image and attach it as its own USB disk:
+        // Extract the El Torito EFI boot image and attach it as its own disk:
         // firmware then boots a plain FAT image instead of having to read the
         // whole ISO (which some edk2 builds over USB mass storage cannot do).
-        val bootImage = if (config.bootFromCd && iso != null) {
+        //
+        // This is also the one variable that differs from the build that reached
+        // the firmware prompt, so it is allowed to be dropped at runtime: if an
+        // attempt dies with it attached, the same profile is retried without it.
+        var bootImage = if (config.bootFromCd && iso != null) {
             withContext(Dispatchers.IO) { IsoBootImage.ensure(iso, layout.imagesDir) }
         } else {
             null
-        }
-        if (bootImage != null) {
-            notes += "已从 ISO 提取引导镜像，固件不再依赖 ISO9660 支持"
         }
 
         // Fallback ladder: 标准 → 兼容 → 最小 (or a single profile when the user
@@ -268,11 +280,18 @@ class VmSession(
         val failedAttempts = mutableListOf<String>()
         var lastHint: String? = null
         var representativeDetail: String? = null
+        var bootImageDropped = false
 
-        for ((index, profile) in ladder.withIndex()) {
+        var index = 0
+        while (index < ladder.size) {
+            val profile = ladder[index]
             _state.value = VmRuntimeState.Preparing(
                 config.id,
-                if (index == 0) "启动 QEMU（${profile.label}）" else "尝试${profile.label}模式",
+                when {
+                    bootImageDropped -> "重试${profile.label}（不带引导镜像）"
+                    index == 0 -> "启动 QEMU（${profile.label}）"
+                    else -> "尝试${profile.label}模式"
+                },
             )
 
             val runId = UUID.randomUUID().toString().take(8)
@@ -396,6 +415,9 @@ class VmSession(
                         runCatching { client.sendKey("ret") }
                     }
                 }
+                if (bootImage != null) {
+                    notes += "已用提取的引导镜像启动，固件不依赖 ISO9660"
+                }
                 preflightNote = notes.takeIf { it.isNotEmpty() }?.joinToString("；")
                 return@withLock LaunchOutcome.Started(profile, failedAttempts.toList(), effectivePort)
             }
@@ -423,8 +445,25 @@ class VmSession(
                 ),
             )
             lastHint = hint
-            if (representativeDetail == null) representativeDetail = detail
-            failedAttempts += "${profile.label} exit=$code"
+            if (detail != null) representativeDetail = detail
+            failedAttempts += buildString {
+                append(profile.label).append(" exit=").append(code)
+                signalName(code)?.let { append("/").append(it) }
+                if (bootImage != null) append("（带引导镜像）")
+            }
+
+            // Boot image attached and the attempt still died: drop that variable
+            // and retry the *same* profile before spending the rest of the ladder.
+            // exit >= 128 means the process was killed by a signal (132 = SIGILL,
+            // 139 = SIGSEGV) - a configuration-independent crash that no smaller
+            // tb-size will fix.
+            if (bootImage != null) {
+                bootImage = null
+                bootImageDropped = true
+                notes += "引导镜像挂载失败（exit=$code），本次改为从光盘引导"
+                continue
+            }
+            index += 1
         }
 
         // One representative line beats four identical paragraphs: the ladder is
@@ -436,6 +475,9 @@ class VmSession(
                 append("所有启动模式都失败（").append(failedAttempts.joinToString(" / ")).append("）")
             }
             append("\nQEMU：").append(representativeDetail ?: "没有任何输出")
+            if (bootImageDropped) {
+                append("\n（引导镜像已挂载时 QEMU 直接崩溃，本次已回退为光盘引导）")
+            }
         }
         _state.value = VmRuntimeState.Failed(config.id, summary, lastHint ?: representativeDetail)
         return@withLock LaunchOutcome.Failed(summary, lastHint ?: representativeDetail)
@@ -629,7 +671,8 @@ class VmSession(
         else -> false
     }
 
-    private fun fail(vmId: String, message: String, hint: String? = null): LaunchOutcome {        _state.value = VmRuntimeState.Failed(vmId, message, hint)
+    private fun fail(vmId: String, message: String, hint: String? = null): LaunchOutcome {
+        _state.value = VmRuntimeState.Failed(vmId, message, hint)
         return LaunchOutcome.Failed(message, hint)
     }
 
@@ -668,4 +711,25 @@ class VmSession(
     private fun exitCodeOf(process: Process): Int = runCatching {
         if (process.waitFor(2, TimeUnit.SECONDS)) process.exitValue() else -1
     }.getOrDefault(-1)
+
+    /**
+     * A process killed by a signal reports 128 + signo. Printing the name turns
+     * "exit=132" into "SIGILL", which is the difference between "a parameter was
+     * rejected" and "the emulator executed an illegal instruction".
+     */
+    private fun signalName(code: Int): String? = when (code) {
+        129 -> "SIGHUP"
+        130 -> "SIGINT"
+        131 -> "SIGQUIT"
+        132 -> "SIGILL"
+        133 -> "SIGTRAP"
+        134 -> "SIGABRT"
+        135 -> "SIGBUS"
+        136 -> "SIGFPE"
+        137 -> "SIGKILL"
+        139 -> "SIGSEGV"
+        141 -> "SIGPIPE"
+        143 -> "SIGTERM"
+        else -> null
+    }
 }
