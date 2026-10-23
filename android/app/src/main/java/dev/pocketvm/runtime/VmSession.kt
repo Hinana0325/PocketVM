@@ -9,6 +9,7 @@ import dev.pocketvm.core.config.ConfigValidator
 import dev.pocketvm.core.config.ValidationInput
 import dev.pocketvm.core.config.ValidationReport
 import dev.pocketvm.core.model.BootStage
+import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmConfig
@@ -384,6 +385,14 @@ class VmSession(
         var representativeDetail: String? = null
         var bootImageDropped = false
         var configFatal = false
+        // CD transport is a boot-or-not decision (see CdTransport), so it gets its
+        // own fallback rung: AUTO starts on USB and drops to virtio-scsi if the
+        // USB stack kills QEMU.
+        var cdTransport = when (config.cdTransport) {
+            CdTransport.AUTO -> CdTransport.USB
+            else -> config.cdTransport
+        }
+        var cdTransportDowngraded = false
 
         var index = 0
         while (index < ladder.size) {
@@ -423,6 +432,7 @@ class VmSession(
                     bootFromCd = config.bootFromCd,
                     vmName = config.name,
                     storageController = config.storageController,
+                    cdTransport = cdTransport,
                     profile = profile,
                     bootImagePath = bootImage?.absolutePath,
                     // A missing option ROM must not block the VM itself.
@@ -643,6 +653,18 @@ class VmSession(
                 notes += "引导镜像挂载失败（exit=$code），本次改为从光盘引导"
                 continue
             }
+
+            // The CD sat on USB and QEMU was killed by a signal: that is the
+            // SIGILL the USB mass-storage chain used to produce on this device.
+            // Retry the same profile with the CD on virtio-scsi + AHCI — it does
+            // not boot Windows, but it proves the box runs and keeps a usable
+            // screen, which beats spending the whole ladder on one bad bus.
+            if (cdTransport == CdTransport.USB && code >= 128) {
+                cdTransport = CdTransport.VIRTIO_SCSI
+                cdTransportDowngraded = true
+                notes += "USB 光驱导致 QEMU 崩溃（exit=$code），本次改为 virtio-scsi + AHCI"
+                continue
+            }
             index += 1
         }
 
@@ -660,6 +682,10 @@ class VmSession(
             }
             if (bootImageDropped) {
                 append("\n（引导镜像已挂载时 QEMU 直接崩溃，本次已回退为光盘引导）")
+            }
+            if (cdTransportDowngraded) {
+                append("\n（USB 光驱导致 QEMU 崩溃，已回退为 virtio-scsi + AHCI：" +
+                    "能进固件但 WinPE 读不到 virtio-scsi 上的 install.wim，需改用 USB 或注入 vioscsi 驱动）")
             }
         }
         AgentFeed.event(

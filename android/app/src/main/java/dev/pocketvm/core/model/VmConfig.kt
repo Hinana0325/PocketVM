@@ -34,6 +34,11 @@ data class VmConfig(
     /** See [StorageController]: NVMe works with the stock Windows installer. */
     val storageController: StorageController = StorageController.NVME,
     /**
+     * Which bus the install CD sits on — see [CdTransport] for why this decides
+     * whether Windows can be booted at all, not just how fast it reads.
+     */
+    val cdTransport: CdTransport = CdTransport.AUTO,
+    /**
      * How the launcher may degrade when the preferred acceleration profile fails.
      * [LaunchMode.AUTO] tries 标准 → 兼容 → 最小 and keeps whichever starts.
      */

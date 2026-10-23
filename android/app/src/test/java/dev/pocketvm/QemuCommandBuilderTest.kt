@@ -1,5 +1,6 @@
 package dev.pocketvm
 
+import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.StorageController
@@ -87,35 +88,45 @@ class QemuCommandBuilderTest {
     }
 
     @Test
-    fun `default storage is nvme plus the cd on both buses`() {
+    fun `default cd goes on usb, the only bus both stacks can use`() {
         val args = builder.build(request())
         assertTrue("磁盘必须是 NVMe，安装程序才有原生驱动", args.any { it.startsWith("nvme,drive=disk0") })
-        // The CD is attached twice on purpose: firmware (edk2 on ARM virt) has
-        // no AHCI driver and can only boot virtio-scsi, while WinPE has no
-        // vioscsi and can only read install.wim from AHCI. See QemuCommandBuilder.
+        // USB is the one transport both sides understand: edk2 boots
+        // \EFI\BOOT\BOOTAA64.EFI off it, and WinPE keeps reading install.wim
+        // from that very same device. See CdTransport.
         assertTrue(
-            "光驱挂 virtio-scsi：固件侧唯一的引导路径",
-            args.any { it == "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1" },
+            "光驱挂 USB：固件与 WinPE 都能用的唯一总线",
+            args.any { it == "usb-storage,drive=cd0,bus=xhci.0,bootindex=1" },
         )
-        assertTrue(
-            "同一个 ISO 再挂 AHCI：Windows 侧读 install.wim 的路径",
-            args.any { it == "ide-cd,drive=cd1,bus=ahci.0" },
-        )
-        assertFalse("usb-storage 在本机必 SIGILL", args.any { it.startsWith("usb-storage") })
+        assertFalse("默认不再挂 virtio-scsi/AHCI", args.any { it.startsWith("scsi-cd") || it.startsWith("ide-cd") })
         assertFalse("NVMe 模式下不应出现 virtio-blk", args.any { it.startsWith("virtio-blk-pci") })
         assertTrue(
             "控制器必须先于挂在上面的设备出现",
-            args.indexOf("virtio-scsi-pci,id=scsi0") < args.indexOf("scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1"),
+            args.indexOf("qemu-xhci,id=xhci") < args.indexOf("usb-storage,drive=cd0,bus=xhci.0,bootindex=1"),
         )
         assertEquals("order=d", valueOf(args, "-boot"))
     }
 
     @Test
-    fun `virtio mode keeps virtio-blk for the disk and the cd on both buses`() {
-        val args = builder.build(request().copy(storageController = StorageController.VIRTIO))
-        assertTrue(args.any { it.startsWith("virtio-blk-pci,drive=disk0") })
+    fun `virtio-scsi transport keeps the cd on both buses`() {
+        // Fallback used when the USB stack kills QEMU: edk2 boots the scsi-cd
+        // copy, and the AHCI copy is the one WinPE can read (storahci) — though
+        // edk2 has no AHCI driver, so it cannot boot from that copy.
+        val args = builder.build(request().copy(cdTransport = CdTransport.VIRTIO_SCSI))
         assertTrue(args.any { it == "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1" })
         assertTrue(args.any { it == "ide-cd,drive=cd1,bus=ahci.0" })
+        assertFalse(args.any { it.startsWith("usb-storage") })
+        assertTrue(
+            "控制器必须先于挂在上面的设备出现",
+            args.indexOf("virtio-scsi-pci,id=scsi0") < args.indexOf("scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1"),
+        )
+    }
+
+    @Test
+    fun `virtio mode keeps virtio-blk for the disk`() {
+        val args = builder.build(request().copy(storageController = StorageController.VIRTIO))
+        assertTrue(args.any { it.startsWith("virtio-blk-pci,drive=disk0") })
+        assertTrue(args.any { it.startsWith("usb-storage,drive=cd0") })
         assertFalse(args.any { it.startsWith("nvme,") })
     }
 
@@ -248,7 +259,11 @@ class QemuCommandBuilderTest {
         val args = builder.build(request().copy(bootImagePath = "/images/win.boot.img"))
         assertTrue(args.any { it.startsWith("virtio-blk-pci,drive=boot0,bootindex=2") })
         assertFalse("引导镜像不能走 USB", args.any { it.contains("usb-storage,drive=boot0") })
-        assertEquals("CD 仍是第一引导项", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1", args.first { it.startsWith("scsi-cd") })
+        assertEquals(
+            "CD 仍是第一引导项",
+            "usb-storage,drive=cd0,bus=xhci.0,bootindex=1",
+            args.first { it.startsWith("usb-storage,drive=cd0") },
+        )
         assertEquals("磁盘让位到第三位", "nvme,drive=disk0,serial=PVMDISK0,bootindex=3", args.first { it.startsWith("nvme,") })
     }
 

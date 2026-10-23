@@ -1,5 +1,6 @@
 package dev.pocketvm.runtime
 
+import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.StorageController
 
@@ -23,6 +24,8 @@ data class LaunchRequest(
     val qmpSocketPath: String,
     val bootFromCd: Boolean = true,
     val storageController: StorageController = StorageController.NVME,
+    /** Bus for the install CD; see [CdTransport]. */
+    val cdTransport: CdTransport = CdTransport.AUTO,
     val vmName: String = "PocketVM",
     /** Acceleration/CPU profile; see [LaunchProfile]. */
     val profile: LaunchProfile = LaunchProfile.STANDARD,
@@ -102,20 +105,22 @@ class QemuCommandBuilder {
 
         val mediaPath = request.isoPath?.takeUnless { request.profile.dropMedia }
 
-        // The CD is attached on *both* buses, because neither side can see the
-        // other's transport:
-        //   - Firmware: edk2 on ARM virt carries no AHCI driver (Ubuntu's build
-        //     and QEMU's own alike — verified by running both against an
-        //     identical device set). An `ide-cd` on ich9-ahci never shows up in
-        //     the firmware's `map` output, so it cannot boot from it at all.
-        //   - Windows: a stock WinPE has no vioscsi, so it cannot read
-        //     install.wim from a virtio-scsi CD; it does ship storahci.
-        // Measured: virtio-scsi boots the installer through "Loading files..."
-        // while the same ISO on AHCI is the copy WinPE can read. `usb-storage`
-        // dies of SIGILL (exit=132) for a 1 MiB zero file exactly as for the
-        // 8.7 GiB ISO. The ich9-ahci bus names here are `ahci.0..5`, not `ide.*`.
-        if (mediaPath != null) args += listOf("-device", "virtio-scsi-pci,id=scsi0")
-        if (mediaPath != null) args += listOf("-device", "ich9-ahci,id=ahci")
+        // Resolve AUTO to USB: it is the only bus both edk2 and WinPE understand
+        // (see CdTransport). The launcher downgrades to VIRTIO_SCSI if QEMU dies
+        // on the USB stack, so AUTO never reaches here as AUTO.
+        val transport = when (request.cdTransport) {
+            CdTransport.AUTO, CdTransport.USB -> CdTransport.USB
+            CdTransport.VIRTIO_SCSI -> CdTransport.VIRTIO_SCSI
+        }
+
+        // virtio-scsi + AHCI only exist for the VIRTIO_SCSI transport: edk2 boots
+        // the scsi-cd copy, and the ich9-ahci copy is the one stock WinPE can
+        // read (storahci) — but edk2 has no AHCI driver, so it cannot boot it.
+        // That split is exactly why USB is preferred whenever it does not crash.
+        if (mediaPath != null && transport == CdTransport.VIRTIO_SCSI) {
+            args += listOf("-device", "virtio-scsi-pci,id=scsi0")
+            args += listOf("-device", "ich9-ahci,id=ahci")
+        }
 
         args += listOf("-device", "virtio-gpu-pci")
 
@@ -127,7 +132,7 @@ class QemuCommandBuilder {
         //
         // The controller must be declared before the devices that sit on it, or
         // QEMU answers "Bus 'xhci.0' not found".
-        val needsUsb = mediaPath != null || request.usbInput
+        val needsUsb = (mediaPath != null && transport == CdTransport.USB) || request.usbInput
         if (needsUsb) args += listOf("-device", "qemu-xhci,id=xhci")
         if (request.usbInput) {
             args += listOf("-device", "usb-kbd,bus=xhci.0")
@@ -171,12 +176,20 @@ class QemuCommandBuilder {
         }
 
         mediaPath?.let { iso ->
-            // Two backend drives over one file; QEMU is fine with a readonly
-            // medium attached on both buses at once.
-            args += listOf("-drive", "if=none,id=cd0,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
-            args += listOf("-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1")
-            args += listOf("-drive", "if=none,id=cd1,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
-            args += listOf("-device", "ide-cd,drive=cd1,bus=ahci.0")
+            if (transport == CdTransport.USB) {
+                // One drive, one bus — and both stacks can use it: edk2 boots
+                // \EFI\BOOT\BOOTAA64.EFI off the USB CD, and WinPE keeps reading
+                // install.wim from the very same device.
+                args += listOf("-drive", "if=none,id=cd0,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
+                args += listOf("-device", "usb-storage,drive=cd0,bus=xhci.0,bootindex=1")
+            } else {
+                // Two backend drives over one file; QEMU is fine with a readonly
+                // medium attached on both buses at once.
+                args += listOf("-drive", "if=none,id=cd0,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
+                args += listOf("-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1")
+                args += listOf("-drive", "if=none,id=cd1,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
+                args += listOf("-device", "ide-cd,drive=cd1,bus=ahci.0")
+            }
         }
 
         if (request.enableNet ?: request.profile.net) {
