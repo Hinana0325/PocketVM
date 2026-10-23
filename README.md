@@ -19,6 +19,21 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
+## 版本演进（当前 0.10.2 / QEMU 11.1.2）
+
+| 版本 | 关键变化 |
+| --- | --- |
+| 0.6.x | 执行层改为**动态链接 PIE**（静态 bionic 在本机 self-boot 即 SIGSEGV）；QMP 套接字移到内部 ext4 |
+| 0.7–0.8.x | 失败原因取 QEMU 原始错误行；VNC 端口自动避让；pflash 固件自愈；`efi-virtio.rom` 放到 `-L` 根目录 |
+| 0.9.0–0.9.1 | 提取 El Torito EFI 引导镜像；修复 **SIGILL（exit=132）**：引导镜像由 `usb-storage` 改挂 `virtio-blk` |
+| 0.9.2 | **UEFI Shell 串口自动恢复**：监听固件串口，检测到 `Shell>` 自动输入 `fs0..fs3:\EFI\BOOT\BOOTAA64.EFI` |
+| 0.10.0 | **升级 QEMU 11.1.2**（Debian `+ds` 源码 + NDK r27c）；适配新版 meson（pixman/`librt`/dtc/pc-bios），RUNPATH 归一 `$ORIGIN` |
+| 0.10.1 | 修正 memfd 垫片：`shm_open` 名字含 `/` 会被 `memfd_create` 拒绝，去掉前导斜杠 |
+| 0.10.2 | 合并远程改动（恢复被覆盖的 QEMU 11 适配 + 保留 glib 镜像/libffi 容错）；新增 `-PpvmSideBySide` 并行安装；纠正版本号回退 |
+
+真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
+失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
+
 ## 为什么 QEMU 必须叫 `libqemu-system-aarch64.so`
 
 Android 10 起 W^X 生效：`filesDir` 里的文件即使 `chmod +x` 也会 `EACCES`。
