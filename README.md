@@ -97,6 +97,8 @@ cd android
 ./gradlew :app:testDebugUnitTest  # 参数构建与校验的单元测试
 ```
 
+完整的打包 → 真机 → 推送链路（含 GitHub 凭据怎么现取）见 [docs/packaging.md](docs/packaging.md)。
+
 首次运行不需要手动放任何文件：64 MiB 固件随 APK 发布，64 MiB 空白变量存储由 `FirmwareManager` 生成
 （edk2 会在首次启动时格式化它）。压缩后这份 64 MiB 镜像在 APK 里只占约 1.2 MB，因为大部分是零。
 如果你想换固件（例如 64 MB 的 secboot 版本），在界面里「导入固件」覆盖即可。
@@ -197,8 +199,8 @@ android/                    Gradle 根（AGP 8.7 / Kotlin 2.1 / Compose）
     diagnostics/            日志尾部、manifest、诊断包
     ui/                     Compose 界面（列表 / 向导 / 控制台）
   app/src/test/             纯 JVM 单元测试
-scripts/                    原生层构建与安装
-docs/                       架构与排障
+scripts/                    原生层构建与安装、无线开发环、GitHub 增量同步
+docs/                       架构、排障、打包与推送
 ```
 
 ## 设计约束（不从计划里删的部分）
