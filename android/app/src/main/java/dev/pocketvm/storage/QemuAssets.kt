@@ -26,7 +26,11 @@ object QemuAssets {
     // belief that Ubuntu's build lacked an AHCI driver while QEMU's had it. That
     // came from misreading an x86 virtio-net option ROM message: NEITHER build
     // carries AHCI support. The bundled firmware is the same as v3.)
-    private const val MARKER = ".extracted-v4"
+    // v5: the bundle now ships several firmwares (edk2 2026.08 plain and
+    // Secure Boot builds) alongside the old 2024.02 image. The marker must
+    // change so an existing install re-extracts them — otherwise the v4
+    // marker short-circuits and the new images never reach firmwareDir.
+    private const val MARKER = ".extracted-v5"
 
     /**
      * Independent marker for the `-L` data dir. v3 puts `efi-virtio.rom` at the

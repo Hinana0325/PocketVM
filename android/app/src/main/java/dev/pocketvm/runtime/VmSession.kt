@@ -315,7 +315,7 @@ class VmSession(
 
         // Serial console (firmware + guest output). Only attached when a CD is in
         // play, because it is what lets us auto-recover from a UEFI Shell drop.
-        val serialSocketPath = if (config.bootFromCd && iso != null) {
+        val serialSocketPath = if (config.serialRecovery && config.bootFromCd && iso != null) {
             layout.serialSocket(config.id).also { it.delete() }.absolutePath
         } else {
             null
@@ -370,7 +370,7 @@ class VmSession(
         // This is also the one variable that differs from the build that reached
         // the firmware prompt, so it is allowed to be dropped at runtime: if an
         // attempt dies with it attached, the same profile is retried without it.
-        var bootImage = if (config.bootFromCd && iso != null) {
+        var bootImage = if (config.useBootImage && config.bootFromCd && iso != null) {
             withContext(Dispatchers.IO) { IsoBootImage.ensure(iso, layout.imagesDir) }
         } else {
             null
@@ -433,10 +433,13 @@ class VmSession(
                     vmName = config.name,
                     storageController = config.storageController,
                     cdTransport = cdTransport,
+                    usbInput = config.usbInput,
+                    cpuModel = config.cpuModel,
+                    rng = config.rng,
                     profile = profile,
                     bootImagePath = bootImage?.absolutePath,
                     // A missing option ROM must not block the VM itself.
-                    enableNet = if (romPresent) null else false,
+                    enableNet = if (romPresent) config.enableNet else false,
                     dataDir = dataDir,
                     serialSocketPath = attemptSerial,
                     extraArgs = config.extraArgs,

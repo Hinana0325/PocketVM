@@ -19,7 +19,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.3 / QEMU 11.1.2）
+## 版本演进（当前 0.10.4 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -30,6 +30,7 @@
 | 0.10.0 | **升级 QEMU 11.1.2**（Debian `+ds` 源码 + NDK r27c）；适配新版 meson（pixman/`librt`/dtc/pc-bios），RUNPATH 归一 `$ORIGIN` |
 | 0.10.1 | 修正 memfd 垫片：`shm_open` 名字含 `/` 会被 `memfd_create` 拒绝，去掉前导斜杠 |
 | 0.10.2 | 合并远程改动（恢复被覆盖的 QEMU 11 适配 + 保留 glib 镜像/libffi 容错）；新增 `-PpvmSideBySide` 并行安装；纠正版本号回退 |
+| 0.10.4 | **固件升级到 edk2 2026.08**（原为 2024.02，老了两年半）：内置 3 份可选固件（2026.08 普通版 / 2026.08 Secure Boot 版 / 旧 2024.02），默认选最新普通版；同时把**所有引导相关项做成可选**（光驱总线、输入设备、串口自动恢复、网卡、RNG、是否提取引导镜像、CPU 模型） |
 | 0.10.3 | **光驱改走 USB**：edk2 能从 virtio-scsi 光驱引导，但 WinPE 没有 `vioscsi`、读不到 `install.wim`；AHCI 正相反（WinPE 能读，edk2 无驱动引导不了）——**USB 是两边都支持的唯一总线**。新增 `CdTransport`（AUTO/USB/VIRTIO_SCSI），AUTO 先用 USB，若 QEMU 被信号杀死则自动降级 virtio-scsi 重试 |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。

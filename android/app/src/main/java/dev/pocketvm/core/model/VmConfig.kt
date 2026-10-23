@@ -38,6 +38,25 @@ data class VmConfig(
      * whether Windows can be booted at all, not just how fast it reads.
      */
     val cdTransport: CdTransport = CdTransport.AUTO,
+    /** Keyboard/tablet over USB (true) or virtio (false). See QemuCommandBuilder. */
+    val usbInput: Boolean = true,
+    /**
+     * Firmware serial console + automatic UEFI Shell recovery. Off means no
+     * `-serial` at all; keep it on unless you are debugging something else.
+     */
+    val serialRecovery: Boolean = true,
+    /** NIC on/off. Null follows the launch profile. */
+    val enableNet: Boolean? = null,
+    /** virtio-rng on/off. Null follows the launch profile. */
+    val rng: Boolean? = null,
+    /**
+     * Boot a carved-out El Torito image instead of the CD. Off by default: that
+     * image holds only the loader, so Windows Boot Manager cannot find
+     * `sources\boot.wim` on it.
+     */
+    val useBootImage: Boolean = false,
+    /** Overrides the launch profile's CPU model (e.g. `max`, `cortex-a76`). */
+    val cpuModel: String? = null,
     /**
      * How the launcher may degrade when the preferred acceleration profile fails.
      * [LaunchMode.AUTO] tries 标准 → 兼容 → 最小 and keeps whichever starts.

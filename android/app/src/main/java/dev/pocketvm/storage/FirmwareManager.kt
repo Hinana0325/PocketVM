@@ -46,11 +46,16 @@ class FirmwareManager(
         return scan()
     }
 
+    /**
+     * Sorted so the *default* pick is the newest plain (non-Secure-Boot) image:
+     * Secure Boot builds are listed last because they will refuse to start an
+     * unsigned bootloader, which looks exactly like "the ISO is broken".
+     */
     private fun scan(): List<File> = layout.firmwareDir
         .listFiles()
         ?.filter { it.isFile && it.name.endsWith(".fd", ignoreCase = true) }
         ?.filterNot { it.name.contains("vars", ignoreCase = true) }
-        ?.sortedBy { it.name }
+        ?.sortedWith(compareBy<File> { it.name.contains("secboot", ignoreCase = true) }.thenBy { it.name })
         ?: emptyList()
 
     fun resolve(config: VmConfig): File? {

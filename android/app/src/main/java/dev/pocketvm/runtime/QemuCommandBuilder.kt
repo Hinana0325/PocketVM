@@ -27,6 +27,10 @@ data class LaunchRequest(
     /** Bus for the install CD; see [CdTransport]. */
     val cdTransport: CdTransport = CdTransport.AUTO,
     val vmName: String = "PocketVM",
+    /** Overrides [LaunchProfile.cpu] when set. */
+    val cpuModel: String? = null,
+    /** Overrides [LaunchProfile.rng] when set. */
+    val rng: Boolean? = null,
     /** Acceleration/CPU profile; see [LaunchProfile]. */
     val profile: LaunchProfile = LaunchProfile.STANDARD,
     /**
@@ -82,7 +86,7 @@ class QemuCommandBuilder {
         args += request.executable
         args += listOf("-name", sanitizeName(request.vmName))
         args += listOf("-machine", "virt,highmem=on")
-        args += listOf("-cpu", request.profile.cpu)
+        args += listOf("-cpu", request.cpuModel?.takeIf { it.isNotBlank() } ?: request.profile.cpu)
         args += listOf("-smp", request.cpuCores.coerceIn(1, 8).toString())
         args += listOf("-m", request.memoryMb.coerceAtLeast(512).toString())
         // Multi-threaded TCG is the only accelerator available without KVM, but
@@ -198,7 +202,7 @@ class QemuCommandBuilder {
         }
 
         // Windows blocks on entropy during first boot; virtio-rng avoids a 30s stall.
-        if (request.profile.rng) {
+        if (request.rng ?: request.profile.rng) {
             args += listOf("-object", "rng-random,filename=/dev/urandom,id=rng0")
             args += listOf("-device", "virtio-rng-pci,rng=rng0")
         }

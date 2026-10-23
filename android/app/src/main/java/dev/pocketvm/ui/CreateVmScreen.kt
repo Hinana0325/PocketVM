@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.pocketvm.core.config.Severity
+import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.StorageController
 import dev.pocketvm.core.model.VncAccess
@@ -417,6 +418,83 @@ fun CreateVmScreen(
             )
         }
 
+        // Everything that decides whether Windows can be booted at all, exposed
+        // instead of hardcoded: these are the knobs a device-specific failure
+        // usually comes down to.
+        SectionCard(
+            title = "引导相关（可选）",
+            subtitle = "默认组合已适配多数机型；出问题才需要改这里",
+        ) {
+            ChoiceRow(
+                label = "光驱总线",
+                options = listOf(
+                    CdTransport.AUTO to "自动",
+                    CdTransport.USB to "USB",
+                    CdTransport.VIRTIO_SCSI to "virtio-scsi+AHCI",
+                ),
+                selected = draft.cdTransport,
+                onSelect = { value -> onUpdate { it.copy(cdTransport = value) } },
+            )
+            Text(
+                "USB 是 edk2 与 WinPE 都支持的唯一总线（edk2 无 AHCI 驱动，WinPE 无 vioscsi）。" +
+                    "「自动」先用 USB，若 QEMU 被信号杀死则回退 virtio-scsi——回退后能进固件但装不了系统。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            ChoiceRow(
+                label = "输入设备",
+                options = listOf(true to "USB", false to "virtio"),
+                selected = draft.usbInput,
+                onSelect = { value -> onUpdate { it.copy(usbInput = value) } },
+            )
+
+            ChoiceRow(
+                label = "串口自动恢复",
+                options = listOf(true to "开", false to "关"),
+                selected = draft.serialRecovery,
+                onSelect = { value -> onUpdate { it.copy(serialRecovery = value) } },
+            )
+            Text(
+                "开启后监听固件串口，检测到 UEFI Shell 会自动输入引导命令。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            ChoiceRow(
+                label = "网卡",
+                options = listOf(null to "跟随档位", true to "开", false to "关"),
+                selected = draft.enableNet,
+                onSelect = { value -> onUpdate { it.copy(enableNet = value) } },
+            )
+            ChoiceRow(
+                label = "virtio-rng",
+                options = listOf(null to "跟随档位", true to "开", false to "关"),
+                selected = draft.rng,
+                onSelect = { value -> onUpdate { it.copy(rng = value) } },
+            )
+
+            ChoiceRow(
+                label = "提取引导镜像",
+                options = listOf(false to "关（推荐）", true to "开"),
+                selected = draft.useBootImage,
+                onSelect = { value -> onUpdate { it.copy(useBootImage = value) } },
+            )
+            Text(
+                "抠出的 El Torito 镜像只有启动管理器、没有 boot.wim，开启后 Windows 会引导失败；" +
+                    "仅当固件完全读不出光盘时才值得一试。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            ChoiceRow(
+                label = "CPU 模型",
+                options = listOf(null to "跟随档位", "max" to "max", "cortex-a76" to "cortex-a76"),
+                selected = draft.cpuModel,
+                onSelect = { value -> onUpdate { it.copy(cpuModel = value) } },
+            )
+        }
+
         if (state.issues.isNotEmpty()) {
             SectionCard(title = "启动前检查", subtitle = "错误会阻止启动，警告不会") {
                 state.issues.forEach { issue ->
@@ -486,5 +564,37 @@ private fun SliderRow(
             valueRange = valueRange,
             steps = steps,
         )
+    }
+}
+
+/**
+ * One labelled row of mutually exclusive options.
+ *
+ * Generic on purpose: the boot-related settings are a mix of enums, Booleans and
+ * nullable Booleans (null = "follow the launch profile"), and each of them used
+ * to be a hardcoded constant. Keeping one widget means adding a knob is one line.
+ */
+@Composable
+private fun <T> ChoiceRow(
+    label: String,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+) {
+    Column {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { (value, text) ->
+                if (value == selected) {
+                    Button(onClick = { }) { Text(text) }
+                } else {
+                    OutlinedButton(onClick = { onSelect(value) }) { Text(text) }
+                }
+            }
+        }
     }
 }
