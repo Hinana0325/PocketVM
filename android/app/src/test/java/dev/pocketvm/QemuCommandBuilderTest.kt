@@ -87,26 +87,42 @@ class QemuCommandBuilderTest {
     }
 
     @Test
-    fun `default storage is nvme plus a usb cdrom`() {
+    fun `default storage is nvme plus the cd on both buses`() {
         val args = builder.build(request())
         assertTrue("磁盘必须是 NVMe，安装程序才有原生驱动", args.any { it.startsWith("nvme,drive=disk0") })
-        assertTrue("光盘必须走 USB，安装程序才有原生驱动", args.any { it.startsWith("usb-storage,drive=cd0") })
+        // The CD is attached twice on purpose: firmware (edk2 on ARM virt) has
+        // no AHCI driver and can only boot virtio-scsi, while WinPE has no
+        // vioscsi and can only read install.wim from AHCI. See QemuCommandBuilder.
+        assertTrue(
+            "光驱挂 virtio-scsi：固件侧唯一的引导路径",
+            args.any { it == "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1" },
+        )
+        assertTrue(
+            "同一个 ISO 再挂 AHCI：Windows 侧读 install.wim 的路径",
+            args.any { it == "ide-cd,drive=cd1,bus=ahci.0" },
+        )
+        assertFalse("usb-storage 在本机必 SIGILL", args.any { it.startsWith("usb-storage") })
         assertFalse("NVMe 模式下不应出现 virtio-blk", args.any { it.startsWith("virtio-blk-pci") })
+        assertTrue(
+            "控制器必须先于挂在上面的设备出现",
+            args.indexOf("virtio-scsi-pci,id=scsi0") < args.indexOf("scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1"),
+        )
         assertEquals("order=d", valueOf(args, "-boot"))
     }
 
     @Test
-    fun `virtio mode keeps virtio-blk and scsi cdrom`() {
+    fun `virtio mode keeps virtio-blk for the disk and the cd on both buses`() {
         val args = builder.build(request().copy(storageController = StorageController.VIRTIO))
         assertTrue(args.any { it.startsWith("virtio-blk-pci,drive=disk0") })
-        assertTrue(args.any { it.startsWith("scsi-cd,drive=cd0") })
+        assertTrue(args.any { it == "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1" })
+        assertTrue(args.any { it == "ide-cd,drive=cd1,bus=ahci.0" })
         assertFalse(args.any { it.startsWith("nvme,") })
     }
 
     @Test
     fun `without iso the disk boots and no cdrom is attached`() {
         val args = builder.build(request(iso = null))
-        assertFalse(args.any { it.startsWith("scsi-cd") || it.startsWith("usb-storage") })
+        assertFalse("不应挂光驱", args.any { it.startsWith("ide-cd") || it.startsWith("scsi-cd") || it.startsWith("usb-storage") })
         assertEquals("order=c", valueOf(args, "-boot"))
     }
 
@@ -227,25 +243,48 @@ class QemuCommandBuilderTest {
     fun `boot image goes on virtio-blk, never on the usb stack`() {
         // The USB mass-storage path is what produced SIGILL (exit=132) on the
         // test device; edk2 talks to virtio-blk directly, so the boot image must
-        // not drag in xhci -> usb-storage again.
+        // not drag in xhci -> usb-storage again. It still sits behind the CD:
+        // the image holds only the loader, with no \boot\bcd and no boot.wim.
         val args = builder.build(request().copy(bootImagePath = "/images/win.boot.img"))
-        assertTrue(args.any { it.startsWith("virtio-blk-pci,drive=boot0,bootindex=1") })
+        assertTrue(args.any { it.startsWith("virtio-blk-pci,drive=boot0,bootindex=2") })
         assertFalse("引导镜像不能走 USB", args.any { it.contains("usb-storage,drive=boot0") })
+        assertEquals("CD 仍是第一引导项", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1", args.first { it.startsWith("scsi-cd") })
         assertEquals("磁盘让位到第三位", "nvme,drive=disk0,serial=PVMDISK0,bootindex=3", args.first { it.startsWith("nvme,") })
     }
 
     @Test
-    fun `without a boot image the disk boots first again`() {
+    fun `without a boot image the disk boots second, behind the cd`() {
         val args = builder.build(request().copy(bootImagePath = null))
         assertFalse(args.any { it.contains("boot0") })
-        assertEquals("nvme,drive=disk0,serial=PVMDISK0,bootindex=1", args.first { it.startsWith("nvme,") })
+        assertEquals("nvme,drive=disk0,serial=PVMDISK0,bootindex=2", args.first { it.startsWith("nvme,") })
     }
 
     @Test
-    fun `usb is only present when a cdrom is attached`() {
-        val noMedia = builder.build(request(iso = null).copy(profile = LaunchProfile.MINIMAL_NO_MEDIA))
-        assertFalse("没有介质就不需要 xhci", noMedia.any { it == "qemu-xhci,id=xhci" })
-        val withCd = builder.build(request())
-        assertTrue(withCd.any { it == "qemu-xhci,id=xhci" })
+    fun `input goes over usb, on a controller declared before it`() {
+        val args = builder.build(request())
+        assertTrue(args.any { it == "usb-kbd,bus=xhci.0" })
+        assertTrue(args.any { it == "usb-tablet,bus=xhci.0" })
+        assertFalse(
+            "不再依赖 virtio 输入",
+            args.any { it == "virtio-keyboard-pci" || it == "virtio-tablet-pci" },
+        )
+        assertTrue(
+            "控制器必须先于挂在上面的设备出现，否则 QEMU 报 Bus 'xhci.0' not found",
+            args.indexOf("qemu-xhci,id=xhci") < args.indexOf("usb-kbd,bus=xhci.0"),
+        )
+    }
+
+    @Test
+    fun `xhci is present for usb input even with no cdrom`() {
+        // The old rule was "xhci only when a CD is attached"; USB input needs the
+        // controller whether or not there is media.
+        val usb = builder.build(request(iso = null).copy(profile = LaunchProfile.MINIMAL_NO_MEDIA))
+        assertTrue(usb.any { it == "qemu-xhci,id=xhci" })
+
+        val virtio = builder.build(
+            request(iso = null).copy(profile = LaunchProfile.MINIMAL_NO_MEDIA, usbInput = false),
+        )
+        assertFalse("virtio 输入且无介质时不该有 xhci", virtio.any { it == "qemu-xhci,id=xhci" })
+        assertTrue(virtio.any { it == "virtio-keyboard-pci" })
     }
 }

@@ -18,6 +18,12 @@ sealed interface VmRuntimeState {
         val startedAtEpochMs: Long,
         val vncPort: Int,
         val logPath: String,
+        /**
+         * Progress inferred from the guest's serial console. Defaults to the
+         * first stage so a launch that never prints anything is reported as
+         * "固件启动中" rather than as nothing at all.
+         */
+        val stage: BootStage = BootStage.FIRMWARE,
     ) : VmRuntimeState
 
     data class Stopping(val vmId: String) : VmRuntimeState

@@ -18,10 +18,15 @@ object QemuAssets {
 
     private const val ASSET_ROOT = "qemu"
     private const val FIRMWARE_ROOT = "firmware"
-    // v3: previous builds could leave a 2 MiB -bios image behind with a valid
-    // marker, which made QEMU fail with "pflash0 block backend provides 2097152
-    // bytes". The marker is now only trusted together with a size check.
-    private const val MARKER = ".extracted-v3"
+    // v4: a marker change now re-extracts the bundle unconditionally. The v3
+    // logic returned early whenever a plausible .fd was already on disk, so a
+    // stale image could never be replaced without the user clearing app data by
+    // hand — a real defect regardless of what the bundle holds.
+    // (v4 was first cut to swap the bundled firmware for QEMU's own edk2, on the
+    // belief that Ubuntu's build lacked an AHCI driver while QEMU's had it. That
+    // came from misreading an x86 virtio-net option ROM message: NEITHER build
+    // carries AHCI support. The bundled firmware is the same as v3.)
+    private const val MARKER = ".extracted-v4"
 
     /**
      * Independent marker for the `-L` data dir. v3 puts `efi-virtio.rom` at the
@@ -77,27 +82,32 @@ object QemuAssets {
         return try {
             val target = layout.firmwareDir
             val marker = File(target, MARKER)
-            val plausible = hasPlausibleFirmware(target)
-            if (marker.isFile && plausible) return target
+            if (marker.isFile && hasPlausibleFirmware(target)) return target
 
-            // A user-supplied 64 MiB image is kept; only stale small ones (the
-            // old 2 MiB -bios file) are removed, because they shadow the bundle.
-            if (!plausible) {
-                target.listFiles()
-                    ?.filter { it.isFile && it.name.endsWith(".fd", ignoreCase = true) }
-                    ?.filter { !it.name.contains("vars", ignoreCase = true) }
-                    ?.filter { it.length() < MIN_PFLASH_BYTES }
-                    ?.forEach { it.delete() }
-            }
-            if (hasPlausibleFirmware(target)) {
-                marker.parentFile?.mkdirs()
-                marker.writeText("ok")
-                return target
-            }
+            // A missing marker means "first run, or the bundle changed", so the
+            // bundled image is written out even when a plausible one is already
+            // on disk — otherwise a stale bundle keeps winning forever. Stale
+            // *small* images (the old 2 MiB -bios file) shadow the bundle and are
+            // dropped; a firmware the user imported under a different name is
+            // left alone and stays selectable.
+            target.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".fd", ignoreCase = true) }
+                ?.filter { !it.name.contains("vars", ignoreCase = true) }
+                ?.filter { it.length() < MIN_PFLASH_BYTES }
+                ?.forEach { it.delete() }
 
-            if (!hasAssets(context.assets, FIRMWARE_ROOT)) return null
+            if (!hasAssets(context.assets, FIRMWARE_ROOT)) {
+                // Nothing packaged to extract: whatever is on disk is all there is.
+                if (hasPlausibleFirmware(target)) {
+                    marker.parentFile?.mkdirs()
+                    marker.writeText("ok")
+                    return target
+                }
+                return null
+            }
             target.mkdirs()
             copyTree(context.assets, FIRMWARE_ROOT, target)
+            marker.parentFile?.mkdirs()
             marker.writeText("ok")
             target
         } catch (t: Throwable) {

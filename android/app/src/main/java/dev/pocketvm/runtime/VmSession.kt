@@ -8,13 +8,16 @@ import android.os.Build
 import dev.pocketvm.core.config.ConfigValidator
 import dev.pocketvm.core.config.ValidationInput
 import dev.pocketvm.core.config.ValidationReport
+import dev.pocketvm.core.model.BootStage
 import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.core.model.VncAccess
+import dev.pocketvm.diagnostics.AgentFeed
 import dev.pocketvm.diagnostics.DiagnosticsExporter
 import dev.pocketvm.diagnostics.LogTail
+import dev.pocketvm.diagnostics.ProcessHealth
 import dev.pocketvm.diagnostics.RunManifestStore
 import dev.pocketvm.storage.CheckOutcome
 import dev.pocketvm.storage.DiskProvisioner
@@ -29,18 +32,26 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.OutputStream
-import java.net.SocketTimeoutException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+
+/**
+ * What Windows Setup prints before a CD boot, and the last moment the app can
+ * still answer it: the loader gives up after ~5 s and falls through to the next
+ * boot option. Matched against the serial stream, which may split it mid-word.
+ */
+private const val CD_BOOT_PROMPT = "Press any key to boot from CD"
 
 sealed interface LaunchOutcome {
     /**
@@ -86,6 +97,29 @@ class VmSession(
     private var qemuProcess: Process? = null
     private var monitorJob: Job? = null
     private var serialWatcherJob: Job? = null
+    private var healthJob: Job? = null
+
+    /** Last CPU-tick sample; the only way to tell "running" from "wedged". */
+    private var lastHealth: ProcessHealth.Sample? = null
+
+    /** Set when a health sample showed a live process burning no CPU. */
+    @Volatile
+    private var sawStall = false
+
+    /**
+     * True while the serial console is attached. The QMP keypress fallback below
+     * consults it: two independent sources answering the same boot prompt is how
+     * stray Enter keystrokes end up inside the booted installer.
+     */
+    private val serialWatcherLive = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Latest stage reported to the console. Monotonic on purpose — a burst of
+     * console output after a Shell drop must not walk the UI back to "loading".
+     */
+    @Volatile
+    private var bootStage = BootStage.FIRMWARE
+
     private var qmp: QmpClient? = null
     private var currentManifest: RunManifest? = null
     private var currentLog: File? = null
@@ -129,8 +163,25 @@ class VmSession(
     suspend fun start(config: VmConfig): LaunchOutcome = mutex.withLock {
         if (isRunning()) return@withLock LaunchOutcome.Failed("已有虚拟机在运行，请先停止。")
 
+        AgentFeed.attach(layout.agentFeedFile())
+        AgentFeed.event(
+            "session.start",
+            "vm" to config.id,
+            "name" to config.name,
+            "mode" to config.launchMode,
+            "cpu" to config.cpuCores,
+            "memMb" to config.memoryMb,
+            "diskGb" to config.diskSizeGb,
+            "controller" to config.storageController,
+            "bootFromCd" to config.bootFromCd,
+            "iso" to config.isoPath,
+            "vncPort" to config.vncPort,
+            "vncAccess" to config.vncAccess,
+        )
+
         stopRequested = false
         preflightNote = null
+        bootStage = BootStage.FIRMWARE
         val notes = mutableListOf<String>()
         val probe = withContext(Dispatchers.IO) { environment.resolve(layout) }
         environmentSummary = buildString {
@@ -143,6 +194,18 @@ class VmSession(
             appendLine("launchMode=${config.launchMode}")
             probe.abortReason?.let { appendLine("abortReason=$it") }
         }
+
+        AgentFeed.event(
+            "probe",
+            "binary" to probe.systemBinary?.file?.absolutePath,
+            "version" to probe.systemBinary?.version,
+            "origin" to probe.systemBinary?.origin,
+            "executable" to probe.systemBinary?.executable,
+            "qemuImg" to probe.imageBinary?.file?.absolutePath,
+            "staticExec" to probe.staticExecOk,
+            "ready" to probe.ready,
+            "abortReason" to probe.abortReason,
+        )
 
         val vmDir = layout.vmDir(config.id)
         val disk = layout.diskFile(config.id)
@@ -163,9 +226,20 @@ class VmSession(
                 qemuDetail = probe.abortReason,
             ),
         )
+        AgentFeed.event(
+            "validation",
+            "errors" to validation.errors.map { it.code },
+            "warnings" to validation.warnings.map { it.code },
+        )
         if (validation.hasErrors) {
             val first = validation.errors.first()
             _state.value = VmRuntimeState.Failed(config.id, first.message, probe.abortReason)
+            AgentFeed.event(
+                "session.rejected",
+                "vm" to config.id,
+                "code" to first.code,
+                "message" to first.message,
+            )
             return@withLock LaunchOutcome.Rejected(validation)
         }
 
@@ -180,12 +254,26 @@ class VmSession(
                 result.files
             }
         }
+        AgentFeed.event(
+            "firmware",
+            "code" to firmware.codePath,
+            "codeBytes" to File(firmware.codePath).length(),
+            "vars" to firmware.varsPath,
+            "varsBytes" to File(firmware.varsPath).length(),
+        )
 
         _state.value = VmRuntimeState.Preparing(config.id, "准备虚拟磁盘")
         val diskReady = when (val result = withContext(Dispatchers.IO) { diskProvisioner.ensure(config, disk) }) {
             is DiskResult.Failure -> return@withLock fail(config.id, result.message)
             is DiskResult.Ready -> result
         }
+        AgentFeed.event(
+            "disk",
+            "path" to diskReady.file.absolutePath,
+            "format" to diskReady.format,
+            "created" to diskReady.created,
+            "usedBytes" to diskReady.file.length(),
+        )
 
         // A previous session that died (killed by Android, crash, power loss) can
         // leave a qcow2 with leaked or inconsistent metadata. Booting on top of
@@ -196,6 +284,7 @@ class VmSession(
         if (unclean) {
             _state.value = VmRuntimeState.Preparing(config.id, "检查虚拟磁盘一致性")
             val check = withContext(Dispatchers.IO) { diskProvisioner.check(diskReady.file) }
+            AgentFeed.event("disk.check", "outcome" to check.outcome, "detail" to check.detail)
             when (check.outcome) {
                 CheckOutcome.CLEAN -> notes += "上次异常退出，磁盘检查通过"
                 CheckOutcome.REPAIRED -> notes += "上次异常退出，已修复磁盘元数据：${check.detail.orEmpty()}"
@@ -294,6 +383,7 @@ class VmSession(
         var lastHint: String? = null
         var representativeDetail: String? = null
         var bootImageDropped = false
+        var configFatal = false
 
         var index = 0
         while (index < ladder.size) {
@@ -312,6 +402,10 @@ class VmSession(
             socket.delete()
             layout.serialSocket(config.id).delete()
             currentLog = logFile
+            // Serial is only useful when a CD is actually attached — the no-media
+            // rung has nothing for the shell recovery to boot. 0.9.2 computed this
+            // path once, before the ladder, and ignored dropMedia.
+            val attemptSerial = serialSocketPath?.takeUnless { profile.dropMedia }
 
             val argv = commandBuilder.build(
                 LaunchRequest(
@@ -334,7 +428,7 @@ class VmSession(
                     // A missing option ROM must not block the VM itself.
                     enableNet = if (romPresent) null else false,
                     dataDir = dataDir,
-                    serialSocketPath = serialSocketPath,
+                    serialSocketPath = attemptSerial,
                     extraArgs = config.extraArgs,
                 ),
             )
@@ -363,6 +457,19 @@ class VmSession(
             )
             currentManifest = manifest
             manifests.write(manifest)
+            AgentFeed.event(
+                "attempt.start",
+                "run" to runId,
+                "profile" to profile.name,
+                "attempt" to index + 1,
+                "bootImage" to (bootImage != null),
+                "serial" to (attemptSerial != null),
+                "media" to (iso != null && !profile.dropMedia),
+                // The full argv, because on a device the only other way to get it
+                // is reading /proc/<pid>/cmdline — and by then the process that
+                // had it is usually already gone.
+                "argv" to argv.joinToString(" "),
+            )
 
             val launched = try {
                 ProcessBuilder(argv)
@@ -404,6 +511,13 @@ class VmSession(
                     !launched.waitFor(2_500, TimeUnit.MILLISECONDS) && launched.isAlive
                 }
             }
+            AgentFeed.event(
+                "attempt.qmp",
+                "run" to runId,
+                "confirmed" to confirmed,
+                "alive" to launched.isAlive,
+                "healthy" to healthy,
+            )
             if (healthy) {
                 // Arm the password before announcing "running": with password=on
                 // and no key set every client is rejected, so the window must be
@@ -421,14 +535,30 @@ class VmSession(
                     vncPort = effectivePort,
                     logPath = logFile.absolutePath,
                 )
+                AgentFeed.event(
+                    "attempt.running",
+                    "run" to runId,
+                    "profile" to profile.name,
+                    "pid" to pidOf(launched),
+                    "vncPort" to effectivePort,
+                    "log" to logFile.absolutePath,
+                )
                 monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
+                startHealthWatch(launched)
                 // Watch the firmware serial console for a UEFI Shell drop and
                 // recover automatically — the backup plan for devices whose edk2
                 // will not auto-boot the CD.
-                startSerialWatcher(launched, serialSocketPath, layout.serialLogFile(config.id, runId), logFile)
+                startSerialWatcher(launched, attemptSerial, layout.serialLogFile(config.id, runId), logFile)
                 if (config.bootFromCd) {
+                    // Fallback only: the serial watcher answers the same prompt
+                    // the moment it sees it, and two independent sources typing
+                    // Enter is exactly how stray keys end up inside the booted
+                    // installer. This path exists for devices whose console never
+                    // attached at all.
                     scope.launch {
                         delay(7_000)
+                        if (serialWatcherLive.get()) return@launch
+                        AgentFeed.event("boot.qmp_fallback", "reason" to "serial console 未接入")
                         runCatching { client.sendKey("ret") }
                         delay(5_000)
                         runCatching { client.sendKey("ret") }
@@ -445,6 +575,7 @@ class VmSession(
             val code = exitCodeOf(launched)
             runCatching { launched.destroyForcibly() }
             runCatching { serialWatcherJob?.cancel() }
+            runCatching { healthJob?.cancel() }
             qemuProcess = null
             activeVmId = null
             client.close()
@@ -464,12 +595,41 @@ class VmSession(
                     logExcerpt = detail,
                 ),
             )
+            AgentFeed.event(
+                "attempt.failed",
+                "run" to runId,
+                "profile" to profile.name,
+                "attempt" to index + 1,
+                "exitCode" to code,
+                "signal" to signalName(code),
+                // 0 means QEMU was killed before writing a single byte, which is
+                // exactly why FailureHints finds nothing and failureHint stays
+                // null in the manifest.
+                "logBytes" to logFile.length(),
+                "hint" to hint,
+                "detail" to detail,
+            )
             lastHint = hint
             if (detail != null) representativeDetail = detail
             failedAttempts += buildString {
                 append(profile.label).append(" exit=").append(code)
                 signalName(code)?.let { append("/").append(it) }
                 if (bootImage != null) append("（带引导镜像）")
+            }
+
+            // A rejection from the command line — or from a path every profile shares —
+            // reads identically under 标准/兼容/最小, so the rest of the ladder would
+            // only repeat it. One device run turned a single VNC-password rejection
+            // into five identical attempts whose summary named none of them.
+            if (FailureHints.isConfigFatal(logText)) {
+                configFatal = true
+                AgentFeed.event(
+                    "ladder.aborted",
+                    "run" to runId,
+                    "profile" to profile.name,
+                    "detail" to detail,
+                )
+                break
             }
 
             // Boot image attached and the attempt still died: drop that variable
@@ -495,10 +655,20 @@ class VmSession(
                 append("所有启动模式都失败（").append(failedAttempts.joinToString(" / ")).append("）")
             }
             append("\nQEMU：").append(representativeDetail ?: "没有任何输出")
+            if (configFatal) {
+                append("\n（QEMU 拒绝的是启动参数，与加速档位无关，已跳过其余档位）")
+            }
             if (bootImageDropped) {
                 append("\n（引导镜像已挂载时 QEMU 直接崩溃，本次已回退为光盘引导）")
             }
         }
+        AgentFeed.event(
+            "session.failed",
+            "vm" to config.id,
+            "attempts" to failedAttempts,
+            "detail" to representativeDetail,
+            "hint" to lastHint,
+        )
         _state.value = VmRuntimeState.Failed(config.id, summary, lastHint ?: representativeDetail)
         return@withLock LaunchOutcome.Failed(summary, lastHint ?: representativeDetail)
     }
@@ -518,6 +688,7 @@ class VmSession(
                 // The console of a non-running VM must not kill somebody else's.
                 return@withLock
             }
+            AgentFeed.event("stop.requested", "vm" to vmId)
             stopRequested = true
             _state.value = VmRuntimeState.Stopping(vmId)
             val client = qmp
@@ -545,6 +716,7 @@ class VmSession(
                     active.waitFor(3, TimeUnit.SECONDS)
                 }
             }
+            AgentFeed.event("stop.done", "vm" to vmId, "alive" to active.isAlive)
             // Settle the state transition before releasing the lock so a
             // start() right after stop() sees a clean slate.
             val monitor = monitorJob
@@ -555,6 +727,37 @@ class VmSession(
     }
 
     fun readLog(maxLines: Int = 400): String = currentLog?.let { LogTail.read(it, maxLines = maxLines) } ?: ""
+
+    /**
+     * Tail of the guest's serial console for the current run.
+     *
+     * This is the only in-app view of what the guest is doing: the guest screen
+     * goes to a VNC client, and QEMU itself prints nothing on a healthy launch.
+     * The firmware trace — boot options, a Shell drop, the installer's prompt —
+     * lands here and nowhere else, so the console screen shows it verbatim.
+     */
+    fun readSerialTail(maxLines: Int = 120): String {
+        val manifest = currentManifest ?: return ""
+        val file = layout.serialLogFile(manifest.vmId, manifest.runId)
+        if (!file.exists()) return ""
+        return LogTail.read(file, maxBytes = 64 * 1024, maxLines = maxLines)
+    }
+
+    /**
+     * Publishes [stage] to the UI, never moving backwards.
+     *
+     * Called from the serial watcher and the health probe, i.e. from two
+     * coroutines that can fire in any order; the monotonic check keeps the
+     * reported stage meaningful when they interleave.
+     */
+    private fun publishStage(stage: BootStage) {
+        if (stage.ordinal <= bootStage.ordinal) return
+        bootStage = stage
+        _state.update { current ->
+            if (current is VmRuntimeState.Running) current.copy(stage = stage) else current
+        }
+        AgentFeed.event("boot.stage", "stage" to stage.name, "label" to stage.label)
+    }
 
     /**
      * Watches the firmware serial console and auto-recovers from a UEFI Shell drop.
@@ -601,6 +804,8 @@ class VmSession(
 
             val input = socket.inputStream
             val output = socket.outputStream
+            serialWatcherLive.set(true)
+            AgentFeed.event("serial.connected", "path" to path)
             runCatching { socket.soTimeout = 1500 }
             val log = runCatching {
                 logFile.bufferedWriter().also {
@@ -609,40 +814,106 @@ class VmSession(
                 }
             }.getOrNull()
             val serial = StringBuilder(8192)
+            // Measured on the Xiaomi 14 Pro: this QEMU_EFI.fd has no AHCI driver,
+            // so the install CD on ich9-ahci is invisible to the firmware and
+            // `fs0:\EFI\BOOT\BOOTAA64.EFI` reports "not recognized". What the
+            // Shell does offer is the extracted El Torito boot image on
+            // virtio-blk, and that loader still needs the CD. The candidates stay
+            // as a last resort for devices that do mount a filesystem here.
             val candidates = listOf("fs0", "fs1", "fs2", "fs3")
-            var recovered = false
+            // 0 = nothing typed yet, 1 = `map` sent, n>1 = candidate n-2 sent.
+            var shellStep = 0
+            var bootPromptSeen = false
+            var lastCommandAt = 0L
+            var lastCdKeyAt = 0L
+            var totalBytes = 0L
             val bytes = ByteArray(256)
+            var consecutiveReadFailures = 0
             try {
                 while (process.isAlive) {
-                    val n = runCatching { input.read(bytes) }.getOrElse { -1 }
+                    // Anything thrown by this read means only "no data yet".
+                    // LocalSocket reports a read timeout as IOException("Try
+                    // again") (EAGAIN), not as SocketTimeoutException, so catching
+                    // only SocketTimeoutException let it escape the coroutine and
+                    // killed the whole app. Bounded, so a permanently broken
+                    // socket cannot spin here forever.
+                    val n = try {
+                        input.read(bytes)
+                    } catch (t: Throwable) {
+                        if (++consecutiveReadFailures > 200) break
+                        delay(50)
+                        continue
+                    }
+                    consecutiveReadFailures = 0
                     if (n < 0) break
                     val chunk = String(bytes, 0, n, Charsets.US_ASCII)
+                    val firstBytes = totalBytes == 0L
+                    totalBytes += n
                     serial.append(chunk)
                     log?.write(chunk)
                     log?.flush()
                     // Keep only the recent tail; "Shell>" survives well within it.
                     if (serial.length > 8192) serial.delete(0, serial.length - 8192)
-                    if (!recovered && serial.contains("Shell>")) {
-                        recovered = true
-                        // List devices first so the diagnostics zip shows which
-                        // volume actually holds \EFI\BOOT\BOOTAA64.EFI.
-                        sendSerial(output, "map\r")
-                        delay(1_200)
-                        for (fs in candidates) {
+                    // Anything at all on the console means firmware is executing,
+                    // which is strictly more than "QEMU is up".
+                    if (firstBytes) publishStage(BootStage.LOADING)
+
+                    val now = System.currentTimeMillis()
+
+                    // Windows 安装盘从 CD 引导前会先问 "Press any key to boot from
+                    // CD or DVD"，5 秒内没人按键就放弃、回落下一个启动项 —— 手机上
+                    // 用户根本来不及切到 VNC 去按，于是永远停在 UEFI Shell。串口输入
+                    // 是能到达 ConIn 的（我们在 Shell 里打的命令确实被执行了），所以
+                    // 这里替他回车。冷却 3 秒：一次提示只按一次，多按的键会漏进后面
+                    // 已经接管控制台的客户机。
+                    if (serial.contains(CD_BOOT_PROMPT) && now - lastCdKeyAt > 3_000) {
+                        lastCdKeyAt = now
+                        bootPromptSeen = true
+                        publishStage(BootStage.BOOT_PROMPT)
+                        AgentFeed.event("serial.boot_prompt", "path" to path, "bytes" to totalBytes)
+                        sendSerial(output, "\r")
+                        qemuLog?.let { appendLogMarker(it, "客户机等待“按任意键从 CD 启动”，已自动回车") }
+                    }
+
+                    // 兜底：固件没选中启动项、掉进 UEFI Shell 时，替用户敲一条 EFI
+                    // 引导命令。一次只发一条，并等上一条的结论（Shell 报错也要几秒），
+                    // 否则盲打出来的字符会掺进下一阶段的客户机 —— 实测就是这样把
+                    // BOOTAA64.EFI 打成了 BOOTA.EFI。
+                    if (!bootPromptSeen && shellStep <= candidates.size &&
+                        serial.contains("Shell>") && now - lastCommandAt > 2_500
+                    ) {
+                        lastCommandAt = now
+                        if (shellStep == 0) {
+                            // List the volumes first so the diagnostics zip records
+                            // which one actually holds \EFI\BOOT\BOOTAA64.EFI.
+                            sendSerial(output, "map\r")
+                        } else {
+                            val fs = candidates[shellStep - 1]
+                            publishStage(BootStage.SHELL_RESCUE)
+                            AgentFeed.event("serial.shell", "path" to path, "typed" to fs)
                             sendSerial(output, "$fs:\\EFI\\BOOT\\BOOTAA64.EFI\r")
-                            delay(1_500)
+                            qemuLog?.let {
+                                appendLogMarker(it, "检测到 UEFI Shell，已自动输入 $fs:\\EFI\\BOOT\\BOOTAA64.EFI")
+                            }
                         }
-                        qemuLog?.let {
-                            appendLogMarker(
-                                it,
-                                "检测到 UEFI Shell，已自动尝试引导 ${candidates.joinToString("/")}{\\EFI\\BOOT\\BOOTAA64.EFI",
-                            )
-                        }
+                        shellStep++
                     }
                 }
-            } catch (_: SocketTimeoutException) {
-                // read() timed out with no data: loop and re-check liveness.
+            } catch (t: Throwable) {
+                // Nothing may escape this coroutine: an unhandled exception here is
+                // a FATAL EXCEPTION that takes the app down with it.
+                AgentFeed.event("serial.error", "path" to path, "error" to t.toString())
             } finally {
+                serialWatcherLive.set(false)
+                // 0 bytes means the guest never wrote a single character to the
+                // console — the signature of a launch that died before firmware ran.
+                AgentFeed.event(
+                    "serial.closed",
+                    "path" to path,
+                    "bytes" to totalBytes,
+                    "bootPrompt" to bootPromptSeen,
+                    "shellCommands" to shellStep,
+                )
                 runCatching { log?.close() }
                 runCatching { socket.close() }
             }
@@ -660,6 +931,57 @@ class VmSession(
         File(logFile.absolutePath).appendText("[PocketVM] $line\n")
     }
 
+    /**
+     * Periodically reports process health to the debug channel.
+     *
+     * `isAlive` cannot tell "running" from "wedged": QEMU can block inside its
+     * main loop with the process alive, the VNC socket still LISTENing and TCP
+     * still completing handshakes — while the guest executes nothing and the
+     * listener never accepts. Discovered on a real device only by hand-reading
+     * `/proc/<pid>/stat`; the app reported 运行中 the whole time. The kernel's
+     * CPU accounting is the one objective signal.
+     *
+     * Observation only: a stall is recorded, not acted on. Turning it into a UI
+     * state or an automatic restart is a separate decision.
+     */
+    private fun startHealthWatch(process: Process) {
+        healthJob?.cancel()
+        val pid = pidOf(process)
+        if (pid <= 0) return
+        sawStall = false
+        lastHealth = ProcessHealth.sample(pid)
+        healthJob = scope.launch(Dispatchers.IO) {
+            try {
+                while (isActive && process.isAlive) {
+                    delay(HEALTH_INTERVAL_MS)
+                val now = ProcessHealth.sample(pid) ?: run {
+                // A null sample means /proc/<pid>/stat became unreadable (the process
+                // is being reaped, or the ROM tightened read permissions). Say so
+                // instead of letting the heartbeats simply stop.
+                AgentFeed.event("health.probe_lost", "pid" to pid)
+                return@launch
+            }
+                val stalled = ProcessHealth.stalled(lastHealth, now)
+                if (stalled == true) sawStall = true
+                AgentFeed.event(
+                    "health",
+                    "pid" to pid,
+                    "alive" to process.isAlive,
+                    "cpuTicks" to now.cpuTicks,
+                    "dTicks" to (now.cpuTicks - (lastHealth?.cpuTicks ?: now.cpuTicks)),
+                    "stalled" to stalled,
+                    "qmpOpen" to (qmp != null),
+                )
+                lastHealth = now
+                }
+            } catch (t: Throwable) {
+                // Same rule as the serial watcher: never let a monitoring failure
+                // become a FATAL EXCEPTION.
+                AgentFeed.event("health.error", "pid" to pid, "error" to t.toString())
+            }
+        }
+    }
+
     fun exportDiagnostics(vmId: String): Result<File> = diagnostics.export(vmId, environmentSummary)
 
     private suspend fun awaitExit(process: Process, manifest: RunManifest, logFile: File) {
@@ -671,6 +993,7 @@ class VmSession(
         if (ownsSession) {
             runCatching { qmp?.close() }
             runCatching { serialWatcherJob?.cancel() }
+            runCatching { healthJob?.cancel() }
             qmp = null
             qemuProcess = null
             activeVmId = null
@@ -693,6 +1016,16 @@ class VmSession(
                 },
                 failureHint = hint,
             ),
+        )
+        AgentFeed.event(
+            "run.exit",
+            "vm" to manifest.vmId,
+            "run" to manifest.runId,
+            "exitCode" to code,
+            "signal" to signalName(code),
+            "stoppedByUser" to stoppedByUser,
+            "logBytes" to logFile.length(),
+            "sawStall" to sawStall,
         )
         if (ownsSession) {
             _state.value = VmRuntimeState.Exited(
@@ -856,5 +1189,10 @@ class VmSession(
         141 -> "SIGPIPE"
         143 -> "SIGTERM"
         else -> null
+    }
+
+    private companion object {
+        /** Must exceed the floor in [ProcessHealth.stalled] or no verdict is ever reached. */
+        const val HEALTH_INTERVAL_MS = 10_000L
     }
 }

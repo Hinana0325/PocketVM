@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# 交叉编译 QEMU (aarch64-linux-android, TCG only) —— **动态链接**版本。
-# 默认 11.1.2；产物结构在 9.x/10.x/11.x 间保持兼容。
+# 交叉编译 QEMU 9.2.3 (aarch64-linux-android, TCG only) —— **动态链接**版本。
 #
 # 为什么要动态链接（static 版本在真机上 exit=139，已实测）：
 #   * NDK 默认产物是 PIE(ET_DYN)，由 Android 自己的 /system/bin/linker64 做
@@ -23,7 +22,7 @@
 #   产物：$WORK/out-jni/*.so（直接 cp 到 app/src/main/jniLibs/arm64-v8a/）
 #
 set -euo pipefail
-QEMU_VERSION="${QEMU_VERSION:-11.1.2}"
+QEMU_VERSION="${QEMU_VERSION:-9.2.3}"
 GLIB_VERSION="${GLIB_VERSION:-2.80.5}"
 API="${API:-30}"
 WORK="${WORK:-$(pwd)/.build-qemu}"
@@ -71,7 +70,9 @@ prepare() {
     command -v patchelf >/dev/null || die "需要 patchelf（apt install patchelf）"
 
     ensure_src "qemu-v${QEMU_VERSION}" "https://gitlab.com/qemu-project/qemu/-/archive/v${QEMU_VERSION}/qemu-v${QEMU_VERSION}.tar.gz" qemu.tar.gz
-    ensure_src "glib-*" "https://download.gnome.org/sources/glib/${GLIB_VERSION%.*}/glib-${GLIB_VERSION}.tar.xz" glib.tar.xz
+    # GNOME 自己的源在某些网络下会对每次连接 reset（实测在这里连续失败），所以 glib
+    # 走 GNOME 的官方 GitHub 镜像 —— 也就是上面注释里一直在用的那种取法。
+    ensure_src "glib-*" "https://codeload.github.com/GNOME/glib/tar.gz/refs/tags/${GLIB_VERSION}" glib.tar.gz
     ensure_src "pcre2-*" "https://codeload.github.com/PCRE2Project/pcre2/tar.gz/refs/tags/pcre2-10.44" pcre2.tar.gz
     ensure_src "libffi-*" "https://codeload.github.com/libffi/libffi/tar.gz/refs/tags/v3.4.6" libffi.tar.gz
     ensure_src "pixman-*" "https://cairographics.org/releases/pixman-0.44.2.tar.gz" pixman.tar.gz
@@ -122,7 +123,11 @@ build_deps() {
     ( cd "$SRC"/libffi-* && ./autogen.sh >/dev/null 2>&1 && \
       ./configure --host=aarch64-linux-android --build=x86_64-pc-linux-gnu \
         --prefix="$PREFIX" --enable-shared --disable-static --disable-docs >/dev/null && \
-      make -j"$JOBS" >/dev/null && make install >/dev/null )
+      # 用较新的 automake 重新生成后，libffi 3.4.x 会额外为 --build 宿主再编一份，
+      # 并在子目录的 all-configured 目标上失败（目标库此时已经编好）。让 install
+      # 决定成败即可：它依赖真实产物，编不出来照样会失败。
+      { make -j"$JOBS" >/dev/null 2>&1 || true; } && \
+      make install >/dev/null )
 
     log "pixman (shared)"
     ( cd "$SRC"/pixman-* && rm -rf build-android && \
@@ -161,10 +166,7 @@ patch_qemu() {
 #include <unistd.h>
 static inline int pocketvm_shm_open(const char *name, int oflag, mode_t mode)
 {
-    /* memfd_create rejects names containing '/', but every POSIX shm name
-     * starts with one ("/qemu-<pid>-shm-<n>"), so drop the leading slash. */
-    const char *memfd_name = (name && name[0] == '/') ? name + 1 : name;
-    int fd = (int)syscall(__NR_memfd_create, memfd_name, 0U);
+    int fd = (int)syscall(__NR_memfd_create, name, 0U);
     (void)mode;
     if (fd < 0) return -1;
     if ((oflag & O_TRUNC) && ftruncate(fd, 0) != 0) { close(fd); return -1; }
@@ -175,72 +177,15 @@ static inline int pocketvm_shm_unlink(const char *name) { (void)name; return 0; 
 #define shm_unlink pocketvm_shm_unlink
 #endif
 HDR
-    # Both files call shm_open(3); inject the memfd shim into each.
-    for f in backends/hostmem-shm.c util/oslib-posix.c; do
-        [ -f "$q/$f" ] || continue
-        grep -q pocketvm-android-shm "$q/$f" || \
-            sed -i '1i #include "pocketvm-android-shm.h"' "$q/$f"
-    done
-
-    # QEMU 10+ hard-requires librt when shm_open is absent. bionic has no librt
-    # (shm_open is shimmed / GC'd), so restore the 9.x optional lookup.
-    sed -i "s/rt = cc.find_library('rt', required: true)/rt = cc.find_library('rt', required: false)/" "$q/meson.build"
-
-    # The `+ds` tarball ships no prebuilt ppc .dtb and the host has no dtc.
-    # PocketVM only builds aarch64-softmmu and never uses these; an empty
-    # meson file makes `subdir('dtb')` a no-op.
-    if [ -f "$q/pc-bios/dtb/meson.build" ]; then
-        : > "$q/pc-bios/dtb/meson.build"
-    fi
+    grep -q pocketvm-android-shm "$q/backends/hostmem-shm.c" || \
+        sed -i '1i #include "pocketvm-android-shm.h"' "$q/backends/hostmem-shm.c"
 }
 
 build_qemu() {
     local q="$SRC/qemu-v$QEMU_VERSION"
     patch_qemu
-
-    # `--enable-fdt=internal` builds the bundled dtc, which the Debian `+ds`
-    # tarball strips (no submodules). Reuse a dtc tree from an earlier build so
-    # configure never has to fetch it from the network.
-    if [ ! -d "$q/subprojects/dtc" ]; then
-        local dtc_src
-        dtc_src="$(ls -d "$SRC"/qemu-*/subprojects/dtc 2>/dev/null | grep -v "$q/subprojects/dtc" | head -1)"
-        if [ -n "$dtc_src" ]; then
-            cp -r "$dtc_src" "$q/subprojects/dtc"
-            rm -f "$q/subprojects/dtc/.meson-subproject-wrap-hash.txt"
-            log "复用 dtc 子项目：$dtc_src"
-        fi
-    fi
-
-    # The Debian `+ds` tarball strips the prebuilt firmware blobs from pc-bios.
-    # meson still needs the edk2 .fd.bz2 inputs, so reuse them from an earlier
-    # build tree; --disable-install-blobs stops it installing the rest.
-    if [ ! -f "$q/pc-bios/edk2-aarch64-code.fd.bz2" ]; then
-        local q_real pb_file pb_src
-        q_real="$(readlink -f "$q")"
-        # Find a tree that actually has the blob, ignoring the current one
-        # (which may be reached through a differently named symlink).
-        pb_file="$(ls -d "$SRC"/qemu-*/pc-bios/edk2-aarch64-code.fd.bz2 2>/dev/null | grep -v "^$q_real/" | head -1)"
-        if [ -n "$pb_file" ]; then
-            pb_src="$(dirname "$pb_file")"
-            for f in "$pb_src"/*; do
-                local b; b="$(basename "$f")"
-                [ -e "$q/pc-bios/$b" ] || cp "$f" "$q/pc-bios/$b"
-            done
-            log "复用 pc-bios 固件：$pb_src"
-        fi
-    fi
-
     rm -rf "$q/build-android" && mkdir -p "$q/build-android"
     cd "$q/build-android"
-
-    # `--without-default-features` disables every meson feature, including
-    # pixman, which VNC depends on. Re-enable it when the option exists (all
-    # supported trees have it, but keep the probe so a future removal is safe).
-    local pixman_flag=""
-    if grep -q "option('pixman'" "$q/meson_options.txt" 2>/dev/null; then
-        pixman_flag="--enable-pixman"
-    fi
-
     # 关键差异：没有 --static，保持 PIE；--enable-tools 顺带产出 qemu-img。
     ../configure \
         --cross-prefix="$TC/aarch64-linux-android-" \
@@ -248,8 +193,8 @@ build_qemu() {
         --target-list=aarch64-softmmu \
         --prefix="$OUT" --enable-tools --disable-werror \
         --without-default-features \
-        --enable-tcg --enable-vnc --enable-slirp --enable-fdt=internal $pixman_flag \
-        --disable-docs --disable-guest-agent --disable-plugins --disable-install-blobs \
+        --enable-tcg --enable-vnc --enable-slirp --enable-fdt=internal --enable-pixman \
+        --disable-docs --disable-guest-agent --disable-plugins \
         --extra-cflags="-I$PREFIX/include" \
         --extra-ldflags="-L$PREFIX/lib -Wl,-rpath,\$ORIGIN -Wl,--enable-new-dtags -Wl,-z,max-page-size=16384" \
         > "$WORK/logs/qemu-configure.log" 2>&1 \
@@ -304,13 +249,6 @@ package_libs() {
             patchelf --replace-needed "$need" "$newname" "$f" 2>/dev/null || true
         done
     done < "$tmp"
-
-    # meson embeds the build sysroot in RUNPATH; on-device only $ORIGIN (the
-    # native library dir) must remain, so the APK does not carry host paths.
-    for f in "$OUT"/lib*.so; do
-        case "$(basename "$f")" in libpvm-probe.so) continue ;; esac
-        patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
-    done
 
     log "打包完成："
     ls -la "$OUT"/*.so

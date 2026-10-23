@@ -37,6 +37,14 @@ data class ImportProgress(val copiedBytes: Long, val totalBytes: Long?) {
         get() = totalBytes?.takeIf { it > 0 }?.let { (copiedBytes.toFloat() / it).coerceIn(0f, 1f) }
 }
 
+/** One poll of the live run's on-disk state; a tuple would be unreadable. */
+private data class LogTick(
+    val log: String,
+    val serial: String,
+    val vmId: String?,
+    val usedBytes: Long?,
+)
+
 /** What the environment probe found — shown verbatim so users can trust it. */
 data class EnvSnapshot(
     val ready: Boolean,
@@ -64,6 +72,12 @@ data class UiState(
     val baseline: VmConfig? = null,
     val runtime: VmRuntimeState = VmRuntimeState.Idle,
     val log: String = "",
+    /**
+     * Tail of the guest's serial console. QEMU stays silent on a healthy launch,
+     * so this — not [log] — is what actually shows the firmware picking a boot
+     * option, the installer asking for a keypress, or a Shell drop.
+     */
+    val serial: String = "",
     val argv: kotlin.collections.List<String> = emptyList(),
     val issues: kotlin.collections.List<Issue> = emptyList(),
     val env: EnvSnapshot? = null,
@@ -167,7 +181,14 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openConsole(vmId: String) {
-        _ui.update { it.copy(screen = Screen.Console(vmId), log = container.session.readLog(), notice = null) }
+        _ui.update {
+            it.copy(
+                screen = Screen.Console(vmId),
+                log = container.session.readLog(),
+                serial = container.session.readSerialTail(),
+                notice = null,
+            )
+        }
     }
 
     fun back() {
@@ -258,6 +279,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     busy = false,
                     notice = message,
                     log = container.session.readLog(),
+                    serial = container.session.readSerialTail(),
                     argv = container.session.currentRun()?.argv ?: it.argv,
                 )
             }
@@ -287,6 +309,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update {
             it.copy(
                 log = container.session.readLog(),
+                serial = container.session.readSerialTail(),
                 argv = container.session.currentRun()?.argv ?: it.argv,
             )
         }
@@ -323,7 +346,8 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update {
                 it.copy(
                     notice = if (ok) {
-                        "已输入 fs0:\\EFI\\BOOT\\BOOTAA64.EFI，切到 VNC 看画面；若提示找不到文件，改用 fs1"
+                        "已输入引导命令，Shell 的回应见「固件输出」；" +
+                            "若报 not recognized，说明固件的启动项里没有可用的安装介质"
                     } else {
                         "无法发送按键：QMP 通道不可用"
                     },
@@ -337,7 +361,9 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     /** Answers a pending boot prompt / hits Enter in the guest. */
     fun sendEnter() {
         val ok = container.session.sendKey("ret")
-        _ui.update { it.copy(notice = if (ok) "已发送回车" else "按键发送失败（QMP 未连接）") }
+        _ui.update {
+            it.copy(notice = if (ok) "已向客户机发送回车（应答按键提示）" else "按键发送失败（QMP 未连接）")
+        }
     }
 
     // ---------- media ----------
@@ -518,23 +544,27 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 val running = snapshot.runtime is VmRuntimeState.Running ||
                     snapshot.runtime is VmRuntimeState.Stopping
                 if (running) {
-                    // Both the tail read and the stat are file I/O: never on Main.
-                    val (text, runningId, used) = withContext(Dispatchers.IO) {
+                    // All of these are file reads: never on Main.
+                    val tick = withContext(Dispatchers.IO) {
                         val id = container.session.runningVmId()
-                        Triple(
-                            container.session.readLog(),
-                            id,
-                            id?.let { container.diskProvisioner.usedBytes(container.layout.diskFile(it)) },
+                        LogTick(
+                            log = container.session.readLog(),
+                            serial = container.session.readSerialTail(),
+                            vmId = id,
+                            usedBytes = id?.let {
+                                container.diskProvisioner.usedBytes(container.layout.diskFile(it))
+                            },
                         )
                     }
                     _ui.update { current ->
-                        val nextUsage = if (runningId != null && used != null) {
-                            current.diskUsage + (runningId to used)
+                        val nextUsage = if (tick.vmId != null && tick.usedBytes != null) {
+                            current.diskUsage + (tick.vmId to tick.usedBytes)
                         } else {
                             current.diskUsage
                         }
                         current.copy(
-                            log = if (text != current.log) text else current.log,
+                            log = if (tick.log != current.log) tick.log else current.log,
+                            serial = if (tick.serial != current.serial) tick.serial else current.serial,
                             diskUsage = nextUsage,
                         )
                     }

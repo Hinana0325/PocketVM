@@ -1,10 +1,13 @@
 package dev.pocketvm
 
 import android.app.Application
+import android.os.Build
 import dev.pocketvm.core.config.ConfigValidator
 import dev.pocketvm.core.config.VmConfigStore
+import dev.pocketvm.diagnostics.AgentFeed
 import dev.pocketvm.diagnostics.DiagnosticsExporter
 import dev.pocketvm.diagnostics.RunManifestStore
+import dev.pocketvm.runtime.DeviceInfo
 import dev.pocketvm.runtime.QemuEnvironment
 import dev.pocketvm.runtime.VmSession
 import dev.pocketvm.storage.DiskProvisioner
@@ -49,4 +52,25 @@ class AppContainer(app: Application) {
         diagnostics = diagnostics,
         validator = validator,
     )
+
+    init {
+        // The channel is opened here, not at the first launch, so that "app is up
+        // but no VM was ever started" is visible from outside — that is precisely
+        // when the paths, version and device facts are worth having. The probe is
+        // deliberately not run: it executes QEMU, which is a launch-time concern.
+        AgentFeed.attach(layout.agentFeedFile())
+        AgentFeed.event(
+            "app.start",
+            "version" to BuildConfig.VERSION_NAME,
+            "package" to app.packageName,
+            "model" to "${Build.MANUFACTURER} ${Build.MODEL}",
+            "android" to Build.VERSION.RELEASE,
+            "sdk" to Build.VERSION.SDK_INT,
+            "abi" to DeviceInfo.abi(),
+            "soc" to DeviceInfo.socLabel(),
+            "pageSizeKb" to DeviceInfo.pageSizeKb(),
+            "nativeLibDir" to app.applicationInfo.nativeLibraryDir,
+            "root" to layout.root.absolutePath,
+        )
+    }
 }

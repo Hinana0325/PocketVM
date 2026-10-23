@@ -53,6 +53,10 @@ class DiagnosticsExporter(
 
             add("device.txt", deviceReport().toByteArray())
             environmentSummary?.let { add("qemu-probe.txt", it.toByteArray()) }
+            // The agent feed goes in first: when QEMU dies inside machine init it
+            // writes nothing to run-*.log, so this stream is the only account of
+            // what the app was doing up to that point.
+            addFile("debug", layout.agentFeedFile())
 
             val vmDir = layout.vmDir(vmId)
             addFile("vm", File(vmDir, "config.json"))

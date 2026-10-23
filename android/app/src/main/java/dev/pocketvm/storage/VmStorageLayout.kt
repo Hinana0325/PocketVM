@@ -19,6 +19,7 @@ import java.io.File
  *   images/<name>.iso            imported installation media
  *   firmware/                UEFI code flash (QEMU_EFI.fd)
  *   qemu/share                   optional -L data dir for a side-loaded QEMU
+ *   debug/agent.jsonl            machine-readable debug event stream (AgentFeed)
  *
  * filesDir/internal/            ← real ext4 (FUSE cannot host unix sockets)
  *   run/<vmId>.sock              QMP control channel
@@ -77,6 +78,15 @@ class VmStorageLayout(context: Context) {
 
     /** Captured serial console for one launch; shipped in the diagnostics zip. */
     fun serialLogFile(vmId: String, runId: String): File = File(logDir(vmId), "run-$runId.serial.log")
+
+    /**
+     * Debug event stream for external tooling ([dev.pocketvm.diagnostics.AgentFeed]).
+     *
+     * On external storage on purpose: `adb shell` can read it without root, which
+     * is the whole point of the channel. It is also the only place a wedged QEMU
+     * leaves evidence, since `run-*.log` is empty whenever QEMU itself is quiet.
+     */
+    fun agentFeedFile(): File = File(dir("debug"), "agent.jsonl")
 
     fun manifestFile(vmId: String, runId: String): File = File(logDir(vmId), "run-$runId.json")
 

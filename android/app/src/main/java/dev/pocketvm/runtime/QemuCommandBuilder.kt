@@ -38,6 +38,14 @@ data class LaunchRequest(
      */
     val enableNet: Boolean? = null,
     /**
+     * Attach keyboard and tablet over USB instead of virtio.
+     *
+     * Which transport actually delivers keystrokes to a guest is device- and
+     * firmware-dependent, so it is a variable rather than a constant; see
+     * [QemuCommandBuilder.build] for the measurement that moved it to USB.
+     */
+    val usbInput: Boolean = true,
+    /**
      * Unix socket for the firmware/guest serial console. Null disables it.
      * When present, VmSession watches it and auto-recovers from a UEFI Shell
      * drop by typing the EFI boot command — the "备用方案" for devices whose
@@ -92,23 +100,53 @@ class QemuCommandBuilder {
             "if=pflash,format=raw,unit=1,file=${escapeOption(request.firmware.varsPath)}",
         )
 
+        val mediaPath = request.isoPath?.takeUnless { request.profile.dropMedia }
+
+        // The CD is attached on *both* buses, because neither side can see the
+        // other's transport:
+        //   - Firmware: edk2 on ARM virt carries no AHCI driver (Ubuntu's build
+        //     and QEMU's own alike — verified by running both against an
+        //     identical device set). An `ide-cd` on ich9-ahci never shows up in
+        //     the firmware's `map` output, so it cannot boot from it at all.
+        //   - Windows: a stock WinPE has no vioscsi, so it cannot read
+        //     install.wim from a virtio-scsi CD; it does ship storahci.
+        // Measured: virtio-scsi boots the installer through "Loading files..."
+        // while the same ISO on AHCI is the copy WinPE can read. `usb-storage`
+        // dies of SIGILL (exit=132) for a 1 MiB zero file exactly as for the
+        // 8.7 GiB ISO. The ich9-ahci bus names here are `ahci.0..5`, not `ide.*`.
+        if (mediaPath != null) args += listOf("-device", "virtio-scsi-pci,id=scsi0")
+        if (mediaPath != null) args += listOf("-device", "ich9-ahci,id=ahci")
+
         args += listOf("-device", "virtio-gpu-pci")
-        args += listOf("-device", "virtio-keyboard-pci")
-        args += listOf("-device", "virtio-tablet-pci")
+
+        // Input goes over USB, not virtio. edk2 and a stock Windows ARM64 install
+        // both carry xHCI/USB-HID drivers; virtio input needs drivers the installer
+        // does not ship. Measured on the Xiaomi 14 Pro: with virtio-keyboard-pci
+        // attached, keystrokes sent over both RFB KeyEvent and QMP send-key never
+        // reached the guest's UEFI Shell.
+        //
+        // The controller must be declared before the devices that sit on it, or
+        // QEMU answers "Bus 'xhci.0' not found".
+        val needsUsb = mediaPath != null || request.usbInput
+        if (needsUsb) args += listOf("-device", "qemu-xhci,id=xhci")
+        if (request.usbInput) {
+            args += listOf("-device", "usb-kbd,bus=xhci.0")
+            args += listOf("-device", "usb-tablet,bus=xhci.0")
+        } else {
+            args += listOf("-device", "virtio-keyboard-pci")
+            args += listOf("-device", "virtio-tablet-pci")
+        }
 
         val diskDrive =
             "if=none,id=disk0,format=${request.diskFormat},cache=writeback,discard=unmap,file=${escapeOption(request.diskPath)}"
 
-        val mediaPath = request.isoPath?.takeUnless { request.profile.dropMedia }
-
-        // Boot order: extracted EFI boot image first, then the CD, then the disk.
-        val diskBootIndex = if (request.bootImagePath != null) 3 else 1
-        // Only the CD needs USB now. The boot image goes on virtio-blk instead:
-        // edk2 drives virtio-blk directly, whereas usb-storage drags in the whole
-        // XHCI -> hub -> mass-storage chain, and on the device we tested that
-        // combination ended in SIGILL (exit=132) before QEMU wrote a single line.
-        val needsUsb = mediaPath != null
-        if (needsUsb) args += listOf("-device", "qemu-xhci,id=xhci")
+        // Boot order: the installation CD first even when an extracted boot image
+        // is attached (that image holds only the loader — see IsoBootImage),
+        // then the boot image, then the disk.
+        val diskBootIndex = if (request.bootImagePath != null) 3 else 2
+        // The boot image goes on virtio-blk rather than usb-storage: edk2 drives
+        // virtio-blk directly, whereas the XHCI -> hub -> mass-storage chain ended
+        // in SIGILL (exit=132) on the device we tested, before QEMU wrote a line.
 
         when (request.storageController) {
             StorageController.NVME -> {
@@ -118,7 +156,6 @@ class QemuCommandBuilder {
             }
 
             StorageController.VIRTIO -> {
-                args += listOf("-device", "virtio-scsi-pci,id=scsi0")
                 args += listOf("-drive", diskDrive)
                 args += listOf("-device", "virtio-blk-pci,drive=disk0,bootindex=$diskBootIndex")
             }
@@ -126,20 +163,20 @@ class QemuCommandBuilder {
 
         request.bootImagePath?.let { image ->
             // A partition-less FAT image: edk2 mounts it and boots
-            // \EFI\BOOT\BOOTAA64.EFI from it without needing ISO9660/UDF.
+            // \EFI\BOOT\BOOTAA64.EFI from it without needing ISO9660/UDF. It is
+            // only the loader though — no \boot\bcd, no boot.wim — so it sits
+            // behind the CD in the boot order.
             args += listOf("-drive", "if=none,id=boot0,media=disk,readonly=on,format=raw,file=${escapeOption(image)}")
-            args += listOf("-device", "virtio-blk-pci,drive=boot0,bootindex=1")
+            args += listOf("-device", "virtio-blk-pci,drive=boot0,bootindex=2")
         }
 
         mediaPath?.let { iso ->
-            // USB mass storage needs no extra driver, in the installer *or* in
-            // edk2, so the CD can be booted from / read by Setup.
+            // Two backend drives over one file; QEMU is fine with a readonly
+            // medium attached on both buses at once.
             args += listOf("-drive", "if=none,id=cd0,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
-            if (request.storageController == StorageController.VIRTIO) {
-                args += listOf("-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=2")
-            } else {
-                args += listOf("-device", "usb-storage,drive=cd0,bus=xhci.0,bootindex=2")
-            }
+            args += listOf("-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1")
+            args += listOf("-drive", "if=none,id=cd1,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
+            args += listOf("-device", "ide-cd,drive=cd1,bus=ahci.0")
         }
 
         if (request.enableNet ?: request.profile.net) {

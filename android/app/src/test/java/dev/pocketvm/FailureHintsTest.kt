@@ -2,6 +2,7 @@ package dev.pocketvm
 
 import dev.pocketvm.runtime.FailureHints
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -58,5 +59,58 @@ class FailureHintsTest {
             "Could not open '/images/win.iso': Permission denied\nNo such file or directory",
         )
         assertTrue(hint!!.contains("ISO"))
+    }
+
+    /**
+     * QEMU builds the VNC cipher while parsing `password=on`, and RFB 3.8
+     * authenticates with DES. A build without a DES-capable backend therefore
+     * never reaches machine init — the failure observed on the Xiaomi 14 Pro,
+     * where the required fix is a different *access path*, not another profile.
+     */
+    @Test
+    fun `vnc password without a DES backend points at loopback plus forwarding`() {
+        val hint = FailureHints.fromLog(
+            "libqemu-system-aarch64.so: -vnc 0.0.0.0:1,password=on: " +
+                "Cipher backend does not support DES algorithm",
+        )
+        assertTrue(hint!!.contains("DES"))
+        assertTrue(hint.contains("仅本机"))
+        assertTrue(hint.contains("adb forward"))
+    }
+
+    @Test
+    fun `rejected vnc password is config-fatal so the ladder stops early`() {
+        assertTrue(
+            FailureHints.isConfigFatal(
+                "libqemu-system-aarch64.so: -vnc 0.0.0.0:1,password=on: " +
+                    "Cipher backend does not support DES algorithm",
+            ),
+        )
+    }
+
+    /**
+     * These are exactly what 兼容/最小 exist to work around, so they must keep the
+     * ladder walking instead of aborting it.
+     */
+    @Test
+    fun `profile-dependent failures are not config-fatal`() {
+        assertFalse(FailureHints.isConfigFatal("qemu: unable to find CPU model 'cortex-a76'"))
+        assertFalse(FailureHints.isConfigFatal("Could not allocate dynamic translator buffer"))
+        assertFalse(FailureHints.isConfigFatal("Cannot allocate memory"))
+        assertFalse(FailureHints.isConfigFatal("qemu: Could not initialize SDL"))
+    }
+
+    @Test
+    fun `missing files and unusable sockets are config-fatal`() {
+        assertTrue(
+            FailureHints.isConfigFatal("qemu: -drive file=/x/disk.qcow2: No such file or directory"),
+        )
+        assertTrue(FailureHints.isConfigFatal("Failed to bind socket: Permission denied"))
+        assertTrue(FailureHints.isConfigFatal("qemu: -L /x: Could not read keymap file"))
+    }
+
+    @Test
+    fun `an empty log is never config-fatal`() {
+        assertFalse(FailureHints.isConfigFatal(""))
     }
 }

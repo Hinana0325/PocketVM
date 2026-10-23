@@ -1,13 +1,13 @@
 # PocketVM
 
-在未 Root 的 Redmi K70 Pro / 小米 14 Pro（Snapdragon 8 Gen 3，SM8650 / arm64）上，用 **QEMU TCG** 跑 Windows ARM64。
-项目只做一件事：**把启动链做成可重复验证的**，而不是先堆界面。
+在未 Root 的小米 14 Pro（Snapdragon 8 Gen 3 / arm64）上，用 **QEMU TCG** 跑 Windows ARM64。
+0.1.x 只做一件事：**把启动链做成可重复验证的**，而不是先堆界面。
 
 当前代码对应计划中的 **P0（执行环境）** 与 **P1 的前半段**：
 
 | 能力 | 状态 |
 | --- | --- |
-| QEMU 11.1.2 aarch64 动态 PIE 二进制（TCG + VNC + slirp + pixman） | **已编入 APK**（约 33 MB，依赖闭包自检通过） |
+| QEMU 9.2.3 aarch64 静态二进制（TCG + VNC + slirp + pixman） | **已编入 APK**（32 MB，零未解析符号） |
 | QEMU 可执行文件探测（真跑 `--version`，不只看文件存在） | 已实现 |
 | 配置校验 + 可操作的中文错误 | 已实现 |
 | QCOW2 磁盘创建（无 `qemu-img` 时用内置写入器，始终精简置备） | 已实现 |
@@ -18,23 +18,6 @@
 | 日志尾部读取 + 失败归因 + 诊断包 zip | 已实现 |
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
-
-## 0.9.x–0.10 现状（真机推进记录）
-
-| 版本 | 关键变化 |
-| --- | --- |
-| 0.6.x | 执行层改为**动态链接 PIE**（静态 bionic 在本机 self-boot 即 SIGSEGV）；QMP 套接字移到内部 ext4（FUSE 不支持 unix socket）；patchelf 统一 SONAME/DT_NEEDED |
-| 0.7.x | 失败原因可见（取 QEMU 原始错误行，按程序名 basename 匹配）；VNC 端口自动避让；新增「不挂介质」档定位介质路径问题 |
-| 0.8.x | pflash 固件自愈（2 MiB 残留不再遮蔽 64 MiB）；补齐 `efi-virtio.rom` 并放到 `-L` 根目录（BIOS 类型不搜子目录） |
-| 0.9.0 | 从 ISO 提取 El Torito EFI 引导镜像，交给固件直接引导，绕开 ISO9660/UDF 驱动 |
-| 0.9.1 | 修复 0.9.0 的 **SIGILL（exit=132）**：引导镜像从 `usb-storage` 改挂 `virtio-blk`，失败时运行时摘除并回退光盘引导 |
-| 0.9.2 | **UEFI Shell 串口自动恢复**：后台监听固件串口，检测到 `Shell>` 即自动输入 `fs0..fs3:\EFI\BOOT\BOOTAA64.EFI`；串口输出写入 `run-*.serial.log` 并并入诊断包 |
-| 0.10.0 | **升级到 QEMU 11.1.2**：用 Debian `+ds` 源码 + NDK r27c 重新交叉编译，产物仍是动态 PIE；修正新版的 meson 依赖（pixman 改为显式开启、`librt` 改为可选、dtc/pc-bios 固件复用旧树），RUNPATH 归一为 `$ORIGIN` |
-| 0.10.1 | **修正 memfd 垫片**：`shm_open` 的名字总以 `/` 开头，而 `memfd_create` 拒绝含 `/` 的名字——剥掉前导斜杠，消除共享内存/CPR 路径上的潜在 `EINVAL`（原配置下不可达，但属于真实缺陷） |
-
-真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
-0.9.2 起，固件若落入 UEFI Shell 不再需要用户手动敲路径——App 会自动接管（串口检测 + 自动键入）；
-若自动恢复未命中，控制台里的「在 Shell 中引导 Windows」按钮可手动触发。
 
 ## 为什么 QEMU 必须叫 `libqemu-system-aarch64.so`
 
@@ -93,9 +76,11 @@ No errors were found on the image.
 
 这三件事决定了「插上 ISO 点启动就能装」能否成立：
 
-1. **磁盘必须是 NVMe，光驱必须走 USB。** Windows 安装程序自带 `stornvme` 和 USB 大容量
-   存储驱动，但不带 virtio。默认配置就是 `-device nvme` + `-device usb-storage`；
-   选 virtio 会更快、支持 TRIM，但安装界面会看不到磁盘，需要手动加载 `viostor`。
+1. **磁盘必须是 NVMe，光驱走 AHCI。** Windows 安装程序自带 `stornvme` 和 `storahci`
+   驱动，但不带 virtio。默认配置就是 `-device nvme`（磁盘）+ `-device ich9-ahci` +
+   `-device ide-cd`（光驱）；选 virtio 会更快、支持 TRIM，但安装界面会看不到磁盘，
+   需要手动加载 `viostor`。光驱**不走 USB**：实测在本机 `usb-storage` 必 SIGILL
+   （exit=132，与介质大小无关），virtio-scsi 则能引导但 WinPE 没有 vioscsi 驱动。
 2. **Windows 11 要求 TPM 2.0。** QEMU 自身不模拟 TPM，需要外挂 `swtpm`，PocketVM 没有打包，
    所以原版 Windows 11 安装程序会停在「这台电脑无法运行 Windows 11」。
    两条出路：换 Windows 10 ARM64 镜像，或在安装界面按 Shift+F10 用注册表 `LabConfig`
@@ -124,7 +109,7 @@ Android/data/dev.pocketvm/files/
 
 ## 执行层（QEMU）
 
-APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 33 MB）加一组依赖库：
+APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 30 MB）加一组依赖库：
 
 | 文件 | 作用 |
 | --- | --- |
@@ -143,18 +128,27 @@ APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 3
 
 | 项 | 值 |
 | --- | --- |
-| QEMU | 11.1.2 |
+| QEMU | 9.2.3 |
 | 加速器 | TCG（`thread=multi`），无 KVM |
 | 显示 | `-vnc`（RFB 3.8），无 GTK/SDL |
 | 网络 | libslirp user-mode |
 | 链接 | 动态 PIE（glib 2.80.5 / pixman 0.44.2 / libslirp 4.8.0 / 内置 libfdt / pcre2 / libffi） |
 | 段对齐 | 0x4000（兼容 16 KB page size 设备） |
 | 运行时数据 | `assets/qemu/keymaps/*`，首次启动解压到 `files/qemu/share`，作为 `-L` |
-| UEFI 固件 | `assets/firmware/QEMU_EFI.fd`（edk2 2024.02，**64 MiB pflash**），首次启动释放到 `files/firmware/`，变量存储按同尺寸生成 |
+| UEFI 固件 | `assets/firmware/QEMU_EFI.fd.gz`（Ubuntu `qemu-efi-aarch64`，edk2 2024.02，64 MiB pflash），打包时由 AGP 自动解压，首次启动释放到 `files/firmware/`，变量存储按同尺寸生成 |
 
-固件自愈：解压标记只有在目录里存在 ≥32 MB 的 `.fd` 时才被采信；旧版残留的 2 MiB
-`-bios` 镜像会先被删除再重新释放。变量存储与固件尺寸不一致时会自动重建，不需要
-用户手动清数据。
+固件与光驱：ARM virt 平台的 edk2 构建**不含 AHCI 驱动** —— 这一点 Ubuntu 版和 QEMU 官方版
+（edk2-stable202408）完全一样，两者都看不到挂在 `ich9-ahci` 上的光驱（`map` 查询无 FS、
+无 BLK）。固件能用的光驱只有 virtio-scsi；而 Windows 只能认 AHCI（自带 storahci，没有
+vioscsi）。所以同一个 ISO 要挂两次，见下。
+
+> 一条曾经的误判：`Image type X64 can't be loaded on AARCH64 UEFI system` 看起来像是"固件读到了
+> 光驱里的 x86 引导程序"，其实它来自 virtio-net 的 x86 option ROM（`efi-virtio.rom`）——
+> 加 `-nic none` 后该报错立即消失。别再拿它当光驱可见性的证据。
+
+固件自愈：解压标记（`.extracted-v4`）只在目录里存在 ≥32 MB 的 `.fd` 时才被采信；旧版残留的
+2 MiB `-bios` 镜像会先被删除再重新释放。**标记版本一变就无条件重新释放随包固件**，否则
+磁盘上那份旧的会永远压过新包，用户还得手动清数据。变量存储与固件尺寸不一致时自动重建。
 
 重建（需要 Linux + NDK r27c + patchelf，约 5–10 分钟 / 24 核）：
 
@@ -179,10 +173,8 @@ cd android && ./gradlew :app:assembleDebug
 | 标准 | `tcg,thread=multi,tb-size=512` | `max` | virtio-rng + 网络 |
 | 兼容 | `tcg,thread=single,tb-size=128` | `cortex-a76` | 网络 |
 | 最小 | `tcg,thread=single,tb-size=64` | `cortex-a76` | 无 |
-| 最小（不挂介质） | `tcg,thread=single,tb-size=64` | `cortex-a76` | 无，且不挂 ISO/CD |
 
-- 默认「自动」：标准 → 兼容 → 最小 → 最小（不挂介质），某档在 QMP 握手后再稳定 2.5 秒即采用
-- 引导镜像（0.9.0+）若导致进程被信号杀死，会先摘除该镜像并在**同一档**重试光盘引导，而不是浪费整个阶梯
+- 默认「自动」：标准 → 兼容 → 最小，某档在 QMP 握手后再稳定 2.5 秒即采用
 - **磁盘控制器、内存、vCPU 数不参与降级**：换控制器会让已装好的系统无法启动，
   改内存则可能引入新的失败
 - QMP 握手发生在机器初始化之前，所以有 2.5 秒稳定性窗口，避免把"握手成功但随即
@@ -221,20 +213,21 @@ docs/                       架构与排障
 
 | 项 | 结论 |
 | --- | --- |
-| 编译（aarch64 动态链接 PIE） | 通过；`ET_DYN` + `PT_INTERP=/system/bin/linker64` |
-| 单元测试 | 通过（含 QCOW2、El Torito 解析、参数构建、失败归因） |
-| APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps + `efi-virtio.rom`，`extractLegacyNativeLibs=true` |
-| 真机启动 QEMU | **已通过**：进程稳定运行、edk2 固件画面出现、VNC 可连 |
-| 固件自动引导 | 0.9.1 消除 SIGILL；0.9.2 增加串口自动恢复 UEFI Shell |
-| Windows 安装全流程 | **进行中**：依赖真机继续验证引导与安装 |
+| 编译（aarch64 动态 PIE） | 通过，82 个单元测试全绿 |
+| APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
+| 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
+| 安装介质启动 | **通过（需双光驱）**：固件从 virtio-scsi 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。同一个 ISO 必须同时挂到 AHCI 光驱上，供 WinPE 侧读 install.wim |
+| Windows 安装全流程 | **未通过，原因已定位（非本项目可控）**：WinPE 早期内核初始化时发生 Data Abort（ESR `0x25/0x96000047` = EL1 写、三级页转换失败，FAR `0x0`），异常不可恢复，指令 `0x…637200: b .` 永久停机。PC 上同 QEMU 同配置**逐位复现**（PC/寄存器全同），`pauth=off`、`-smp 1/4`、两种固件、AHCI/virtio-scsi 均不改变 —— 是 Windows 在标准 `virt` 平台上过不去 |
 
-如果再次失败，优先看三处：`run-<id>.log` 里的 QEMU 原始错误行、
-`run-<id>.serial.log` 里的固件串口输出（能直接看到 `Shell>` 与 `map` 结果），
-以及「导出诊断包」里的 `qemu-probe.txt`。
+第一次上机时最值得盯的三件事：`QemuEnvironment` 是否报 `QEMU_MISSING`（找不到 .so）、
+日志里有没有 `Could not read keymap`、以及 VNC 端口是否真的在监听。
 
 ## 已知限制
 
-- VNC 只监听 `127.0.0.1`；查看画面需 `adb forward tcp:5900 tcp:5900`，或等 P1 内置 RFB 客户端。
+- VNC 只监听 `127.0.0.1`；查看画面需 `adb forward tcp:5900 tcp:5900`。
+  **局域网模式（`0.0.0.0`）不可用**：这个 QEMU 构建的加密后端不支持 DES，而 VNC
+  的密码认证就是 DES——设了密码 QEMU 会拒绝启动（exit=1）。要恢复局域网，得在重建
+  执行层时编入支持 DES 的加密后端（nettle/gnutls）。
 - ISO 会被完整复制一份（`content://` 无法跨进程传给 QEMU），请预留 5–6 GB。
 - 一台设备同一时间只跑一个 VM（`VmSession` 是单例）。
 - minSdk 30：执行层以 API 30 为目标编译（`memfd_create` 的下限）。

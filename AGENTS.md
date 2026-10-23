@@ -1,0 +1,73 @@
+# AGENTS.md
+
+PocketVM：在未 Root 的 arm64 Android 手机上用 QEMU TCG 跑 Windows ARM64。Kotlin/Compose 只做配置、状态与进程监督，QEMU 是独立进程——崩溃不该带走 UI。分层与 ADR 见 `docs/architecture.md`，错误码含义见 `docs/troubleshooting.md`。
+
+## 硬约束（动手前先读）
+
+- `android/app/build.gradle.kts` 必须保留 `jniLibs.useLegacyPackaging = true`。Android 10+ 的 W^X 只允许从 `nativeLibraryDir` 执行文件，so 不解压到磁盘就无法 exec；没了这个开关整套启动链就断了。
+- 执行层是**改名成 `.so` 的 ELF 可执行文件**（`libqemu-system-aarch64.so`、`libqemu-img.so`），依赖库（glib/pixman/slirp/pcre2/intl）同样。AGP 只打包 `lib*.so`，所以每个依赖都被 patchelf 改过 SONAME 与 DT_NEEDED，并靠 `DT_RUNPATH=$ORIGIN` 互相查找。别当普通共享库处理，也别改名成非 `lib*.so`。
+- **不要改成静态链接**。`-static`（即使 `-no-pie`/ET_EXEC）在本机实测 `exit=139`，问题在 bionic 静态运行时自举而非 PIE 标志位。动态 PIE 由 `/system/bin/linker64` 加载，是唯一验证过的形态。
+- 只构建 `arm64-v8a`；`minSdk = 30` 是 `memfd_create` 的下限，不要降。
+- 没有要求时不要重建 QEMU：需要 Linux + NDK r27c + meson/ninja/patchelf，5–10 分钟 / 24 核，`scripts/build-qemu-android*.sh` 是 bash 脚本，`.build-qemu/` 有几个 GB（已 gitignore）。脚本头部的注释记录了必须踩过的坑，改参数前先读。
+
+## 常用命令
+
+Gradle 根是 `android/`，不是仓库根。全部命令都要先 `cd android`。
+
+```bash
+cd android
+./gradlew :app:assembleDebug            # 产物 app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:testDebugUnitTest
+./gradlew :app:testDebugUnitTest --tests "dev.pocketvm.QemuCommandBuilderTest"   # 单个测试类
+```
+
+- `scripts/verify.sh` 是**提交前唯一需要手工跑的自检**：检查执行层架构、跑单元测试、检查 APK 的 `extractNativeLibs=true`。它是 bash-only，依赖 `file` 与 `aapt2`，按 `${ANDROID_HOME:-/opt/android-sdk}` 找 SDK。在 Windows 上用 Git Bash / WSL，别在 PowerShell 里跑。
+- 需要 JDK 17+ 与 Android SDK 35；Windows 下用 `gradlew.bat`。
+- 没有 CI、没有 pre-commit 配置。
+
+## 测试
+
+7 个文件共 82 个用例，全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。
+
+`Qcow2CreatorTest` 里两个用例通过 `assumeTrue` 依赖宿主机的 `/usr/bin/qemu-img`（还有一个要求 `qemu-io`）：宿主机没装就**静默跳过**。所以「测试全绿」不等于 qcow2 格式真的被交叉校验过。
+
+新增错误码时要同时改三处：`ConfigValidator` 的 issue code、`FailureHints` 的日志归因、`docs/troubleshooting.md` 的对照表。
+
+## 从文件名看不出来的约定
+
+- `VmSession` 是唯一持有 QEMU 进程的对象，挂在 Application 级的 `AppContainer` 上（不在 ViewModel 里），是单例，所以**同时只能跑一台 VM**。UI 只通过密封接口 `VmRuntimeState` 看到执行层。
+- `VmSession.start()` 的顺序是契约：probe → validate → 置备存储 → **先写 manifest** → fork → QMP 确认。manifest 在 fork 之前落盘，崩在中间也留得下完整 argv。QMP 握手（而非 `isAlive`）才是「已进入主循环」的可靠信号。
+- **QMP 的 unix socket 必须落在内部 `filesDir/internal/run/`**：`Android/data` 走 FUSE，不支持 unix domain socket。VM 磁盘 / ISO / 日志在外部 files 目录。
+- VNC 参数用的是**显示号不是端口**：`QemuCommandBuilder.displayIndex()` = port − 5900；校验器把 <5900 判为错误。`password=on` 只是开启认证，密码要在 QMP 握手后 `set_password` 设置。
+- pflash 的 code 与 vars 必须**等长**（当前 64 MiB pflash）；<32 MiB 会被判为「误下了 2 MiB 的 `-bios` 镜像」。
+- 启动降级阶梯是 `STANDARD → COMPAT → MINIMAL → MINIMAL_NO_MEDIA`（`LaunchProfile.ladder`）。降级只动 TCG/CPU/可选设备，**绝不改磁盘控制器、内存、vCPU 数**——改了会让已装好的 Windows 无法启动。`cortex-a76` 而不是 a72：Windows ARM64 需要 ARMv8.1 LSE 原子指令。
+- 磁盘控制器是 NVMe（Windows 安装程序自带 stornvme）。**光驱必须挂两次**：固件只认 virtio-scsi（ARM virt 的 edk2 构建——Ubuntu 版和 QEMU 官方版都一样——**不含 AHCI 驱动**，`map` 里查不到 `ich9-ahci` 上的任何设备），而 Windows 只认 AHCI（自带 storahci，没有 vioscsi）。所以 `virtio-scsi-pci` + `scsi-cd`（bootindex 1，供固件引导）**加上**同一个 ISO 再挂 `ich9-ahci` + `ide-cd`（供 WinPE 读 install.wim）。`usb-storage` 在本机必 SIGILL（exit=132，与介质大小/类型无关——1 MiB 假 CD 也一样）。真机上 `ich9-ahci` 的端口名是 `ahci.0..5`（不是 `ide.*`），写错报 `Bus not found`。
+- 别拿 `Image type X64 can't be loaded on AARCH64 UEFI system` 判断光驱是否可见：那条来自 virtio-net 的 **x86 option ROM**（加 `-nic none` 就消失），与光驱无关。曾据此误判"固件能看到 AHCI 光驱"。
+- **必须挂 `virtio-gpu-pci`**：没有 GPU 时 Windows 引导管理器判定无显示设备，转成 headless 并口控制台（画面只剩 `parallel0 console`）然后停住 —— 看起来像死机，其实客户机什么都没做错。
+- 启动 ISO 时会从 ISO 里抽出 El Torito EFI 启动镜像，挂成 bootindex 1 的只读 virtio-blk（见 `IsoBootImage`）。**这条路径无用**：镜像里只有引导程序，没有 `\boot\bcd` 和 `\sources\boot.wim`，它打印「按任意键从 CD 启动」、按键之后直接退回 UEFI Shell。
+- **当前真正的拦路虎不在本项目可控范围**：WinPE 早期内核初始化时写了一个未映射的地址（Data Abort，ESR `0x25/0x96000047`（EL1、写、三级页转换失败），FAR `0x0`），异常处理器随即执行 `b .`（`0x…637200: 14000000  b #0x…637200`）永久停机。PC 上同 QEMU 同配置逐位复现（PC 与全部寄存器一致），`pauth=off`、`-smp 1/4`、两种固件、AHCI/virtio-scsi 都不能改变它。要往下走需要针对 Windows 打过补丁的 QEMU（ACPI/设备描述），继续调参数没有意义。
+- 新增的错误码、注释、文档、UI 文案一律用中文——仓库现有内容全是中文。
+
+## 真机实测事实（小米 14 Pro / Android 16 / HyperOS，2026-10-22 实测）
+
+`SoC=QTI SM8650`、arm64-v8a、14.8 GB 内存、4 KB 页。链路验证进度：
+
+- **显示链已验证**：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常。
+- **输入链已验证**：`usb-kbd`+`usb-tablet` 挂 `qemu-xhci` 可用；`virtio-keyboard-pci` 在这台固件上**收不到按键**（RFB 与 QMP `send-key` 都试过）。所以输入设备用 USB，不用 virtio。
+- **介质**：见上面的光驱结论。
+- **VNC 密码不可用**：这个 QEMU 构建的加密后端不支持 DES（RFB 3.8 的 VNC 密码就是 DES），所以 `password=on` 会在启动前 exit=1；而 `ConfigValidator` 强制局域网模式必须设密码 ⇒ **局域网模式不可用**，只有「仅本机 + `adb forward`」是通的。要恢复局域网，得在重建执行层时编入支持 DES 的加密后端。
+- **两个很省事的工具链事实**：① shell 能直接执行 APK 里的 `libqemu-system-aarch64.so`（`/data/app/**/lib/arm64/` 是只读+可执行路径，`LD_LIBRARY_PATH` 指过去即可），不用过 App 就能验 QEMU 参数；② 每次重装 APK 都会换掉 `/data/app/~~<hash>/<pkg>-<hash>` 里的哈希，写死的路径立刻过期。
+
+**最大的未决问题：主循环停摆（可复现）**。客户机跑几分钟后，主线程睡眠、TCG 的 vCPU 线程仍在满核转，而 VNC/QMP 不再响应（监听套接字的 `Recv-Q` 堆着没人 accept 的连接）。判读工具上有个坑：**跨 UID 读 `/proc/<pid>/stat` 的 utime/stime 不可靠**（Android 对别的 UID 的聚合值会冻结或为零），要读就逐个读 `/proc/<pid>/task/<tid>/stat`。`wchan` 全是 0、`/proc/<pid>/io`、`/proc/<pid>/stack`、`debuggerd -b` 都被 SELinux/权限拒绝，所以卡死点只能靠 App 内部采。
+
+## 源码比 prose 新（别被过时说明带跑）
+
+- `docs/architecture.md` 的分层图和 ADR-004、以及 `QemuEnvironment.resolveQemuImg()` 的注释都写着「qcow2 失败回退 raw」。**没有 raw 回退**：`DiskProvisioner` 只产出 qcow2，raw 落在 FUSE 上可能真的吃掉全部虚拟容量。以代码为准。
+- README 的「已知限制」说 VNC 只监听 `127.0.0.1`，实际存在 `VncAccess.LAN`（校验器要求局域网模式必须设密码）。
+- README 写「37 个单元测试」，实际 67 个。
+- README 的「验证状态」写明真机启动与 Windows 安装全流程**均未验证**——这是有意的未知项，不要把沙箱里的结论当成设备上的结论。
+
+## 仓库状态与发布
+
+- 这个工作副本**没有 `.git`**（根目录只有 `.gitignore`），`git commit` 之类无从下手。
+- 上游是 `Hinana0325/PocketVM`。沙箱里 git-over-HTTPS 不通，推送靠 `scripts/push_via_api.py`（读 `GH_TOKEN`，走 api.github.com 的 git data API）。这是对外可见的显式动作，未经用户确认不要跑。

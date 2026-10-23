@@ -46,6 +46,7 @@ import dev.pocketvm.ui.theme.MonoTextStyle
 import kotlinx.coroutines.delay
 
 private const val LOG_HEIGHT_DP = 360
+private const val SERIAL_HEIGHT_DP = 220
 
 @Composable
 fun ConsoleScreen(
@@ -80,6 +81,7 @@ fun ConsoleScreen(
     var followLog by remember { mutableStateOf(true) }
     val clipboard = LocalClipboardManager.current
     val logScroll = rememberScrollState()
+    val serialScroll = rememberScrollState()
     val usedBytes = state.diskUsage[vm.id] ?: 0L
 
     LaunchedEffect(copied, copiedError) {
@@ -92,6 +94,11 @@ fun ConsoleScreen(
     // A console that does not follow its own output is useless during setup.
     LaunchedEffect(state.log, followLog) {
         if (followLog && state.log.isNotEmpty()) logScroll.scrollTo(logScroll.maxValue)
+    }
+    // The serial pane is a live progress view, not a log to browse: it always
+    // shows the newest line, since that is where the boot currently is.
+    LaunchedEffect(state.serial) {
+        if (state.serial.isNotEmpty()) serialScroll.scrollTo(serialScroll.maxValue)
     }
 
     BackHandler(onBack = onBack)
@@ -155,7 +162,8 @@ fun ConsoleScreen(
                 KeyValueRow("虚拟盘", "已用 ${usedBytes / (1024 * 1024)} MB / ${vm.diskSizeGb} GB")
                 KeyValueRow(
                     "控制器",
-                    if (vm.storageController.name == "NVME") "NVMe + USB CD" else "virtio-blk + virtio-scsi",
+                    if (vm.storageController.name == "NVME") "虚拟盘 NVMe · 光驱 AHCI"
+                    else "虚拟盘 virtio-blk · 光驱 AHCI",
                 )
                 KeyValueRow(
                     "启动模式",
@@ -166,6 +174,17 @@ fun ConsoleScreen(
                         LaunchMode.MINIMAL -> "最小（无网络 / 无 rng）"
                     },
                 )
+
+                // How far the guest got. PocketVM never renders the guest screen,
+                // so this line is the only in-app answer to "启动之后呢".
+                (runtime as? VmRuntimeState.Running)?.let { live ->
+                    KeyValueRow("引导阶段", live.stage.label)
+                    Text(
+                        live.stage.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
 
                 (runtime as? VmRuntimeState.Failed)?.let { failed ->
                     Text(failed.reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -195,7 +214,7 @@ fun ConsoleScreen(
                         Text(if (running) "停止" else "启动", modifier = Modifier.padding(start = 6.dp))
                     }
                     OutlinedButton(onClick = onExport) { Text("导出诊断包") }
-                    TextButton(onClick = onSendKey) { Text("发送回车") }
+                    TextButton(onClick = onSendKey) { Text("应答引导提示") }
                 }
                 otherRunning?.let {
                     Text(
@@ -286,13 +305,14 @@ fun ConsoleScreen(
                 )
                 if (running) {
                     // The firmware sometimes lands in the UEFI Shell instead of
-                    // booting the CD. PocketVM now watches the serial console and
-                    // auto-types the EFI boot command the moment it sees "Shell>",
-                    // so manual intervention is the exception, not the rule. The
-                    // button below is the manual fallback if auto-recovery misses.
+                    // booting the CD. PocketVM watches the serial console and
+                    // types the EFI boot command the moment it sees "Shell>".
+                    // Whether that can work depends on what the firmware actually
+                    // mounted, so the result — including "not recognized" — shows
+                    // up verbatim in 固件输出 above.
                     Text(
-                        "固件若停在 UEFI Shell，App 会自动通过串口输入引导命令；" +
-                            "若仍停在 Shell，可点下面按钮手动触发。",
+                        "固件若停在 UEFI Shell，App 会通过串口自动输入引导命令，" +
+                            "Shell 的回应见上方「固件输出」。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -301,6 +321,34 @@ fun ConsoleScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("在 Shell 中引导 Windows") }
                 }
+            }
+        }
+
+        item {
+            // QEMU prints nothing on a healthy launch, so the stdout pane below
+            // is routinely empty while the guest is busy. The firmware's serial
+            // console is where the actual progress is: which boot option edk2
+            // picked, the installer's keypress prompt, a UEFI Shell drop.
+            SectionCard(
+                title = "固件输出（串口）",
+                subtitle = if (running) "UEFI 与引导程序的控制台，实时追加" else "未运行",
+            ) {
+                Text(
+                    state.serial.ifBlank {
+                        if (running) {
+                            "（客户机还没有任何串口输出：固件仍在初始化，或启动项里没有可引导介质）"
+                        } else {
+                            "（未运行）"
+                        }
+                    },
+                    style = MonoTextStyle,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(SERIAL_HEIGHT_DP.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                        .padding(10.dp)
+                        .verticalScroll(serialScroll),
+                )
             }
         }
 

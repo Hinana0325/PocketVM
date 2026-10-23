@@ -16,8 +16,8 @@ android {
         // memfd_create 是 API 30 符号，QEMU 执行层以 android30 为 target 编译。
         minSdk = 30
         targetSdk = 35
-        versionCode = 24
-        versionName = "0.10.1-qemu11.1.2-dyn"
+        versionCode = 22
+        versionName = "0.9.2-qemu9.2.3-dyn-shellfix"
 
         // The MVP only ships an arm64 execution layer. 32-bit devices cannot run
         // a 64-bit guest, so there is no point in building other ABIs.
@@ -27,6 +27,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            // A sideloaded build can be signed by another machine's debug key and
+            // therefore cannot be replaced in place. -PpvmSideBySide produces a
+            // variant that installs alongside it instead, which is this device's
+            // only route in while the shipping id must stay `dev.pocketvm`.
+            if (project.hasProperty("pvmSideBySide")) applicationIdSuffix = ".debug"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
