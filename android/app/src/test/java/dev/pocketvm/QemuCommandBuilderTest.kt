@@ -3,6 +3,7 @@ package dev.pocketvm
 import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.LaunchProfile
+import dev.pocketvm.core.model.PortForward
 import dev.pocketvm.core.model.StorageController
 import dev.pocketvm.runtime.FirmwareFiles
 import dev.pocketvm.runtime.LaunchRequest
@@ -230,6 +231,63 @@ class QemuCommandBuilderTest {
         val args = builder.build(request().copy(profile = LaunchProfile.MINIMAL))
         assertEquals("tcg,thread=single,tb-size=64", valueOf(args, "-accel"))
         assertEquals("cortex-a76", valueOf(args, "-cpu"))
+        assertFalse(args.contains("-netdev"))
+        assertFalse(args.any { it.startsWith("virtio-net-pci") })
+    }
+
+    @Test
+    fun `port forwards become hostfwd rules bound to loopback by default`() {
+        // hostfwd is how a PC reaches a service inside the VM: RDP for Windows,
+        // SSH for Linux. Loopback keeps the exposure identical to 仅本机 VNC.
+        val args = builder.build(
+            request().copy(portForwards = listOf(PortForward(5389, 3389), PortForward(2022, 22))),
+        )
+        val netdev = valueOf(args, "-netdev")
+        assertTrue(netdev!!.startsWith("user,id=net0,"))
+        assertTrue(netdev.contains("hostfwd=tcp:127.0.0.1:5389-:3389"))
+        assertTrue(netdev.contains("hostfwd=tcp:127.0.0.1:2022-:22"))
+    }
+
+    @Test
+    fun `lan mode binds forwards to all interfaces like vnc`() {
+        val args = builder.build(
+            request().copy(
+                vncBindAddress = "0.0.0.0",
+                portForwards = listOf(PortForward(5389, 3389)),
+            ),
+        )
+        assertTrue(valueOf(args, "-netdev")!!.contains("hostfwd=tcp:0.0.0.0:5389-:3389"))
+    }
+
+    @Test
+    fun `invalid and duplicate forwards never reach qemu`() {
+        // 80 is below the 1024 floor an Android app UID can bind, 70000 is out of
+        // range, and a repeated host port would make QEMU reject the whole
+        // -netdev. First occurrence wins.
+        val args = builder.build(
+            request().copy(
+                portForwards = listOf(
+                    PortForward(80, 3389),
+                    PortForward(5389, 70000),
+                    PortForward(5389, 22),
+                    PortForward(2022, 22),
+                    PortForward(2022, 80),
+                ),
+            ),
+        )
+        val netdev = valueOf(args, "-netdev")!!
+        assertFalse("特权主机端口必须被丢弃", netdev.contains(":80-"))
+        assertFalse("越界的客户机端口必须被丢弃", netdev.contains("70000"))
+        assertTrue("同主机端口保留第一条", netdev.contains("hostfwd=tcp:127.0.0.1:5389-:22"))
+        assertTrue(netdev.contains("hostfwd=tcp:127.0.0.1:2022-:22"))
+        assertFalse("重复主机端口必须被丢弃", netdev.contains("2022-:80"))
+    }
+
+    @Test
+    fun `disabled nic carries no hostfwd`() {
+        val args = builder.build(
+            request().copy(enableNet = false, portForwards = listOf(PortForward(5389, 3389))),
+        )
         assertFalse(args.contains("-netdev"))
         assertFalse(args.any { it.startsWith("virtio-net-pci") })
     }

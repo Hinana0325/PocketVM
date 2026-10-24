@@ -4,6 +4,17 @@ import kotlinx.serialization.Serializable
 import java.util.UUID
 
 /**
+ * One hostfwd rule: [hostPort] on the phone forwards to [guestPort] inside the
+ * VM. TCP only — that covers RDP, SSH and HTTP, which is everything a phone
+ * user reaches a headless ARM64 guest for.
+ */
+@Serializable
+data class PortForward(
+    val hostPort: Int,
+    val guestPort: Int,
+)
+
+/**
  * Everything PocketVM needs to know about a virtual machine *before* it starts.
  *
  * Paths are stored absolute so that a config can be inspected without resolving
@@ -55,6 +66,14 @@ data class VmConfig(
     val serialRecovery: Boolean = true,
     /** NIC on/off. Null follows the launch profile. */
     val enableNet: Boolean? = null,
+    /**
+     * Published TCP ports, phone → guest (QEMU `hostfwd`). Lets a PC reach a
+     * service inside the VM — RDP 3389 for Windows, SSH 22 for Linux — without
+     * exposing the whole device. The bind address follows [vncAccess]:
+     * 127.0.0.1 for LOOPBACK (pair with `adb forward`), 0.0.0.0 for LAN.
+     * Ignored when the NIC is off or the option ROM is missing.
+     */
+    val portForwards: List<PortForward> = emptyList(),
     /** virtio-rng on/off. Null follows the launch profile. */
     val rng: Boolean? = null,
     /**

@@ -445,6 +445,7 @@ class VmSession(
                     diskFormat = diskReady.format,
                     isoPath = iso?.absolutePath,
                     driverIsoPath = config.driverIsoPath,
+                    portForwards = config.portForwards,
                     cpuCores = config.cpuCores,
                     memoryMb = config.memoryMb,
                     vncPort = effectivePort,

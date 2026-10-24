@@ -368,6 +368,34 @@ private fun OverviewTab(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (vm.portForwards.isNotEmpty()) {
+                    Text(
+                        "端口转发（手机 → 客户机）",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    vm.portForwards.forEach { forward ->
+                        KeyValueRow(
+                            if (vm.vncAccess == VncAccess.LAN) {
+                                "${state.localIp ?: "0.0.0.0"}:${forward.hostPort}"
+                            } else {
+                                "127.0.0.1:${forward.hostPort}"
+                            },
+                            "→ 客户机 :${forward.guestPort}",
+                        )
+                    }
+                    Text(
+                        if (vm.vncAccess == VncAccess.LOOPBACK) {
+                            "只监听 127.0.0.1：电脑上执行 adb forward tcp:<手机端口> tcp:<手机端口> 后，" +
+                                "连接 127.0.0.1:<手机端口>。"
+                        } else {
+                            "监听 0.0.0.0：同一局域网内直接连 手机IP:<手机端口>。" +
+                                "转发的服务仍需各自的认证（RDP/SSH 密码等）。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     "两种「未激活」别混淆：① 屏幕正中出现固件消息「Display output is not active.」" +
                         "——这是引导交接后的显示输出问题，与激活无关，见上方排查卡；" +

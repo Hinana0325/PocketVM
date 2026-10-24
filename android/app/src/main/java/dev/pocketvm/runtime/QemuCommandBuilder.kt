@@ -2,6 +2,7 @@ package dev.pocketvm.runtime
 
 import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.LaunchProfile
+import dev.pocketvm.core.model.PortForward
 import dev.pocketvm.core.model.StorageController
 
 /**
@@ -46,6 +47,11 @@ data class LaunchRequest(
      * cannot be initialised must not block the whole VM from starting.
      */
     val enableNet: Boolean? = null,
+    /**
+     * Published TCP ports (phone → guest); see [VmConfig.portForwards]. Only
+     * takes effect when the NIC is actually attached.
+     */
+    val portForwards: List<PortForward> = emptyList(),
     /**
      * Attach keyboard and tablet over USB instead of virtio.
      *
@@ -208,7 +214,22 @@ class QemuCommandBuilder {
         }
 
         if (request.enableNet ?: request.profile.net) {
-            args += listOf("-netdev", "user,id=net0")
+            // hostfwd publishes a guest port on the phone so a PC can reach a
+            // service inside the VM (RDP for Windows, SSH for Linux). The bind
+            // address mirrors the VNC posture — loopback for local-only access
+            // (pair with `adb forward`), 0.0.0.0 only once the user accepted LAN
+            // exposure for VNC already. The 1024 floor is not QEMU's rule: an
+            // Android app runs as its own UID without CAP_NET_BIND_SERVICE, so a
+            // privileged host port can never bind. The validator reports it as an
+            // error; this filter is defence in depth so a bad hostfwd string
+            // never fails the whole `-netdev`.
+            val bind = if (request.vncBindAddress == "0.0.0.0") "0.0.0.0" else "127.0.0.1"
+            val forwards = request.portForwards
+                .filter { it.hostPort in 1024..65535 && it.guestPort in 1..65535 }
+                .distinctBy { it.hostPort }
+                .joinToString(",") { "hostfwd=tcp:$bind:${it.hostPort}-:${it.guestPort}" }
+            val netdev = if (forwards.isEmpty()) "user,id=net0" else "user,id=net0,$forwards"
+            args += listOf("-netdev", netdev)
             args += listOf("-device", "virtio-net-pci,netdev=net0")
         }
 

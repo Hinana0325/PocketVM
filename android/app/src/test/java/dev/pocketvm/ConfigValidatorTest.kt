@@ -198,6 +198,57 @@ class ConfigValidatorTest {
     }
 
     @Test
+    fun `valid port forwards are accepted silently`() {
+        val cfg = config().copy(portForwards = listOf(dev.pocketvm.core.model.PortForward(5389, 3389)))
+        val report = validator.validate(input(config = cfg))
+        assertFalse(report.hasErrors)
+        assertFalse(report.issues.any { it.code.startsWith("FORWARD") })
+    }
+
+    @Test
+    fun `privileged host port is an error because android cannot bind it`() {
+        val cfg = config().copy(portForwards = listOf(dev.pocketvm.core.model.PortForward(80, 3389)))
+        val report = validator.validate(input(config = cfg))
+        assertTrue(report.errors.any { it.code == "FORWARD_HOST_PORT_PRIVILEGED" })
+    }
+
+    @Test
+    fun `duplicate host port keeps the first rule and warns`() {
+        val cfg = config().copy(
+            portForwards = listOf(
+                dev.pocketvm.core.model.PortForward(5389, 3389),
+                dev.pocketvm.core.model.PortForward(5389, 22),
+            ),
+        )
+        val report = validator.validate(input(config = cfg))
+        assertTrue(report.warnings.any { it.code == "FORWARD_DUPLICATE" })
+        assertFalse(report.hasErrors)
+    }
+
+    @Test
+    fun `forwards shared with another vm warn about the bind clash`() {
+        val other = config().copy(
+            id = "vm-2",
+            name = "另一台",
+            portForwards = listOf(dev.pocketvm.core.model.PortForward(5389, 3389)),
+        )
+        val cfg = config().copy(portForwards = listOf(dev.pocketvm.core.model.PortForward(5389, 3389)))
+        val report = validator.validate(input(config = cfg).copy(otherVms = listOf(other)))
+        assertTrue(report.warnings.any { it.code == "FORWARD_PORT_SHARED" })
+        assertFalse(report.hasErrors)
+    }
+
+    @Test
+    fun `forwards with the nic switched off never take effect`() {
+        val cfg = config().copy(
+            enableNet = false,
+            portForwards = listOf(dev.pocketvm.core.model.PortForward(5389, 3389)),
+        )
+        val report = validator.validate(input(config = cfg))
+        assertTrue(report.warnings.any { it.code == "FORWARD_NIC_OFF" })
+    }
+
+    @Test
     fun `zero free space is reported instead of silently ignored`() {
         val report = validator.validate(input(freeSpaceBytes = 0))
         assertTrue(report.warnings.any { it.code == "DISK_FREE_UNKNOWN" })

@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import dev.pocketvm.core.config.Severity
 import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.LaunchMode
+import dev.pocketvm.core.model.PortForward
 import dev.pocketvm.core.model.StorageController
 import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.core.model.VmConfig
@@ -64,6 +65,16 @@ fun CreateVmScreen(
     var portText by remember(draft.vncPort) { mutableStateOf(draft.vncPort.toString()) }
     val portValue = portText.toIntOrNull()
     val portInvalid = portValue == null || portValue !in 5900..5999
+
+    // hostfwd editor state. Kept as text so a half-typed port never reaches the
+    // config as 0; only a complete in-range pair commits.
+    var fwdHostText by remember { mutableStateOf("") }
+    var fwdGuestText by remember { mutableStateOf("") }
+    val fwdHostValue = fwdHostText.toIntOrNull()
+    val fwdGuestValue = fwdGuestText.toIntOrNull()
+    val fwdValid = fwdHostValue != null && fwdGuestValue != null &&
+        fwdHostValue in 1024..65535 && fwdGuestValue in 1..65535 &&
+        draft.portForwards.none { it.hostPort == fwdHostValue }
 
     val isoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(onImportIso)
@@ -377,6 +388,98 @@ fun CreateVmScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
+                Text(
+                    "端口转发（把客户机的服务暴露到手机上）",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+
+                draft.portForwards.forEach { forward ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "手机 ${forward.hostPort} → 客户机 ${forward.guestPort}",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        TextButton(
+                            onClick = {
+                                onUpdate { it.copy(portForwards = it.portForwards - forward) }
+                            },
+                        ) { Text("删除") }
+                    }
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = fwdHostText,
+                        onValueChange = { input -> fwdHostText = input.filter { it.isDigit() }.take(5) },
+                        label = { Text("手机端口") },
+                        singleLine = true,
+                        isError = fwdHostText.isNotEmpty() && (fwdHostValue == null || fwdHostValue !in 1024..65535),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text("→", style = MaterialTheme.typography.bodyLarge)
+                    OutlinedTextField(
+                        value = fwdGuestText,
+                        onValueChange = { input -> fwdGuestText = input.filter { it.isDigit() }.take(5) },
+                        label = { Text("客户机端口") },
+                        singleLine = true,
+                        isError = fwdGuestText.isNotEmpty() && (fwdGuestValue == null || fwdGuestValue !in 1..65535),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(
+                        onClick = {
+                            onUpdate {
+                                it.copy(
+                                    portForwards = it.portForwards +
+                                        PortForward(fwdHostValue!!, fwdGuestValue!!),
+                                )
+                            }
+                            fwdHostText = ""
+                            fwdGuestText = ""
+                        },
+                        enabled = fwdValid,
+                    ) { Text("添加") }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // Preset host ports sit at guest+2000: memorable, and never in
+                    // the <1024 range an Android app cannot bind.
+                    listOf("远程桌面" to 3389, "SSH" to 22, "网页" to 80).forEach { (label, guestPort) ->
+                        val hostPort = guestPort + 2000
+                        TextButton(
+                            onClick = {
+                                if (draft.portForwards.none { it.hostPort == hostPort }) {
+                                    onUpdate {
+                                        it.copy(portForwards = it.portForwards + PortForward(hostPort, guestPort))
+                                    }
+                                }
+                            },
+                        ) { Text("$label $guestPort") }
+                    }
+                }
+
+                Text(
+                    if (draft.vncAccess == VncAccess.LAN) {
+                        "「仅本机」模式下转发只监听 127.0.0.1：以远程桌面预设为例，" +
+                            "电脑上先 adb forward tcp:5389 tcp:5389，再连 127.0.0.1:5389。" +
+                            "「局域网」模式下直接连 手机IP:手机端口（与 VNC 同一敞口策略，服务自身的认证仍是第一道门）。" +
+                            "Android 应用无法绑定 1024 以下端口，故手机侧从 1024 起。"
+                    } else {
+                        "转发只监听 127.0.0.1：以远程桌面预设为例，电脑上先 adb forward tcp:5389 tcp:5389，" +
+                            "再连 127.0.0.1:5389。需要真正局域网可达时，把上方访问方式切到「局域网」。" +
+                            "Android 应用无法绑定 1024 以下端口，故手机侧从 1024 起。"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             SectionCard(
@@ -470,6 +573,7 @@ fun CreateVmScreen(
                     Text(
                         "光驱 ${draft.cdTransport.label}" +
                             if (draft.driverIsoPath != null) " · 驱动盘已挂" else "" +
+                            if (draft.portForwards.isNotEmpty()) " · 转发 ${draft.portForwards.size} 个端口" else "" +
                             " · 输入 ${if (draft.usbInput) "USB" else "virtio"} · " +
                             "串口恢复 ${if (draft.serialRecovery) "开" else "关"} · " +
                             "CPU ${draft.cpuModel ?: "跟随档位"} · 提取镜像 ${if (draft.useBootImage) "开" else "关"}",

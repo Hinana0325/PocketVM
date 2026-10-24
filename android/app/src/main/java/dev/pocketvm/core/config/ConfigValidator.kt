@@ -182,6 +182,54 @@ class ConfigValidator {
             )
         }
 
+        config.portForwards.forEach { forward ->
+            when {
+                // Android apps run as their own UID without CAP_NET_BIND_SERVICE,
+                // so QEMU inherits the same restriction: <1024 cannot be bound.
+                forward.hostPort < 1024 ->
+                    issues += Issue(
+                        Severity.ERROR,
+                        "FORWARD_HOST_PORT_PRIVILEGED",
+                        "手机侧端口 ${forward.hostPort} 低于 1024，Android 应用无权绑定，QEMU 会直接失败。请换 1024 以上的端口。",
+                    )
+                forward.hostPort > 65535 || forward.guestPort !in 1..65535 ->
+                    issues += Issue(
+                        Severity.ERROR,
+                        "FORWARD_PORT_RANGE",
+                        "端口必须在 1-65535 之间（手机侧 ${forward.hostPort} → 客户机 ${forward.guestPort}）。",
+                    )
+            }
+        }
+        config.portForwards
+            .groupBy { it.hostPort }
+            .filter { it.value.size > 1 }
+            .forEach { (port, _) ->
+                issues += Issue(
+                    Severity.WARNING,
+                    "FORWARD_DUPLICATE",
+                    "手机侧端口 $port 配置了多条转发，只有第一条会生效。",
+                )
+            }
+        input.otherVms.forEach { other ->
+            if (other.id == config.id) return@forEach
+            config.portForwards.forEach { forward ->
+                if (other.portForwards.any { it.hostPort == forward.hostPort }) {
+                    issues += Issue(
+                        Severity.WARNING,
+                        "FORWARD_PORT_SHARED",
+                        "与「${other.name}」复用手机侧端口 ${forward.hostPort}。两台同时运行会有一个绑定失败。",
+                    )
+                }
+            }
+        }
+        if (config.portForwards.isNotEmpty() && config.enableNet == false) {
+            issues += Issue(
+                Severity.WARNING,
+                "FORWARD_NIC_OFF",
+                "已配置端口转发但网卡是关闭的，转发不会生效。",
+            )
+        }
+
         // Supervision depends on owning these arguments; a user override would
         // silently break stop/log collection instead of failing loudly.
         val reserved = listOf("-qmp", "-display", "-monitor", "-vnc")
