@@ -397,7 +397,12 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                         _ui.update { it.copy(importing = null, notice = "已离开编辑页，导入的镜像已丢弃") }
                     } else {
                         _ui.update { state ->
-                            val draft = state.draft?.copy(isoPath = file.absolutePath, bootFromCd = true)
+                            val draft = state.draft?.let { d ->
+                                val name = if (d.name == VmConfig.DEFAULT_NAME || d.name.isBlank())
+                                    VmConfig.nameFromIso(file.absolutePath) ?: d.name
+                                else d.name
+                                d.copy(isoPath = file.absolutePath, bootFromCd = true, name = name)
+                            }
                             state.copy(
                                 draft = draft,
                                 importing = null,

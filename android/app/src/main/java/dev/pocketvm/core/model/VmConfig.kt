@@ -70,6 +70,34 @@ data class VmConfig(
     val createdAtEpochMs: Long = System.currentTimeMillis(),
 ) {
     companion object {
+        /** Name given to the new-VM draft; also the sentinel we overwrite on ISO import. */
+        const val DEFAULT_NAME = "Windows 11 ARM64"
+
+        /**
+         * Derive a friendly VM name from an ISO filename (e.g.
+         * `ubuntu-25.04-live-server-arm64.iso` → "Ubuntu 25.04"). Returns null for
+         * an unrecognised/blank name so callers can fall back to keeping the old one.
+         */
+        fun nameFromIso(isoPath: String?): String? {
+            val base = isoPath?.substringAfterLast('/')?.substringBeforeLast('.', "")
+            if (base.isNullOrBlank()) return null
+            val os = when {
+                base.contains("ubuntu", ignoreCase = true) -> "Ubuntu"
+                base.contains("debian", ignoreCase = true) -> "Debian"
+                base.contains("fedora", ignoreCase = true) -> "Fedora"
+                base.contains("arch", ignoreCase = true) -> "Arch"
+                base.contains("alpine", ignoreCase = true) -> "Alpine"
+                base.contains("kali", ignoreCase = true) -> "Kali"
+                base.contains("windows", ignoreCase = true) || base.contains("win", ignoreCase = true) -> "Windows"
+                else -> null
+            }
+            val ver = Regex("""\d+(\.\d+)*""").find(base)?.value
+            return buildString {
+                append(os ?: base)
+                ver?.let { append(" $it") }
+            }.trim().takeIf { it.isNotBlank() }
+        }
+
         fun create(name: String): VmConfig = VmConfig(
             id = UUID.randomUUID().toString(),
             name = name,

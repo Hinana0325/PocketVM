@@ -234,8 +234,16 @@ fun CreateVmScreen(
                                     DropdownMenuItem(
                                         text = { Text(File(path).name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                         onClick = {
-                                            imageMenu = false
-                                            onUpdate { it.copy(isoPath = path, bootFromCd = true) }
+                                    imageMenu = false
+                                    onUpdate { draft ->
+                                        draft.copy(
+                                            isoPath = path,
+                                            bootFromCd = true,
+                                            name = if (draft.name == VmConfig.DEFAULT_NAME || draft.name.isBlank())
+                                                VmConfig.nameFromIso(path) ?: draft.name
+                                            else draft.name,
+                                        )
+                                    }
                                         },
                                     )
                                 }

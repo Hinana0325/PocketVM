@@ -247,6 +247,18 @@ class VmSession(
         val binary = probe.usable
             ?: return@withLock LaunchOutcome.Failed("未找到可执行的 QEMU。", probe.abortReason)
 
+        // When booting from CD, start with a clean UEFI variable store. A previously
+        // installed OS (e.g. Windows) leaves its BootOrder — "Windows Boot Manager"
+        // etc. — persisted in vars.fd, which then outranks the freshly mounted CD
+        // even though the CD carries bootindex=1. Resetting vars makes the firmware
+        // re-enumerate and puts the CD first, so selecting an ISO actually boots it.
+        // When no ISO is attached (boot from the virtual disk), vars is left intact.
+        if (config.bootFromCd && iso != null && vars.exists()) {
+            if (runCatching { vars.delete() }.isSuccess) {
+                notes += "已从 CD 启动：重置 UEFI 变量存储，使新挂的 ISO 优先于磁盘上已安装的系统"
+            }
+        }
+
         _state.value = VmRuntimeState.Preparing(config.id, "准备 UEFI 固件")
         val firmware = when (val result = withContext(Dispatchers.IO) { firmwareManager.prepare(config, vars) }) {
             is FirmwareResult.Failure -> return@withLock fail(config.id, result.message)
