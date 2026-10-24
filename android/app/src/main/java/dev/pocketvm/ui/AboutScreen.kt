@@ -59,6 +59,22 @@ fun AboutScreen(
             }
         }
         item {
+            SectionCard(title = "Windows 引导要点", subtitle = "从 CD 启动但卡在固件进度条") {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "部分机型上 USB 光驱会让 QEMU 崩溃，于是自动降级到 virtio-scsi；但 Windows 引导程序从 virtio-scsi 读不到安装文件，表现为停在 START BOOT OPTION 长时间不动。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "解决：① 高级选项把「光驱总线」显式设为 USB（不再崩溃即可正常安装）；② 在 ISO 中注入 vioscsi 驱动后启动；③ 改用已含 VirtIO 驱动的镜像。Linux 不受此限制。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        item {
             SectionCard(title = "需要知道", subtitle = "避免踩坑") {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
@@ -78,6 +94,11 @@ fun AboutScreen(
                     )
                     Text(
                         "· 启动失败可在控制台「复制错误」导出诊断包，便于定位。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "· VNC 客户端若显示「未激活 / Not Activated」水印，是客户端试用遮罩，与系统无关；换免费客户端（aVNC、bVNC Free、RealVNC 免费版）即可。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

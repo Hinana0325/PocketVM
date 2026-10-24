@@ -297,6 +297,26 @@ private fun OverviewTab(
             }
         }
 
+        if (vm.isoPath != null && usedBytes <= 4L * 1024 * 1024 * 1024) {
+            item {
+                SectionCard(
+                    title = "引导卡在固件？",
+                    subtitle = "从 CD 启动但停在固件进度条 / UEFI Shell",
+                ) {
+                    Text(
+                        "Windows 卡在 START BOOT OPTION 长时间不动，通常是光驱总线问题：部分机型上 USB 光驱会让 QEMU 崩溃，" +
+                            "于是自动降级到 virtio-scsi，而 Windows 引导程序从 virtio-scsi 读不到安装文件。可这样解决：\n" +
+                            "① 高级选项里把「光驱总线」显式设为 USB（若不再崩溃即可正常安装）；\n" +
+                            "② 或在 ISO 中注入 VirtIO 驱动（vioscsi）后再启动；\n" +
+                            "③ 改用已含 VirtIO 驱动的 Windows 镜像。\n" +
+                            "Linux 不受此限制，virtio-scsi / USB 均可正常引导。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
         item {
             val vncHost = if (vm.vncAccess == VncAccess.LAN) (state.localIp ?: "0.0.0.0") else "127.0.0.1"
             SectionCard(
@@ -342,6 +362,13 @@ private fun OverviewTab(
                 Text(
                     "协议 RFB 3.8。局域网模式下 VNC 认证是 DES（8 字符密钥），只适合可信网络；" +
                         "需要更强隔离时用「仅本机」+ 端口转发。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "部分 VNC 客户端（尤其商业版）会在画面角落叠加「未激活 / Not Activated」试用遮罩——" +
+                        "这是客户端自身水印，与目标系统无关（Ubuntu、Windows 都不需要激活）。" +
+                        "换用免费客户端即可去除：aVNC（开源）、bVNC Free、RealVNC Viewer 免费版。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
