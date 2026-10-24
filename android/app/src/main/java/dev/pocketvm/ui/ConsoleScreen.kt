@@ -301,15 +301,17 @@ private fun OverviewTab(
             item {
                 SectionCard(
                     title = "引导卡在固件？",
-                    subtitle = "从 CD 启动但停在固件进度条 / UEFI Shell",
+                    subtitle = "选完启动项后黑屏 / 固件进度条不动 / Display output is not active",
                 ) {
                     Text(
-                        "Windows 卡在 START BOOT OPTION 长时间不动，通常是光驱总线问题：部分机型上 USB 光驱会让 QEMU 崩溃，" +
-                            "于是自动降级到 virtio-scsi，而 Windows 引导程序从 virtio-scsi 读不到安装文件。可这样解决：\n" +
-                            "① 高级选项里把「光驱总线」显式设为 USB（若不再崩溃即可正常安装）；\n" +
-                            "② 或在 ISO 中注入 VirtIO 驱动（vioscsi）后再启动；\n" +
-                            "③ 改用已含 VirtIO 驱动的 Windows 镜像。\n" +
-                            "Linux 不受此限制，virtio-scsi / USB 均可正常引导。",
+                        "选完启动项后长时间黑屏、或屏幕出现「Display output is not active.」" +
+                            "（这是固件消息，意思是显示控制台在引导交接后没有恢复），" +
+                            "排查顺序：\n" +
+                            "① 串口日志里 starting Boot0001 之后是否仍有输出——有就是内核还在启动，TCG 下先等 3-5 分钟；\n" +
+                            "② 编辑页把固件换回内置 2024.02 原版（QEMU_EFI.fd）重试——" +
+                            "新旧固件结果不同即说明所选固件在该设备上有回归；\n" +
+                            "③ Windows 专属：若 Linux 能进而 Windows 卡住，" +
+                            "把「光驱总线」显式设为 USB，或给 ISO 注入 VirtIO 驱动（vioscsi）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -366,9 +368,11 @@ private fun OverviewTab(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    "部分 VNC 客户端（尤其商业版）会在画面角落叠加「未激活 / Not Activated」试用遮罩——" +
-                        "这是客户端自身水印，与目标系统无关（Ubuntu、Windows 都不需要激活）。" +
-                        "换用免费客户端即可去除：aVNC（开源）、bVNC Free、RealVNC Viewer 免费版。",
+                    "两种「未激活」别混淆：① 屏幕正中出现固件消息「Display output is not active.」" +
+                        "——这是引导交接后的显示输出问题，与激活无关，见上方排查卡；" +
+                        "② 部分 VNC 客户端（尤其商业版）会在画面角落叠加试用遮罩——" +
+                        "那是客户端自身水印，与目标系统无关。换用免费客户端即可去除：" +
+                        "aVNC（开源）、bVNC Free、RealVNC Viewer 免费版。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

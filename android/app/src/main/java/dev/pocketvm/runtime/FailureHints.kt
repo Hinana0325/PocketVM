@@ -126,6 +126,15 @@ object FailureHints {
             "缺少 QEMU 数据目录 (-L)。把 share/qemu 一并打包，或使用静态链接的二进制。",
             configFatal = true,
         ),
+        // Firmware-side message: printed by BdsDxe onto the graphical console when
+        // the boot option detached the display and no GOP console is active any
+        // more. It can also land in the serial capture, so classify it here.
+        Rule(
+            Regex("Display output is not active", RegexOption.IGNORE_CASE),
+            "固件报告「显示输出未激活」：引导项已启动，但屏幕被接管后没有再恢复画面。" +
+                "先看串口日志确认内核是否仍在启动（TCG 下可能要等几分钟）；" +
+                "若长时间黑屏，在编辑页把固件换回内置 2024.02 原版（QEMU_EFI.fd）再试。",
+        ),
     )
 
     fun fromLog(logTail: String, exitCode: Int? = null): String? {
