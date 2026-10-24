@@ -26,11 +26,11 @@ object QemuAssets {
     // belief that Ubuntu's build lacked an AHCI driver while QEMU's had it. That
     // came from misreading an x86 virtio-net option ROM message: NEITHER build
     // carries AHCI support. The bundled firmware is the same as v3.)
-    // v5: the bundle now ships several firmwares (edk2 2026.08 plain and
-    // Secure Boot builds) alongside the old 2024.02 image. The marker must
-    // change so an existing install re-extracts them — otherwise the v4
-    // marker short-circuits and the new images never reach firmwareDir.
-    private const val MARKER = ".extracted-v5"
+    // v6: ships edk2 2026.08 (plain) alongside the original 2024.02 image as a
+    // fallback. Bumped from v5 so any install that already extracted the reverted
+    // single-firmware bundle re-extracts BOTH images — otherwise the old marker
+    // short-circuits and 2026.08 never reaches firmwareDir.
+    private const val MARKER = ".extracted-v6"
 
     /**
      * Independent marker for the `-L` data dir. v3 puts `efi-virtio.rom` at the
@@ -78,9 +78,9 @@ object QemuAssets {
     }
 
     /**
-     * edk2's 2 MiB pflash image ships inside the APK so the first launch can
+     * The 64 MiB edk2 pflash image(s) ship inside the APK so the first launch can
      * actually boot instead of stopping at FIRMWARE_MISSING. A user-supplied
-     * firmware in the same directory simply overwrites it.
+     * firmware in the same directory stays selectable alongside them.
      */
     fun ensureFirmware(context: Context, layout: VmStorageLayout): File? {
         return try {

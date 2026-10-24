@@ -16,8 +16,8 @@ android {
         // memfd_create 是 API 30 符号，QEMU 执行层以 android30 为 target 编译。
         minSdk = 30
         targetSdk = 35
-        versionCode = 27
-        versionName = "0.10.4-qemu11.1.2-edk2026.08"
+        versionCode = 28
+        versionName = "0.10.5-qemu11.1.2-edk2026.08"
 
         // The MVP only ships an arm64 execution layer. 32-bit devices cannot run
         // a 64-bit guest, so there is no point in building other ABIs.
@@ -83,6 +83,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)

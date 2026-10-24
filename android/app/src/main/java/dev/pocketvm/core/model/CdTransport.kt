@@ -24,13 +24,14 @@ import kotlinx.serialization.Serializable
  * killed by a signal — same ladder idea as dropping an unusable boot image.
  */
 @Serializable
-enum class CdTransport {
+enum class CdTransport(val label: String) {
     /** Try USB, fall back to virtio-scsi if QEMU dies on it. */
-    AUTO,
+    AUTO("自动"),
 
     /** Boot-and-read via USB mass storage: the only bus both stacks support. */
-    USB,
+    USB("USB"),
 
     /** Boot via virtio-scsi (plus an AHCI copy WinPE can see but edk2 cannot boot). */
-    VIRTIO_SCSI,
+    VIRTIO_SCSI("virtio-scsi+AHCI"),
+    ;
 }

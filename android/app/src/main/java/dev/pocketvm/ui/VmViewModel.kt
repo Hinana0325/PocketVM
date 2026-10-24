@@ -28,9 +28,15 @@ import java.io.File
 
 sealed interface Screen {
     data object List : Screen
+    data object Environment : Screen
+    data object About : Screen
     data object Create : Screen
     data class Console(val vmId: String) : Screen
 }
+
+/** Whether this screen sits behind the bottom navigation bar. */
+val Screen.isTopLevel: Boolean
+    get() = this is Screen.List || this is Screen.Environment || this is Screen.About
 
 data class ImportProgress(val copiedBytes: Long, val totalBytes: Long?) {
     val fraction: Float?
@@ -194,6 +200,11 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     fun back() {
         _ui.update { it.copy(screen = Screen.List, draft = null, editing = false, baseline = null, notice = null) }
         refresh()
+    }
+
+    /** Bottom-navigation: jump to a top-level destination. */
+    fun navigate(screen: Screen) {
+        _ui.update { it.copy(screen = screen, notice = null) }
     }
 
     // ---------- draft editing ----------

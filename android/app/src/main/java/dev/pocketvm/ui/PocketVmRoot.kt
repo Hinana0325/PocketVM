@@ -4,12 +4,14 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -35,7 +37,7 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     val notificationPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
     ) { }
 
     LaunchedEffect(state.notice) {
@@ -46,7 +48,7 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
 
     // Ask only when a VM actually starts: the notification is what keeps it alive.
     LaunchedEffect(state.runtime) {
-        if (state.runtime is VmRuntimeState.Running && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (state.runtime is VmRuntimeState.Running && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.POST_NOTIFICATIONS,
@@ -63,9 +65,40 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
         vm.consumeShare()
     }
 
+    // Top-level destinations get a top app bar; the list screen leads with its
+    // hero header instead, so it stays clean. Create/Console paint their own
+    // header inside the scroll area.
+    val showTopBar = when (state.screen) {
+        Screen.Environment, Screen.About -> true
+        else -> false
+    }
+    val topTitle = when (state.screen) {
+        Screen.Environment -> "执行环境"
+        Screen.About -> "关于"
+        else -> ""
+    }
+    val isTopLevel = state.screen.isTopLevel
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
+        topBar = {
+            if (showTopBar) PocketTopBar(title = topTitle)
+        },
+        bottomBar = {
+            if (isTopLevel) PocketNavBar(current = state.screen, onSelect = { vm.navigate(it) })
+        },
+        floatingActionButton = {
+            if (state.screen is Screen.List) {
+                ExtendedFloatingActionButton(
+                    onClick = vm::newVm,
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text("新建虚拟机") },
+                )
+            }
+        },
     ) { padding ->
         Box(
             modifier = Modifier
@@ -75,6 +108,7 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
             when (val screen = state.screen) {
                 Screen.List -> VmListScreen(
                     state = state,
+                    contentPadding = padding,
                     onNew = vm::newVm,
                     onOpen = vm::openConsole,
                     onEdit = vm::editVm,
@@ -91,6 +125,7 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                     onBack = vm::back,
                     onImportIso = vm::importIso,
                     onImportFirmware = vm::importFirmware,
+                    contentPadding = padding,
                 )
 
                 is Screen.Console -> {
@@ -101,6 +136,7 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                         ConsoleScreen(
                             state = state,
                             vm = target,
+                            contentPadding = padding,
                             onStart = { vm.start(target.id) },
                             onStop = { vm.stop(target.id) },
                             onRefresh = vm::refreshLog,
@@ -112,6 +148,17 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                         )
                     }
                 }
+
+                Screen.Environment -> EnvironmentScreen(
+                    state = state,
+                    modifier = Modifier.padding(padding),
+                    onProbe = vm::probeEnvironment,
+                )
+
+                Screen.About -> AboutScreen(
+                    state = state,
+                    modifier = Modifier.padding(padding),
+                )
             }
         }
     }

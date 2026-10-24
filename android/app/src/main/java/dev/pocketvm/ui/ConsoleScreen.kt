@@ -1,6 +1,5 @@
 package dev.pocketvm.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -16,15 +15,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -52,6 +51,8 @@ private const val SERIAL_HEIGHT_DP = 220
 fun ConsoleScreen(
     state: UiState,
     vm: VmConfig,
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(0.dp),
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRefresh: () -> Unit,
@@ -62,9 +63,6 @@ fun ConsoleScreen(
     onBack: () -> Unit,
 ) {
     val sessionRuntime = state.runtime
-    // The session is global, but this screen shows one VM. Without this filter,
-    // opening VM B's console while A is running showed A's PID and called B's
-    // VNC port "listening".
     val runtime = when (val r = sessionRuntime) {
         is VmRuntimeState.Running -> if (r.vmId == vm.id) r else VmRuntimeState.Idle
         is VmRuntimeState.Preparing -> if (r.vmId == vm.id) r else VmRuntimeState.Idle
@@ -79,6 +77,7 @@ fun ConsoleScreen(
     var copied by remember { mutableStateOf(false) }
     var copiedError by remember { mutableStateOf(false) }
     var followLog by remember { mutableStateOf(true) }
+    var tab by remember { mutableStateOf(0) }
     val clipboard = LocalClipboardManager.current
     val logScroll = rememberScrollState()
     val serialScroll = rememberScrollState()
@@ -91,41 +90,96 @@ fun ConsoleScreen(
             copiedError = false
         }
     }
-    // A console that does not follow its own output is useless during setup.
     LaunchedEffect(state.log, followLog) {
         if (followLog && state.log.isNotEmpty()) logScroll.scrollTo(logScroll.maxValue)
     }
-    // The serial pane is a live progress view, not a log to browse: it always
-    // shows the newest line, since that is where the boot currently is.
     LaunchedEffect(state.serial) {
         if (state.serial.isNotEmpty()) serialScroll.scrollTo(serialScroll.maxValue)
     }
 
-    BackHandler(onBack = onBack)
+    Column(modifier = modifier.fillMaxSize().padding(contentPadding)) {
+        PocketTopBar(
+            title = vm.name,
+            subtitle = "${vm.cpuCores} vCPU · ${vm.memoryMb} MB · ${vm.diskSizeGb} GB · TCG",
+            showBack = true,
+            onBack = onBack,
+            actions = {
+                TextButton(onClick = { onRefresh() }) { Text("刷新") }
+            },
+        )
 
-    // LazyColumn instead of a scrolling Column: the log pane scrolls on its own,
-    // and nesting two same-axis scroll containers made the page fight the log.
+        TabRow(
+            selectedTabIndex = tab,
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("概览") })
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("日志") })
+        }
+
+        when (tab) {
+            0 -> OverviewTab(
+                state = state,
+                vm = vm,
+                runtime = runtime,
+                running = running,
+                otherRunning = otherRunning,
+                copiedError = copiedError,
+                copiedVnc = copied,
+                onCopyVnc = {
+                    val host = if (vm.vncAccess == VncAccess.LAN) (state.localIp ?: "0.0.0.0") else "127.0.0.1"
+                    clipboard.setText(AnnotatedString("$host:${vm.vncPort}"))
+                    copied = true
+                },
+                onStart = onStart,
+                onStop = onStop,
+                onExport = onExport,
+                onEject = onEject,
+                onSendKey = onSendKey,
+                onBootFromShell = onBootFromShell,
+                onCopyError = {
+                    clipboard.setText(AnnotatedString(errorReport(runtime, state.log)))
+                    copiedError = true
+                },
+            )
+            else -> LogsTab(
+                state = state,
+                vm = vm,
+                running = running,
+                showArgv = showArgv,
+                followLog = followLog,
+                logScroll = logScroll,
+                serialScroll = serialScroll,
+                onToggleArgv = { showArgv = !showArgv },
+                onToggleFollow = { followLog = !followLog },
+            )
+        }
+    }
+}
+
+@Composable
+private fun OverviewTab(
+    state: UiState,
+    vm: VmConfig,
+    runtime: VmRuntimeState,
+    running: Boolean,
+    otherRunning: VmRuntimeState.Running?,
+    copiedError: Boolean,
+    copiedVnc: Boolean,
+    onCopyVnc: () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onExport: () -> Unit,
+    onEject: () -> Unit,
+    onSendKey: () -> Unit,
+    onBootFromShell: () -> Unit,
+    onCopyError: () -> Unit,
+) {
+    val usedBytes = state.diskUsage[vm.id] ?: 0L
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                }
-                Column {
-                    Text(vm.name, style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        "${vm.cpuCores} vCPU · ${vm.memoryMb} MB · ${vm.diskSizeGb} GB · TCG",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
         item {
             SectionCard(title = "运行状态") {
                 Row(
@@ -150,16 +204,14 @@ fun ConsoleScreen(
                             VmRuntimeState.Idle -> Tone.Idle
                         },
                     )
-                    TextButton(
-                        onClick = {
-                            clipboard.setText(AnnotatedString(errorReport(runtime, state.log)))
-                            copiedError = true
-                        },
-                    ) { Text(if (copiedError) "已复制" else "复制错误") }
-                    TextButton(onClick = onRefresh) { Text("刷新日志") }
+                    TextButton(onClick = onCopyError) { Text(if (copiedError) "已复制" else "复制错误") }
                 }
 
                 KeyValueRow("虚拟盘", "已用 ${usedBytes / (1024 * 1024)} MB / ${vm.diskSizeGb} GB")
+                KeyValueRow(
+                    "光驱 / 固件",
+                    "${vm.cdTransport.label} · ${vm.firmwareCodePath?.substringAfterLast('/') ?: "内置"}",
+                )
                 KeyValueRow(
                     "控制器",
                     if (vm.storageController.name == "NVME") "虚拟盘 NVMe · 光驱 AHCI"
@@ -175,8 +227,6 @@ fun ConsoleScreen(
                     },
                 )
 
-                // How far the guest got. PocketVM never renders the guest screen,
-                // so this line is the only in-app answer to "启动之后呢".
                 (runtime as? VmRuntimeState.Running)?.let { live ->
                     KeyValueRow("引导阶段", live.stage.label)
                     Text(
@@ -226,9 +276,6 @@ fun ConsoleScreen(
             }
         }
 
-        // Offered once the disk has clearly been written to: at that point the
-        // ISO is only a boot-order obstacle, and leaving it attached is how
-        // people end up booting the installer again.
         if (vm.isoPath != null && usedBytes > 4L * 1024 * 1024 * 1024) {
             item {
                 SectionCard(
@@ -277,12 +324,7 @@ fun ConsoleScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("地址  $vncHost:${vm.vncPort}", style = MaterialTheme.typography.bodySmall)
-                    TextButton(
-                        onClick = {
-                            clipboard.setText(AnnotatedString("$vncHost:${vm.vncPort}"))
-                            copied = true
-                        },
-                    ) { Text(if (copied) "已复制" else "复制") }
+                    TextButton(onClick = onCopyVnc) { Text(if (copiedVnc) "已复制" else "复制") }
                 }
                 KeyValueRow("Display", ":${vm.vncPort - 5900}")
                 KeyValueRow("密码", vm.vncPassword?.takeIf { it.isNotBlank() } ?: "未设置")
@@ -293,7 +335,7 @@ fun ConsoleScreen(
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp))
                             .padding(8.dp),
                     )
                 }
@@ -304,15 +346,9 @@ fun ConsoleScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (running) {
-                    // The firmware sometimes lands in the UEFI Shell instead of
-                    // booting the CD. PocketVM watches the serial console and
-                    // types the EFI boot command the moment it sees "Shell>".
-                    // Whether that can work depends on what the firmware actually
-                    // mounted, so the result — including "not recognized" — shows
-                    // up verbatim in 固件输出 above.
                     Text(
                         "固件若停在 UEFI Shell，App 会通过串口自动输入引导命令，" +
-                            "Shell 的回应见上方「固件输出」。",
+                            "Shell 的回应见「日志」页的「固件输出」。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -323,12 +359,28 @@ fun ConsoleScreen(
                 }
             }
         }
+    }
+}
 
+@Composable
+private fun LogsTab(
+    state: UiState,
+    vm: VmConfig,
+    running: Boolean,
+    showArgv: Boolean,
+    followLog: Boolean,
+    logScroll: androidx.compose.foundation.ScrollState,
+    serialScroll: androidx.compose.foundation.ScrollState,
+    onToggleArgv: () -> Unit,
+    onToggleFollow: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         item {
-            // QEMU prints nothing on a healthy launch, so the stdout pane below
-            // is routinely empty while the guest is busy. The firmware's serial
-            // console is where the actual progress is: which boot option edk2
-            // picked, the installer's keypress prompt, a UEFI Shell drop.
             SectionCard(
                 title = "固件输出（串口）",
                 subtitle = if (running) "UEFI 与引导程序的控制台，实时追加" else "未运行",
@@ -345,7 +397,7 @@ fun ConsoleScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(SERIAL_HEIGHT_DP.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp))
                         .padding(10.dp)
                         .verticalScroll(serialScroll),
                 )
@@ -359,10 +411,10 @@ fun ConsoleScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    TextButton(onClick = { showArgv = !showArgv }) {
+                    TextButton(onClick = onToggleArgv) {
                         Text(if (showArgv) "隐藏启动参数" else "查看启动参数")
                     }
-                    TextButton(onClick = { followLog = !followLog }) {
+                    TextButton(onClick = onToggleFollow) {
                         Text(if (followLog) "自动跟随：开" else "自动跟随：关")
                     }
                 }
@@ -373,15 +425,13 @@ fun ConsoleScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp))
                             .padding(10.dp)
                             .horizontalScroll(rememberScrollState()),
                     )
                 }
                 Text(
                     state.log.ifBlank {
-                        // QEMU is silent on success; an empty pane is normal and
-                        // used to look like "it died immediately".
                         if (running) "（QEMU 正常运行时不会输出内容，画面请用 VNC 客户端连接）"
                         else "（暂无输出）"
                     },
@@ -389,7 +439,7 @@ fun ConsoleScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(LOG_HEIGHT_DP.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp))
                         .padding(10.dp)
                         .verticalScroll(logScroll),
                 )

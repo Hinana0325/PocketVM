@@ -47,15 +47,16 @@ class FirmwareManager(
     }
 
     /**
-     * Sorted so the *default* pick is the newest plain (non-Secure-Boot) image:
-     * Secure Boot builds are listed last because they will refuse to start an
-     * unsigned bootloader, which looks exactly like "the ISO is broken".
+     * Name order. The bundle ships two images: `QEMU_EFI-2026.08.fd` (the active
+     * edk2 2026.08 build) and `QEMU_EFI.fd` (the 2024.02 fallback). The dated
+     * name sorts first, so 2026.08 is the default pick. Anything else here was
+     * imported by the user and stays selectable.
      */
     private fun scan(): List<File> = layout.firmwareDir
         .listFiles()
         ?.filter { it.isFile && it.name.endsWith(".fd", ignoreCase = true) }
         ?.filterNot { it.name.contains("vars", ignoreCase = true) }
-        ?.sortedWith(compareBy<File> { it.name.contains("secboot", ignoreCase = true) }.thenBy { it.name })
+        ?.sortedBy { it.name }
         ?: emptyList()
 
     fun resolve(config: VmConfig): File? {
