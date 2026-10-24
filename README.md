@@ -19,7 +19,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.5 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.6 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -33,6 +33,7 @@
 | 0.10.4 | **固件升级到 edk2 2026.08**（原为 2024.02，老了两年半）：内置 3 份可选固件（2026.08 普通版 / 2026.08 Secure Boot 版 / 旧 2024.02），默认选最新普通版；同时把**所有引导相关项做成可选**（光驱总线、输入设备、串口自动恢复、网卡、RNG、是否提取引导镜像、CPU 模型） |
 | 0.10.3 | **光驱改走 USB**：edk2 能从 virtio-scsi 光驱引导，但 WinPE 没有 `vioscsi`、读不到 `install.wim`；AHCI 正相反（WinPE 能读，edk2 无驱动引导不了）——**USB 是两边都支持的唯一总线**。新增 `CdTransport`（AUTO/USB/VIRTIO_SCSI），AUTO 先用 USB，若 QEMU 被信号杀死则自动降级 virtio-scsi 重试 |
 | 0.10.5 | **UI 重构 + 最终版固件**：界面从两块平铺卡片升级为带底部导航（虚拟机 / 环境 / 关于）的分层界面——列表页渐变 Hero + 聚合统计 + 可展开环境就绪条 + 重做虚拟机卡片（状态色条/规格 chips/磁盘进度条）；控制台页概览/日志双 Tab；新增环境页与关于页。固件定版为 **edk2 2026.08**（原版 2024.02 兜底并列打包，运行时按文件名排序自动优先 2026.08）；修复提取标记升 v6 避免升级短路、移除误删 `QEMU_EFI-*` 的清理逻辑 |
+| 0.10.6 | **Windows 安装配方（全网调研落地）**：显示设备可配 ramfb / virtio-gpu——ramfb 是社区三份独立教程一致的安装期显示（virtio-gpu 的驱动交接会清空 scanout，安装途中出现「Display output is not active.」占位画面）；挂 VirtIO 驱动盘时安装 ISO 只走 virtio-scsi（**Windows 无法同时配置两个 ISO 设备，同挂必冻结**，richliu 实测）；占位画面排查补 Ctrl+Alt+F1 / `console=tty0`（社区确认这是引导器→登录界面间的正常过渡）；关于页/控制台补完整 Win11 ARM64 安装配方（22589 可用 25226 必坏、`vioscsi → w11 → ARM64`、TESTSIGNING、NetKVM/viogpudo） |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
@@ -111,21 +112,40 @@ No errors were found on the image.
 注意：Windows 安装程序不带 virtio 网卡驱动（`netkvm`），联网前需先从 VirtIO 驱动盘加载；
 Linux 内核自带，装上即可上网。
 
-## 装 Windows 的前提条件
+## 装 Windows 11 ARM64（社区验证路径）
 
-这三件事决定了「插上 ISO 点启动就能装」能否成立：
+这条链路综合了 dariaphoebe、richliu、sekin 三份独立教程在 `virt` 平台上装 Win11
+ARM64 的一致结论，PocketVM 的默认配置与回退逻辑就是按它搭的：
 
-1. **磁盘必须是 NVMe，光驱走 AHCI。** Windows 安装程序自带 `stornvme` 和 `storahci`
-   驱动，但不带 virtio。默认配置就是 `-device nvme`（磁盘）+ `-device ich9-ahci` +
-   `-device ide-cd`（光驱）；选 virtio 会更快、支持 TRIM，但安装界面会看不到磁盘，
-   需要手动加载 `viostor`。光驱**不走 USB**：实测在本机 `usb-storage` 必 SIGILL
-   （exit=132，与介质大小无关），virtio-scsi 则能引导但 WinPE 没有 vioscsi 驱动。
-2. **Windows 11 要求 TPM 2.0。** QEMU 自身不模拟 TPM，需要外挂 `swtpm`，PocketVM 没有打包，
-   所以原版 Windows 11 安装程序会停在「这台电脑无法运行 Windows 11」。
-   两条出路：换 Windows 10 ARM64 镜像，或在安装界面按 Shift+F10 用注册表 `LabConfig`
-   绕过（需要键盘输入，属于 P1）。
-3. **容量与内存。** Windows 11 要求 64 GB 起，装完实际占用约 25–35 GB，建议 128 GB；
-   内存低于 4096 MB 时安装程序展开镜像容易失败。
+1. **磁盘用 NVMe**（安装程序自带 `stornvme`），**光驱默认「自动」**：先走 USB
+   （edk2 与 WinPE 都支持的唯一总线），被 SIGILL 杀死后自动整体回退
+   virtio-scsi + virtio 输入，并记住这个选择。
+2. **显示用 ramfb**（编辑页 → 引导相关 → 显示设备）。virtio-gpu 的驱动交接会让
+   QEMU 清空显示输出（`ui/console.c dpy_gfx_replace_surface`），安装途中出现
+   「Display output is not active.」占位画面；ramfb 没有这个交接，是社区安装
+   Windows ARM64 的一致选择。   代价是固定 800x600——固件界面按 **F10** 进 Setup
+   把首选分辨率改成 1024x768，设置写入 vars.fd，重启保留。ramfb 的重绘不完整会留下
+   残影，这是已知问题，忽略即可（装好驱动后再切回 virtio-gpu）。
+3. **镜像版本**：**22589 可用，25226 已知必坏**（启动即未处理异常）。
+4. **驱动盘**：回退到 virtio-scsi 后，WinPE 读不到 virtio-scsi 上的
+   `install.wim`，挂一张 virtio-win ISO 作驱动盘（AHCI 总线，WinPE 的 `storahci`
+   能读它），在 WinPE「加载驱动」里进 `驱动盘盘符 → vioscsi → w11 → ARM64`
+   （认准含 `vioscsi.inf` 的目录）。**挂驱动盘时安装 ISO 只走 virtio-scsi**：
+   Windows 无法同时配置两个 ISO 设备，同挂必冻结（richliu 实测）——若加载驱动
+   失败，卸掉驱动盘重启，安装 ISO 会恢复 AHCI 副本，无需任何 virtio 驱动即可读盘。
+5. **安装假死**：`Getting ready` 超过 10 分钟不动、或看门狗 BSOD，直接重启，
+   TCG 下这是常态；提示 `Windows installation cannot proceed` 时
+   Shift+F10 → `regedit` → `HKLM\SYSTEM\Setup\Status\ChildCompletion\Setup`
+   改成 3 → 重启。
+6. **签名**：首次设置（国家/键盘）界面 Shift+F10 开命令提示符，执行
+   `bcdedit /set TESTSIGNING ON`——virtio 驱动虽然带签名，不开这项照样装不上。
+7. **进桌面后**：从驱动盘把 NetKVM / viostor / vioscsi / viogpudo 的 `.inf`
+   （`w11\ARM64` 目录）右键安装；遇签名提示先把 `cert` 目录里的证书装进
+   「受信任的发布者」。之后可把显示切回 virtio-gpu（1280x800）。
+8. **TPM 2.0**：QEMU 不模拟 TPM，原版 Win11 会停在「这台电脑无法运行
+   Windows 11」，Shift+F10 + 注册表 `LabConfig` 绕过（或换 Win10 ARM64）。
+9. **容量与内存**：Win11 要求 64 GB 起，建议 128 GB；内存低于 4096 MB 时
+   安装程序展开镜像容易失败。
 
 ## 构建
 
@@ -180,8 +200,11 @@ APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 3
 
 固件与光驱：ARM virt 平台的 edk2 构建**不含 AHCI 驱动** —— 这一点 Ubuntu 版和 QEMU 官方版
 （edk2-stable202408）完全一样，两者都看不到挂在 `ich9-ahci` 上的光驱（`map` 查询无 FS、
-无 BLK）。固件能用的光驱只有 virtio-scsi；而 Windows 只能认 AHCI（自带 storahci，没有
-vioscsi）。所以同一个 ISO 要挂两次，见下。
+无 BLK）。固件能用的光驱只有 virtio-scsi（和 USB）；而 Windows 只能认 AHCI（自带 storahci，
+没有 vioscsi）。USB 是两边都支持的总线，但它在本机必崩，所以回退到 virtio-scsi 后要么把
+同一个 ISO 挂两次（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`），要么挂一张
+virtio-win 驱动盘让 WinPE 加载 `vioscsi`——后者只挂一个安装 ISO，详见「装 Windows 11
+ARM64（社区验证路径）」。
 
 > 一条曾经的误判：`Image type X64 can't be loaded on AARCH64 UEFI system` 看起来像是"固件读到了
 > 光驱里的 x86 引导程序"，其实它来自 virtio-net 的 x86 option ROM（`efi-virtio.rom`）——
@@ -257,8 +280,8 @@ docs/                       架构、排障、打包与推送
 | 编译（aarch64 动态 PIE） | 通过，82 个单元测试全绿 |
 | APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
 | 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
-| 安装介质启动 | **通过（需双光驱）**：固件从 virtio-scsi 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。同一个 ISO 必须同时挂到 AHCI 光驱上，供 WinPE 侧读 install.wim |
-| Windows 安装全流程 | **未通过，原因已定位（非本项目可控）**：WinPE 早期内核初始化时发生 Data Abort（ESR `0x25/0x96000047` = EL1 写、三级页转换失败，FAR `0x0`），异常不可恢复，指令 `0x…637200: b .` 永久停机。PC 上同 QEMU 同配置**逐位复现**（PC/寄存器全同），`pauth=off`、`-smp 1/4`、两种固件、AHCI/virtio-scsi 均不改变 —— 是 Windows 在标准 `virt` 平台上过不去 |
+| 安装介质启动 | **通过**：固件从 USB 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。USB 崩溃回退 virtio-scsi 后：无驱动盘时同一 ISO 双挂（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`）；挂驱动盘时只走 virtio-cd（两个 ISO 设备同屏会冻结安装） |
+| Windows 安装全流程 | **进行中**：USB 整体回退 + 驱动盘 + ramfb 显示 + 单 ISO 设备策略已按社区验证配方就位；上次真机停在 bootmgr 阶段（virtio-scsi 读不到 `install.wim`），待按上方配方挂驱动盘复测。历史上另有一次 WinPE 早期内核 Data Abort（ESR `0x25/0x96000047`，FAR `0x0`，指令 `0x…637200: b .`），PC 上同配置逐位复现，与加速档位/内存/固件无关——那是 USB 光驱时代的配置，当前 virtio-scsi + 驱动盘链路尚未复测该问题 |
 
 第一次上机时最值得盯的三件事：`QemuEnvironment` 是否报 `QEMU_MISSING`（找不到 .so）、
 日志里有没有 `Could not read keymap`、以及 VNC 端口是否真的在监听。

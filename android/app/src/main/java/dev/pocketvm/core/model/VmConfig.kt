@@ -15,6 +15,32 @@ data class PortForward(
 )
 
 /**
+ * Which display device the guest sees.
+ *
+ * Community-verified Windows ARM64 installs on `virt` (dariaphoebe's gist,
+ * richliu's guide, sekin's Win10 guide) all use **ramfb**, not virtio-gpu: the
+ * moment the guest's virtio-gpu driver initialises it issues a device reset,
+ * which makes QEMU drop the scanout (`ui/console.c dpy_gfx_replace_surface`)
+ * and paint the "Display output is not active." placeholder — right in the
+ * middle of Setup. ramfb is a dumb framebuffer with no such handover, at the
+ * cost of a fixed 800x600 (raise to 1024x768 via the firmware setup, F10; the
+ * choice persists because PocketVM keeps a writable vars pflash).
+ *
+ * virtio-gpu stays the default because it is what was measured on this device:
+ * the firmware picture comes up at 1280x800, and Linux guests drive it fine.
+ * Switch to ramfb for the Windows install attempt.
+ */
+@Serializable
+enum class DisplayDevice(val label: String) {
+    /** Dumb linear framebuffer; the community's install-time display. */
+    RAMFB("ramfb"),
+
+    /** virtio-gpu-pci: 1280x800 firmware picture, guest driver handover risk. */
+    VIRTIO_GPU("virtio-gpu"),
+    ;
+}
+
+/**
  * Everything PocketVM needs to know about a virtual machine *before* it starts.
  *
  * Paths are stored absolute so that a config can be inspected without resolving
@@ -59,6 +85,12 @@ data class VmConfig(
     val cdTransport: CdTransport = CdTransport.AUTO,
     /** Keyboard/tablet over USB (true) or virtio (false). See QemuCommandBuilder. */
     val usbInput: Boolean = true,
+    /**
+     * Display device for the guest — see [DisplayDevice]. virtio-gpu is the
+     * measured default on this device; ramfb is what every community-verified
+     * Windows ARM64 install uses, because it has no driver-handover reset.
+     */
+    val displayDevice: DisplayDevice = DisplayDevice.VIRTIO_GPU,
     /**
      * Firmware serial console + automatic UEFI Shell recovery. Off means no
      * `-serial` at all; keep it on unless you are debugging something else.

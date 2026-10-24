@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.pocketvm.core.config.Severity
 import dev.pocketvm.core.model.CdTransport
+import dev.pocketvm.core.model.DisplayDevice
 import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.PortForward
 import dev.pocketvm.core.model.StorageController
@@ -575,6 +576,7 @@ fun CreateVmScreen(
                             if (draft.driverIsoPath != null) " · 驱动盘已挂" else "" +
                             if (draft.portForwards.isNotEmpty()) " · 转发 ${draft.portForwards.size} 个端口" else "" +
                             " · 输入 ${if (draft.usbInput) "USB" else "virtio"} · " +
+                            "显示 ${draft.displayDevice.label} · " +
                             "串口恢复 ${if (draft.serialRecovery) "开" else "关"} · " +
                             "CPU ${draft.cpuModel ?: "跟随档位"} · 提取镜像 ${if (draft.useBootImage) "开" else "关"}",
                         style = MaterialTheme.typography.bodySmall,
@@ -597,7 +599,8 @@ fun CreateVmScreen(
                         "USB 是 edk2 与 WinPE 都支持的总线（edk2 无 AHCI 驱动，WinPE 无 vioscsi），" +
                             "但部分机型（如骁龙 8 Gen3）上 QEMU 的 USB 栈会直接崩溃（SIGILL）。「自动」先用 USB，" +
                             "一旦被信号杀死就整体回退：光驱改 virtio-scsi + AHCI、输入同步改 virtio，并记住这个选择；" +
-                            "Windows 在 virtio-scsi 下需配合上方「驱动盘」加载 vioscsi 才能读安装文件。",
+                            "Windows 在 virtio-scsi 下需配合上方「驱动盘」加载 vioscsi 才能读安装文件" +
+                            "（挂了驱动盘时安装 ISO 只走 virtio-scsi：两个 ISO 设备同屏会让 Windows 安装冻结）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -611,6 +614,24 @@ fun CreateVmScreen(
                     Text(
                         "USB 键鼠与 USB 光驱是同一条 USB 栈：若启动时发生过 USB 崩溃，输入会被自动改为 virtio" +
                             "（固件菜单里可能无法用 virtio 键盘操作，但客户机系统内正常）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    ChoiceRow(
+                        label = "显示设备",
+                        options = listOf(
+                            DisplayDevice.VIRTIO_GPU to "virtio-gpu",
+                            DisplayDevice.RAMFB to "ramfb",
+                        ),
+                        selected = draft.displayDevice,
+                        onSelect = { value -> onUpdate { it.copy(displayDevice = value) } },
+                    )
+                    Text(
+                        "virtio-gpu 固件画面 1280x800（本机实测）；ramfb 是社区安装 Windows ARM64 的" +
+                            "验证组合——virtio-gpu 的驱动交接会让 QEMU 清空显示输出，安装途中可能出现" +
+                            "「Display output is not active.」占位画面。ramfb 固定 800x600，" +
+                            "可在固件界面按 F10 进 Setup 把首选分辨率改成 1024x768（会写入变量存储，重启保留）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

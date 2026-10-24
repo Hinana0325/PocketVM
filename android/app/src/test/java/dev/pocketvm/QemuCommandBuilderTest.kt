@@ -1,6 +1,7 @@
 package dev.pocketvm
 
 import dev.pocketvm.core.model.CdTransport
+import dev.pocketvm.core.model.DisplayDevice
 import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.PortForward
@@ -136,6 +137,15 @@ class QemuCommandBuilderTest {
             "AHCI 控制器必须先于驱动盘出现",
             args.indexOf("ich9-ahci,id=ahci") < args.indexOf("ide-cd,drive=cd2,bus=ahci.0"),
         )
+        // Windows Setup cannot configure two ISO devices at once and freezes when
+        // it tries (richliu.com). With a driver disk the AHCI copy of the install
+        // ISO is dropped: vioscsi loaded from the driver disk makes the scsi-cd
+        // readable, so the duplicate is pure risk.
+        assertFalse(
+            "挂驱动盘时安装 ISO 不再有 AHCI 副本（两个 ISO 设备同屏会冻结）",
+            args.any { it == "ide-cd,drive=cd1,bus=ahci.0" },
+        )
+        assertTrue("安装 ISO 仍在 virtio-scsi 上供固件引导", args.any { it == "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1" })
     }
 
     @Test
@@ -380,5 +390,23 @@ class QemuCommandBuilderTest {
         )
         assertFalse("virtio 输入且无介质时不该有 xhci", virtio.any { it == "qemu-xhci,id=xhci" })
         assertTrue(virtio.any { it == "virtio-keyboard-pci" })
+    }
+
+    @Test
+    fun `display device defaults to virtio-gpu`() {
+        // Measured on the device: the firmware picture comes up at 1280x800.
+        val args = builder.build(request())
+        assertTrue(args.any { it == "virtio-gpu-pci" })
+        assertFalse(args.any { it == "ramfb" })
+    }
+
+    @Test
+    fun `ramfb is selectable for the windows install path`() {
+        // Every community-verified Windows ARM64 install on virt uses ramfb:
+        // virtio-gpu's driver handover resets the device and QEMU drops the
+        // scanout mid-Setup ("Display output is not active.").
+        val args = builder.build(request().copy(displayDevice = DisplayDevice.RAMFB))
+        assertTrue(args.any { it == "ramfb" })
+        assertFalse("ramfb 与 virtio-gpu 不并存", args.any { it == "virtio-gpu-pci" })
     }
 }

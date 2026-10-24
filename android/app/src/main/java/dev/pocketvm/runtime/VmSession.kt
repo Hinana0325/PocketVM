@@ -464,6 +464,7 @@ class VmSession(
                     storageController = config.storageController,
                     cdTransport = cdTransport,
                     usbInput = usbInput,
+                    displayDevice = config.displayDevice,
                     cpuModel = config.cpuModel,
                     rng = config.rng,
                     profile = profile,

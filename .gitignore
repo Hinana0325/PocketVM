@@ -11,3 +11,6 @@ build/
 .build-qemu/
 # 构建产物与本地 APK 集合
 dist/
+
+# 固件工作区：解包/抽取用，随包的是 assets/firmware/*.gz，发布走 Release 资产
+firmware/

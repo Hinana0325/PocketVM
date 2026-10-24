@@ -67,7 +67,54 @@ fun AboutScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        "「自动」模式下发生过一次 USB 崩溃后，App 会自动整体回退到 virtio-scsi + virtio 输入并记住该选择；之后 Windows 从 virtio-scsi 读不到安装文件，需挂一张含 VirtIO 驱动（vioscsi）的 AHCI 驱动盘，在 WinPE 里「加载驱动」后再装。Linux 内核自带 virtio 驱动，不受此限制。",
+                        "「自动」模式下发生过一次 USB 崩溃后，App 会自动整体回退到 virtio-scsi + virtio 输入并记住该选择；" +
+                            "之后 Windows 从 virtio-scsi 读不到安装文件，需挂一张含 VirtIO 驱动（vioscsi）的驱动盘，" +
+                            "在 WinPE 里「加载驱动」后再装。Linux 内核自带 virtio 驱动，不受此限制。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        item {
+            SectionCard(title = "Windows 安装配方", subtitle = "社区多份独立教程验证过的组合") {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "1. 镜像选 Windows 11 ARM64 Insider 22589 或更新的可用版本（25226 已知必坏：启动即未处理异常）；" +
+                            "Win11 的 TPM 检查用 Shift+F10 打开命令提示符，以注册表 LabConfig 绕过。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "2. 编辑页把「显示设备」切成 ramfb：这是社区安装 Windows ARM64 的一致选择，" +
+                            "virtio-gpu 的驱动交接会清空显示输出（Display output is not active）。" +
+                            "ramfb 固定 800x600，固件界面按 F10 可调高（写入变量存储，重启保留）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "3. 挂 VirtIO 驱动盘（virtio-win ISO）后，在 WinPE「加载驱动」里进 驱动盘盘符 → " +
+                            "vioscsi → w11 → ARM64（认准含 vioscsi.inf 的目录）。挂驱动盘时安装光盘只走 virtio-scsi：" +
+                            "两个 ISO 设备同屏会让 Windows 安装冻结。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "4. 安装假死（Getting ready 超过 10 分钟不动 / 看门狗 BSOD）就重启，TCG 下这是常态；" +
+                            "提示 Windows installation cannot proceed 时：Shift+F10 → regedit → " +
+                            "HKLM\\SYSTEM\\Setup\\Status\\ChildCompletion\\Setup 改成 3 → 重启。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "5. 首次设置（国家/键盘）界面按 Shift+F10 开命令提示符，执行 bcdedit /set TESTSIGNING ON，" +
+                            "否则 virtio 驱动装不上。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "6. 进桌面后从驱动盘把 NetKVM、viostor、vioscsi、viogpudo 的 .inf（w11\\ARM64 目录）" +
+                            "右键安装；遇签名提示就先把 cert 目录里的证书装进受信任的发布者。之后可把显示切回 virtio-gpu。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

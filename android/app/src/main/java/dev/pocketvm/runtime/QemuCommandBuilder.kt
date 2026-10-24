@@ -1,6 +1,7 @@
 package dev.pocketvm.runtime
 
 import dev.pocketvm.core.model.CdTransport
+import dev.pocketvm.core.model.DisplayDevice
 import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.PortForward
 import dev.pocketvm.core.model.StorageController
@@ -60,6 +61,8 @@ data class LaunchRequest(
      * [QemuCommandBuilder.build] for the measurement that moved it to USB.
      */
     val usbInput: Boolean = true,
+    /** Display device; see [DisplayDevice]. */
+    val displayDevice: DisplayDevice = DisplayDevice.VIRTIO_GPU,
     /**
      * Unix socket for the firmware/guest serial console. Null disables it.
      * When present, VmSession watches it and auto-recovers from a UEFI Shell
@@ -126,15 +129,24 @@ class QemuCommandBuilder {
         }
 
         // virtio-scsi + AHCI only exist for the VIRTIO_SCSI transport: edk2 boots
-        // the scsi-cd copy, and the ich9-ahci copy is the one stock WinPE can
-        // read (storahci) — but edk2 has no AHCI driver, so it cannot boot it.
+        // the scsi-cd copy, while the ich9-ahci bus carries what stock WinPE can
+        // read (storahci) — either an AHCI copy of the install ISO, or the VirtIO
+        // driver disk. edk2 has no AHCI driver, so it cannot boot anything there.
         // That split is exactly why USB is preferred whenever it does not crash.
         if ((mediaPath != null || request.driverIsoPath != null) && transport == CdTransport.VIRTIO_SCSI) {
             args += listOf("-device", "virtio-scsi-pci,id=scsi0")
             args += listOf("-device", "ich9-ahci,id=ahci")
         }
 
-        args += listOf("-device", "virtio-gpu-pci")
+        // Display: ramfb or virtio-gpu — see DisplayDevice for why the Windows
+        // install path wants the dumb framebuffer (no driver-handover reset).
+        args += listOf(
+            "-device",
+            when (request.displayDevice) {
+                DisplayDevice.RAMFB -> "ramfb"
+                DisplayDevice.VIRTIO_GPU -> "virtio-gpu-pci"
+            },
+        )
 
         // Input goes over USB, not virtio. edk2 and a stock Windows ARM64 install
         // both carry xHCI/USB-HID drivers; virtio input needs drivers the installer
@@ -197,16 +209,31 @@ class QemuCommandBuilder {
             } else {
                 // Two backend drives over one file; QEMU is fine with a readonly
                 // medium attached on both buses at once.
+                //
+                // The AHCI copy is a *fallback for the no-driver-disk case*: stock
+                // WinPE reads install.wim from it via storahci without touching
+                // virtio at all. When a driver disk is attached it is deliberately
+                // dropped — see the driver-disk block below.
                 args += listOf("-drive", "if=none,id=cd0,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
                 args += listOf("-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1")
-                args += listOf("-drive", "if=none,id=cd1,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
-                args += listOf("-device", "ide-cd,drive=cd1,bus=ahci.0")
+                if (request.driverIsoPath == null) {
+                    args += listOf("-drive", "if=none,id=cd1,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
+                    args += listOf("-device", "ide-cd,drive=cd1,bus=ahci.0")
+                }
             }
             // Driver disk: a VirtIO driver ISO (e.g. Fedora virtio-win) on the AHCI
             // bus. WinPE has storahci, so it can read this disk and "Load Driver"
             // vioscsi from it, after which it can read the virtio-scsi install CD
             // above. Without this, a stock Windows ARM64 ISO cannot install when
             // USB crashes and virtio-scsi is the only bootable bus.
+            //
+            // It also *replaces* the AHCI copy of the install ISO: Windows Setup
+            // cannot configure two ISO devices at once and freezes when it tries
+            // (richliu.com, hit while installing Win11 ARM64 on QEMU) — and with
+            // vioscsi loaded the scsi-cd is readable anyway, so a third CD device
+            // carrying the same install media is pure risk. If the driver fails to
+            // load in WinPE, detach the driver disk and relaunch: the AHCI copy
+            // comes back and install.wim is readable without any virtio driver.
             request.driverIsoPath?.let { driverIso ->
                 args += listOf("-drive", "if=none,id=cd2,media=cdrom,readonly=on,format=raw,file=${escapeOption(driverIso)}")
                 args += listOf("-device", "ide-cd,drive=cd2,bus=ahci.0")

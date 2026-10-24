@@ -131,9 +131,12 @@ object FailureHints {
         // this device after selecting a Linux boot option with virtio-gpu.
         Rule(
             Regex("Display output is not active", RegexOption.IGNORE_CASE),
-            "这是 QEMU 的占位画面：客户机把显示输出关掉后没有恢复（常见于引导器/内核交接 virtio-gpu 时）。" +
-                "先看串口日志确认系统是否仍在启动（TCG 下可能要等几分钟，画面可能长时间不变）；" +
-                "若始终停在这句，在编辑页把固件换回内置 2024.02 原版（QEMU_EFI.fd）再试。",
+            "这是 QEMU 的占位画面：客户机（常见于引导器/内核交接 virtio-gpu 时）把显示输出关掉后没有恢复，" +
+                "不是故障——Flatcar 等项目在 ARM64 QEMU 上从 GRUB 到登录界面之间本来就会闪一下它。\n" +
+                "① 先在 VNC 客户端里按 Ctrl+Alt+F1 强制切换 TTY，画面通常会回来（社区在飞腾 ARM64 上验证）；\n" +
+                "② 串口日志才是真相：里面有输出就说明系统还在启动，TCG 下先等几分钟；\n" +
+                "③ 想根治：客户机内核命令行加 console=tty0，或在编辑页把显示设备切成 ramfb" +
+                "（没有 virtio-gpu 的驱动交接，社区安装 Windows ARM64 都用它）。",
         ),
         // Linux guest-side warning, observed on Ubuntu ARM64 under TCG: the
         // framebuffer console's damage work queue saturates a vCPU because every

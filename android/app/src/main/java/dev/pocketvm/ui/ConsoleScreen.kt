@@ -306,13 +306,20 @@ private fun OverviewTab(
                 ) {
                     Text(
                         "选完启动项后长时间黑屏、或屏幕出现「Display output is not active.」" +
-                            "（这是 QEMU 的占位画面：客户机把显示输出关掉后没有恢复），排查顺序：\n" +
-                            "① 串口日志里 starting Boot0001 之后是否仍有输出——有就是内核还在启动，TCG 下先等 3-5 分钟；\n" +
-                            "② USB 在本机必然崩溃：保持「光驱总线=自动」启动一次，App 会自动记住" +
+                            "（QEMU 占位画面：客户机关闭显示输出后没恢复；社区确认这是引导器→登录界面间的正常过渡，不是故障），" +
+                            "排查顺序：\n" +
+                            "① 串口日志里 starting Boot0001 之后是否仍有输出——有就是系统还在启动，TCG 下先等 5-10 分钟；\n" +
+                            "② 黑屏时先在 VNC 客户端里按 Ctrl+Alt+F1 强制切 TTY，画面通常会回来；\n" +
+                            "③ USB 在本机必然崩溃：保持「光驱总线=自动」启动一次，App 会自动记住" +
                             "virtio-scsi + virtio 输入（光驱和输入一起回退），之后不再走 USB；\n" +
-                            "③ Windows 在 virtio-scsi 下读不到安装文件——挂一张含 VirtIO 驱动（vioscsi）的" +
-                            "AHCI 驱动盘，在 WinPE 里「加载驱动」后再装；\n" +
-                            "④ 仍黑屏则把固件换回内置 2024.02 原版（QEMU_EFI.fd）重试，隔离固件回归。",
+                            "④ Windows 在 virtio-scsi 下读不到安装文件：挂 VirtIO 驱动盘（virtio-win），" +
+                            "在 WinPE 的「加载驱动」里进 驱动盘盘符 → vioscsi → w11 → ARM64" +
+                            "（认准含 vioscsi.inf 的目录）；挂了驱动盘时光盘只走 virtio-scsi，" +
+                            "两个 ISO 设备同屏会让 Windows 安装冻结；\n" +
+                            "⑤ 仍黑屏就把编辑页「显示设备」切成 ramfb：这是社区安装 Windows ARM64 的验证组合，" +
+                            "virtio-gpu 的驱动交接正是占位画面的来源；ramfb 固定 800x600，" +
+                            "可在固件界面按 F10 进 Setup 调分辨率（会写入变量存储，重启保留）；\n" +
+                            "⑥ 以上无效再把固件换回内置 2024.02 原版（QEMU_EFI.fd）重试，隔离固件回归。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -397,8 +404,9 @@ private fun OverviewTab(
                     )
                 }
                 Text(
-                    "两种「未激活」别混淆：① 屏幕正中出现固件消息「Display output is not active.」" +
-                        "——这是引导交接后的显示输出问题，与激活无关，见上方排查卡；" +
+                    "两种「未激活」别混淆：① 屏幕正中出现「Display output is not active.」" +
+                        "——这是 QEMU 的占位画面（引导交接后显示输出没恢复），与激活无关；" +
+                        "先按 Ctrl+Alt+F1 强制切 TTY，多半能恢复，详见上方排查卡；" +
                         "② 部分 VNC 客户端（尤其商业版）会在画面角落叠加试用遮罩——" +
                         "那是客户端自身水印，与目标系统无关。换用免费客户端即可去除：" +
                         "aVNC（开源）、bVNC Free、RealVNC Viewer 免费版。",
