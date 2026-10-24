@@ -297,8 +297,15 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                         if (outcome.failed.isEmpty()) {
                             append("QEMU 已启动（${outcome.profile.label}），固件画面就绪后连接 VNC")
                         } else {
-                            append("标准模式未成功（${outcome.failed.joinToString("；")}），")
-                            append("已自动切到${outcome.profile.label}模式启动")
+                            // Say what actually changed. A USB-crash retry keeps the
+                            // same profile and only moves the CD bus — calling that
+                            // "已自动切到标准模式" read as 标准→标准 and buried the
+                            // real change, which the preflight note spells out.
+                            append("首次启动失败（${outcome.failed.joinToString("；")}）")
+                            if (outcome.profileChanged) {
+                                append("，已自动切到${outcome.profile.label}模式")
+                            }
+                            append("；重试后启动成功")
                         }
                         container.session.preflightNote?.let { append("；").append(it) }
                     }

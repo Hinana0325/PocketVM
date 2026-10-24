@@ -135,6 +135,15 @@ object FailureHints {
                 "先看串口日志确认系统是否仍在启动（TCG 下可能要等几分钟，画面可能长时间不变）；" +
                 "若始终停在这句，在编辑页把固件换回内置 2024.02 原版（QEMU_EFI.fd）再试。",
         ),
+        // Linux guest-side warning, observed on Ubuntu ARM64 under TCG: the
+        // framebuffer console's damage work queue saturates a vCPU because every
+        // redraw costs ~100x more than on native silicon. Not a failure — but it
+        // is why a graphical installer crawls on this stack.
+        Rule(
+            Regex("hogged CPU for|WQ_UNBOUND", RegexOption.IGNORE_CASE),
+            "客户机内核报告帧缓冲控制台的重绘拖慢了 CPU——TCG 软件模拟下图形控制台的固有开销，不是故障。" +
+                "安装阶段优先用文本模式（服务器版安装器默认即是）；装好后禁用 fbcon 或改用串口控制台可缓解。",
+        ),
     )
 
     fun fromLog(logTail: String, exitCode: Int? = null): String? {

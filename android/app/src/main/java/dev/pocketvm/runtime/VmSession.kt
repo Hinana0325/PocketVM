@@ -66,6 +66,13 @@ sealed interface LaunchOutcome {
         val vncPort: Int = 5900,
         /** Final CD bus used after any AUTO downgrade, so the caller can persist it. */
         val cdTransport: CdTransport = CdTransport.AUTO,
+        /**
+         * True when the winning attempt was not the first ladder rung — i.e. the
+         * acceleration profile actually changed. Without this the notice cannot
+         * tell "fell back to 兼容" from "same profile, only the CD bus moved",
+         * and the latter rendered as the nonsensical "标准 → 标准".
+         */
+        val profileChanged: Boolean = false,
     ) : LaunchOutcome
     data class Rejected(val report: ValidationReport) : LaunchOutcome
     data class Failed(val message: String, val hint: String? = null, val cdTransport: CdTransport = CdTransport.AUTO) : LaunchOutcome
@@ -605,7 +612,8 @@ class VmSession(
                 }
                 preflightNote = notes.takeIf { it.isNotEmpty() }?.joinToString("；")
                 return@withLock LaunchOutcome.Started(
-                    profile, failedAttempts.toList(), effectivePort, cdTransport = cdTransport,
+                    profile, failedAttempts.toList(), effectivePort,
+                    cdTransport = cdTransport, profileChanged = index > 0,
                 )
             }
 
