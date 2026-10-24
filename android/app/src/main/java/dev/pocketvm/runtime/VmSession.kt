@@ -1264,9 +1264,14 @@ class VmSession(
     }.getOrNull() ?: "unknown"
 
     /**
-     * Child PID for display only. `Process.pid()` may be missing or hidden on
-     * some ART versions, in which case the implementation field is used. A
-     * failure here must never affect the launch, hence -1.
+     * Child PID for display only — and, more importantly, the key every reader
+     * of `/proc/<pid>` (stat, statm, io) needs: the health probe and the
+     * performance dashboard both bail out when this returns -1.
+     *
+     * `Process.pid()` may be missing or hidden on some ART versions, and the
+     * reflective invoke also dies on JDK 16+ (module encapsulation), so the
+     * last resort is a `/proc` scan: our direct child whose cmdline says qemu.
+     * A failure here must never affect the launch, hence -1.
      */
     private fun pidOf(process: Process): Int {
         runCatching {
@@ -1282,7 +1287,9 @@ class VmSession(
             }
             type = type.superclass
         }
-        return -1
+        return dev.pocketvm.diagnostics.ChildProcess.findChildPid(
+            parentPid = android.os.Process.myPid(),
+        )
     }
 
     private fun exitCodeOf(process: Process): Int = runCatching {

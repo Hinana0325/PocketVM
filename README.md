@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.7 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.8 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -36,6 +36,7 @@
 | 0.10.5 | **UI 重构 + 最终版固件**：界面从两块平铺卡片升级为带底部导航（虚拟机 / 环境 / 关于）的分层界面——列表页渐变 Hero + 聚合统计 + 可展开环境就绪条 + 重做虚拟机卡片（状态色条/规格 chips/磁盘进度条）；控制台页概览/日志双 Tab；新增环境页与关于页。固件定版为 **edk2 2026.08**（原版 2024.02 兜底并列打包，运行时按文件名排序自动优先 2026.08）；修复提取标记升 v6 避免升级短路、移除误删 `QEMU_EFI-*` 的清理逻辑 |
 | 0.10.6 | **Windows 安装配方（全网调研落地）**：显示设备可配 ramfb / virtio-gpu——ramfb 是社区三份独立教程一致的安装期显示（virtio-gpu 的驱动交接会清空 scanout，安装途中出现「Display output is not active.」占位画面）；挂 VirtIO 驱动盘时安装 ISO 只走 virtio-scsi（**Windows 无法同时配置两个 ISO 设备，同挂必冻结**，richliu 实测）；占位画面排查补 Ctrl+Alt+F1 / `console=tty0`（社区确认这是引导器→登录界面间的正常过渡）；关于页/控制台补完整 Win11 ARM64 安装配方（22589 可用 25226 必坏、`vioscsi → w11 → ARM64`、TESTSIGNING、NetKVM/viogpudo） |
 | 0.10.7 | **性能占用仪表**：控制台新增「性能」Tab，1 Hz 采样 QEMU 进程的 CPU（多线程 TCG 下可超 100%）、每 vCPU 占用、RSS 内存（占手机物理内存比例）、磁盘 I/O（MB/s）与运行时长，附 60 秒 CPU 迷你图。全部宿主机侧采集（`/proc/<pid>/{stat,statm,io}` + QMP `query-cpus-fast`），客户机无需装 agent，Windows 安装过程中也能看 |
+| 0.10.8 | **修复子进程 PID 获取（真机上仪表/健康探针静默失效的根因）**：`Process.pid()` 的反射 invoke 在 JDK 16+ 撞模块封装、在 ART 上是隐藏 API，两条反射路都断时 `pidOf` 返回 -1，健康探针与性能仪表会**静默不启动**。新增 `/proc` 扫描兜底（`diagnostics/ChildProcess.kt`：ppid==本进程 且 cmdline 含 qemu 的直接子进程），任何 Linux/ART 上都成立；补 9 个测试：5 个假 /proc 夹具 + 4 个**真内核**集成测试（解析测试 JVM 自身 /proc、采样真实忙等进程、双子进程中按 qemu 名扫描、已回收 PID 返回 null） |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
@@ -131,6 +132,14 @@ Linux 内核自带，装上即可上网。
 每秒采样一次，随 VM 进程启动而开始、退出即清空。采样器是纯增量数学
 （`diagnostics/VmMetrics.kt`），解析器与计算都有单测覆盖——长整型 tick
 增量必须转成浮点再除，否则低于单核满载时全会显示 0%。
+
+仪表能出数的前提是拿到 QEMU 子进程的 PID。`Process.pid()` 不能直接信：
+反射 invoke 在桌面 JDK 16+ 撞模块封装（`IllegalAccessException`），
+在 ART 上 `UNIXProcess` 整个类是隐藏 API——两条反射路都断时，
+健康探针与仪表都会静默不启动。因此 `pidOf` 有三级降级：
+反射方法 → 反射字段 → `/proc` 扫描（`diagnostics/ChildProcess.kt`：
+ppid 等于本进程、cmdline 含 qemu 的直接子进程）。扫描这条路有假 /proc
+夹具测试，也有真内核集成测试（见 `VmMetricsRealProcTest`）。
 
 ## 装 Windows 11 ARM64（社区验证路径）
 
