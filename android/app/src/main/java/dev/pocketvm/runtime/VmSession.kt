@@ -64,9 +64,11 @@ sealed interface LaunchOutcome {
         val failed: List<String> = emptyList(),
         /** Port actually used; differs from the config when the preferred one was busy. */
         val vncPort: Int = 5900,
+        /** Final CD bus used after any AUTO downgrade, so the caller can persist it. */
+        val cdTransport: CdTransport = CdTransport.AUTO,
     ) : LaunchOutcome
     data class Rejected(val report: ValidationReport) : LaunchOutcome
-    data class Failed(val message: String, val hint: String? = null) : LaunchOutcome
+    data class Failed(val message: String, val hint: String? = null, val cdTransport: CdTransport = CdTransport.AUTO) : LaunchOutcome
 }
 
 /**
@@ -405,6 +407,13 @@ class VmSession(
             else -> config.cdTransport
         }
         var cdTransportDowngraded = false
+        // USB input shares the xHCI controller with usb-storage. When the stack
+        // proves fatal (signal kill, see below), the CD is not the only thing that
+        // has to move: usb-kbd/usb-tablet sit on the same bus and kill QEMU the
+        // moment the guest's HID driver touches them — a crash no later rung of
+        // the ladder would survive, because the ladder only moves the CD. So the
+        // downgrade takes the whole USB bus down at once.
+        var usbInput = config.usbInput
 
         var index = 0
         while (index < ladder.size) {
@@ -435,6 +444,7 @@ class VmSession(
                     diskPath = diskReady.file.absolutePath,
                     diskFormat = diskReady.format,
                     isoPath = iso?.absolutePath,
+                    driverIsoPath = config.driverIsoPath,
                     cpuCores = config.cpuCores,
                     memoryMb = config.memoryMb,
                     vncPort = effectivePort,
@@ -445,7 +455,7 @@ class VmSession(
                     vmName = config.name,
                     storageController = config.storageController,
                     cdTransport = cdTransport,
-                    usbInput = config.usbInput,
+                    usbInput = usbInput,
                     cpuModel = config.cpuModel,
                     rng = config.rng,
                     profile = profile,
@@ -593,7 +603,9 @@ class VmSession(
                     notes += "已用提取的引导镜像启动，固件不依赖 ISO9660"
                 }
                 preflightNote = notes.takeIf { it.isNotEmpty() }?.joinToString("；")
-                return@withLock LaunchOutcome.Started(profile, failedAttempts.toList(), effectivePort)
+                return@withLock LaunchOutcome.Started(
+                    profile, failedAttempts.toList(), effectivePort, cdTransport = cdTransport,
+                )
             }
 
             // This profile failed. Keep the log, clean up, try the next one.
@@ -670,14 +682,16 @@ class VmSession(
             }
 
             // The CD sat on USB and QEMU was killed by a signal: that is the
-            // SIGILL the USB mass-storage chain used to produce on this device.
-            // Retry the same profile with the CD on virtio-scsi + AHCI — it does
-            // not boot Windows, but it proves the box runs and keeps a usable
-            // screen, which beats spending the whole ladder on one bad bus.
+            // SIGILL the USB mass-storage chain produces on some devices (e.g.
+            // Snapdragon 8 Gen3). Retry the same profile with the CD on
+            // virtio-scsi + AHCI *and* input on virtio — the whole USB bus goes,
+            // because usb-kbd/usb-tablet on the same xHCI controller crash the
+            // same way once the guest's HID driver enumerates them.
             if (cdTransport == CdTransport.USB && code >= 128) {
                 cdTransport = CdTransport.VIRTIO_SCSI
+                usbInput = false
                 cdTransportDowngraded = true
-                notes += "USB 光驱导致 QEMU 崩溃（exit=$code），本次改为 virtio-scsi + AHCI"
+                notes += "USB 导致 QEMU 崩溃（exit=$code），本次改为 virtio-scsi + AHCI，输入同步改为 virtio"
                 continue
             }
             index += 1
@@ -699,8 +713,10 @@ class VmSession(
                 append("\n（引导镜像已挂载时 QEMU 直接崩溃，本次已回退为光盘引导）")
             }
             if (cdTransportDowngraded) {
-                append("\n（USB 光驱导致 QEMU 崩溃，已回退为 virtio-scsi + AHCI：" +
-                    "能进固件但 WinPE 读不到 virtio-scsi 上的 install.wim，需改用 USB 或注入 vioscsi 驱动）")
+                append("\n（USB 导致 QEMU 崩溃，已整体回退：光驱改 virtio-scsi + AHCI、输入改 virtio。" +
+                    "本机 USB 栈必然崩溃，而 WinPE 缺 vioscsi 驱动、读不到 virtio-scsi 上的 install.wim——" +
+                    "请挂一张含 VirtIO 驱动的 AHCI 驱动盘（在 WinPE 里加载 vioscsi 后再装），" +
+                    "或改用已注入 vioscsi 的 Windows 镜像）")
             }
         }
         AgentFeed.event(
@@ -711,7 +727,7 @@ class VmSession(
             "hint" to lastHint,
         )
         _state.value = VmRuntimeState.Failed(config.id, summary, lastHint ?: representativeDetail)
-        return@withLock LaunchOutcome.Failed(summary, lastHint ?: representativeDetail)
+        return@withLock LaunchOutcome.Failed(summary, lastHint ?: representativeDetail, cdTransport = cdTransport)
     }
 
     /**

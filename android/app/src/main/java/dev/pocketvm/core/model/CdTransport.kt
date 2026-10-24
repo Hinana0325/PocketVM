@@ -19,9 +19,11 @@ import kotlinx.serialization.Serializable
  * CD on virtio-scsi gets the firmware as far as "Loading files..." and then fails,
  * because the boot manager keeps reading from the device it was booted from.
  *
- * `usb-storage` did crash with SIGILL (exit=132) on this device under QEMU 9.2.3,
- * so [AUTO] tries [USB] first and falls back to [VIRTIO_SCSI] when the process is
- * killed by a signal — same ladder idea as dropping an unusable boot image.
+ * `usb-storage` crashes with SIGILL (exit=132) on this device (seen on QEMU 9.2.3
+ * and still on 11.1.2), so [AUTO] tries [USB] first and falls back to [VIRTIO_SCSI]
+ * when the process is killed by a signal — same ladder idea as dropping an unusable
+ * boot image. Once that fallback fires, the app persists VIRTIO_SCSI so it is never
+ * retried.
  */
 @Serializable
 enum class CdTransport(val label: String) {

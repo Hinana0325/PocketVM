@@ -126,14 +126,14 @@ object FailureHints {
             "缺少 QEMU 数据目录 (-L)。把 share/qemu 一并打包，或使用静态链接的二进制。",
             configFatal = true,
         ),
-        // Firmware-side message: printed by BdsDxe onto the graphical console when
-        // the boot option detached the display and no GOP console is active any
-        // more. It can also land in the serial capture, so classify it here.
+        // QEMU's own placeholder (ui/console.c dpy_gfx_replace_surface): the
+        // guest cleared the display scanout and never set a new one. Seen on
+        // this device after selecting a Linux boot option with virtio-gpu.
         Rule(
             Regex("Display output is not active", RegexOption.IGNORE_CASE),
-            "固件报告「显示输出未激活」：引导项已启动，但屏幕被接管后没有再恢复画面。" +
-                "先看串口日志确认内核是否仍在启动（TCG 下可能要等几分钟）；" +
-                "若长时间黑屏，在编辑页把固件换回内置 2024.02 原版（QEMU_EFI.fd）再试。",
+            "这是 QEMU 的占位画面：客户机把显示输出关掉后没有恢复（常见于引导器/内核交接 virtio-gpu 时）。" +
+                "先看串口日志确认系统是否仍在启动（TCG 下可能要等几分钟，画面可能长时间不变）；" +
+                "若始终停在这句，在编辑页把固件换回内置 2024.02 原版（QEMU_EFI.fd）再试。",
         ),
     )
 

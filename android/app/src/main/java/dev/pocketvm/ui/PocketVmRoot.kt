@@ -124,6 +124,7 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                     onSave = vm::saveDraft,
                     onBack = vm::back,
                     onImportIso = vm::importIso,
+                    onImportDriverIso = vm::importDriverIso,
                     onImportFirmware = vm::importFirmware,
                     contentPadding = padding,
                 )

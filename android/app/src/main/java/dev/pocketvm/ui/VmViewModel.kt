@@ -12,6 +12,7 @@ import dev.pocketvm.core.config.Issue
 import dev.pocketvm.core.config.Severity
 import dev.pocketvm.core.config.ValidationInput
 import dev.pocketvm.core.model.VmConfig
+import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.runtime.LaunchOutcome
@@ -263,6 +264,26 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(busy = true, notice = null, log = "", screen = Screen.Console(vmId))
             }
             val outcome = container.session.start(vm)
+            // USB crashed on this device and we fell back to virtio-scsi: remember
+            // it so the next start skips the crash entirely (AUTO no longer retries
+            // USB). usbInput goes down with it — usb-kbd/usb-tablet sit on the same
+            // xHCI bus and crash the same way once the guest enumerates them.
+            // Only persists when the transport actually changed, so an explicit
+            // VIRTIO_SCSI choice is never silently overridden.
+            val finalTransport = when (outcome) {
+                is LaunchOutcome.Started -> outcome.cdTransport
+                is LaunchOutcome.Failed -> outcome.cdTransport
+                else -> null
+            }
+            if (finalTransport == CdTransport.VIRTIO_SCSI && vm.cdTransport != CdTransport.VIRTIO_SCSI) {
+                container.configStore.save(
+                    vm.copy(
+                        cdTransport = CdTransport.VIRTIO_SCSI,
+                        usbInput = false,
+                    ),
+                )
+                refresh()
+            }
             val message = when (outcome) {
                 is LaunchOutcome.Started -> {
                     VmKeepAliveService.start(getApplication())
@@ -415,6 +436,39 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 },
                 onFailure = { error ->
                     _ui.update { it.copy(importing = null, notice = "导入失败：${error.message}") }
+                },
+            )
+        }
+    }
+
+    fun importDriverIso(uri: Uri) {
+        viewModelScope.launch {
+            _ui.update { it.copy(importing = ImportProgress(0, null), notice = null) }
+            val result = withContext(Dispatchers.IO) {
+                container.isoImporter.import(uri) { copied, total ->
+                    _ui.update { it.copy(importing = ImportProgress(copied, total)) }
+                }
+            }
+            result.fold(
+                onSuccess = { file ->
+                    val attached = _ui.value.draft != null
+                    if (!attached) {
+                        withContext(Dispatchers.IO) { file.delete() }
+                        _ui.update { it.copy(importing = null, notice = "已离开编辑页，导入的镜像已丢弃") }
+                    } else {
+                        _ui.update { state ->
+                            val draft = state.draft?.copy(driverIsoPath = file.absolutePath)
+                            state.copy(
+                                draft = draft,
+                                importing = null,
+                                imageOptions = (state.imageOptions + file.absolutePath).distinct().sorted(),
+                                notice = "已导入驱动盘 ${file.name}",
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    _ui.update { it.copy(importing = null, notice = "驱动盘导入失败：${error.message}") }
                 },
             )
         }

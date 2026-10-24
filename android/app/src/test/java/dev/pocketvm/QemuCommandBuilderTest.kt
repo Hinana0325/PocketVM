@@ -123,6 +123,27 @@ class QemuCommandBuilderTest {
     }
 
     @Test
+    fun `driver iso attaches on the AHCI bus in virtio-scsi mode`() {
+        // Without a driver disk WinPE cannot read install.wim from virtio-scsi,
+        // so the Fedora virtio-win ISO must appear as a second AHCI cdrom.
+        val args = builder.build(
+            request().copy(cdTransport = CdTransport.VIRTIO_SCSI, driverIsoPath = "/x/virtio-win.iso"),
+        )
+        assertTrue(args.any { it == "ide-cd,drive=cd2,bus=ahci.0" })
+        assertTrue("驱动盘后端 drive 应指向传入的 driverIsoPath", args.any { it.contains("id=cd2,") && it.contains("virtio-win.iso") })
+        assertTrue(
+            "AHCI 控制器必须先于驱动盘出现",
+            args.indexOf("ich9-ahci,id=ahci") < args.indexOf("ide-cd,drive=cd2,bus=ahci.0"),
+        )
+    }
+
+    @Test
+    fun `no driver iso means no second AHCI cdrom`() {
+        val args = builder.build(request().copy(cdTransport = CdTransport.VIRTIO_SCSI, driverIsoPath = null))
+        assertFalse(args.any { it == "ide-cd,drive=cd2,bus=ahci.0" })
+    }
+
+    @Test
     fun `virtio mode keeps virtio-blk for the disk`() {
         val args = builder.build(request().copy(storageController = StorageController.VIRTIO))
         assertTrue(args.any { it.startsWith("virtio-blk-pci,drive=disk0") })

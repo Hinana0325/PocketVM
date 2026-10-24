@@ -48,6 +48,7 @@ fun CreateVmScreen(
     onSave: () -> Unit,
     onBack: () -> Unit,
     onImportIso: (Uri) -> Unit,
+    onImportDriverIso: (Uri) -> Unit,
     onImportFirmware: (Uri) -> Unit,
     contentPadding: androidx.compose.foundation.layout.PaddingValues = androidx.compose.foundation.layout.PaddingValues(0.dp),
 ) {
@@ -69,6 +70,9 @@ fun CreateVmScreen(
     }
     val firmwarePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(onImportFirmware)
+    }
+    val driverIsoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(onImportDriverIso)
     }
 
     // Backing out of the wizard used to throw away every edit without asking.
@@ -286,6 +290,37 @@ fun CreateVmScreen(
             }
 
             SectionCard(
+                title = "驱动盘（VirtIO 驱动）",
+                subtitle = "USB 光驱在本机会令 QEMU 崩溃时，挂这张盘让 WinPE 加载 vioscsi 才能装 Windows",
+            ) {
+                val driverName = draft.driverIsoPath?.substringAfterLast('/')
+                Text(
+                    driverName ?: "未选择（仅当 USB 崩溃、改用 virtio-scsi 装 Windows 时才需要）",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { driverIsoPicker.launch(arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*")) },
+                        enabled = state.importing == null,
+                    ) { Text("导入驱动盘 ISO") }
+                    if (draft.driverIsoPath != null) {
+                        TextButton(
+                            onClick = { onUpdate { it.copy(driverIsoPath = null) } },
+                            enabled = state.importing == null,
+                        ) { Text("移除") }
+                    }
+                }
+                Text(
+                    "用 Fedora 的 virtio-win 驱动盘（含 vioscsi、viostor 等）。安装时 Windows 停在「找不到驱动程序」" +
+                        "或读不到安装文件时，点「加载驱动程序」指向这张 AHCI 盘里的 vioscsi（如 w11arm64 目录）即可。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            SectionCard(
                 title = "VNC 服务",
                 subtitle = "画面由 QEMU 自带的 VNC 服务提供，本 App 只负责启动与监督",
             ) {
@@ -433,7 +468,9 @@ fun CreateVmScreen(
                     // Collapsed summary: enough to confirm what a VM is actually
                     // booting with, without reading seven separate controls.
                     Text(
-                        "光驱 ${draft.cdTransport.label} · 输入 ${if (draft.usbInput) "USB" else "virtio"} · " +
+                        "光驱 ${draft.cdTransport.label}" +
+                            if (draft.driverIsoPath != null) " · 驱动盘已挂" else "" +
+                            " · 输入 ${if (draft.usbInput) "USB" else "virtio"} · " +
                             "串口恢复 ${if (draft.serialRecovery) "开" else "关"} · " +
                             "CPU ${draft.cpuModel ?: "跟随档位"} · 提取镜像 ${if (draft.useBootImage) "开" else "关"}",
                         style = MaterialTheme.typography.bodySmall,
@@ -453,8 +490,10 @@ fun CreateVmScreen(
                         onSelect = { value -> onUpdate { it.copy(cdTransport = value) } },
                     )
                     Text(
-                        "USB 是 edk2 与 WinPE 都支持的唯一总线（edk2 无 AHCI 驱动，WinPE 无 vioscsi）。" +
-                            "「自动」先用 USB，若 QEMU 被信号杀死则回退 virtio-scsi——回退后能进固件但装不了系统。",
+                        "USB 是 edk2 与 WinPE 都支持的总线（edk2 无 AHCI 驱动，WinPE 无 vioscsi），" +
+                            "但部分机型（如骁龙 8 Gen3）上 QEMU 的 USB 栈会直接崩溃（SIGILL）。「自动」先用 USB，" +
+                            "一旦被信号杀死就整体回退：光驱改 virtio-scsi + AHCI、输入同步改 virtio，并记住这个选择；" +
+                            "Windows 在 virtio-scsi 下需配合上方「驱动盘」加载 vioscsi 才能读安装文件。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -464,6 +503,12 @@ fun CreateVmScreen(
                         options = listOf(true to "USB", false to "virtio"),
                         selected = draft.usbInput,
                         onSelect = { value -> onUpdate { it.copy(usbInput = value) } },
+                    )
+                    Text(
+                        "USB 键鼠与 USB 光驱是同一条 USB 栈：若启动时发生过 USB 崩溃，输入会被自动改为 virtio" +
+                            "（固件菜单里可能无法用 virtio 键盘操作，但客户机系统内正常）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
                     ChoiceRow(

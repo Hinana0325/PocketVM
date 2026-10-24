@@ -19,6 +19,14 @@ data class VmConfig(
     val diskSizeGb: Int = 64,
     /** Absolute path of the imported Windows ARM64 ISO, or null for a disk-only boot. */
     val isoPath: String? = null,
+    /**
+     * Absolute path of a VirtIO driver ISO (e.g. Fedora's `virtio-win`) attached on
+     * the AHCI bus. Stock WinPE has `storahci` and can read it, then "Load Driver"
+     * installs `vioscsi` so it can read an `install.wim` sitting on a virtio-scsi CD.
+     * This is what makes Windows installable when USB crashes and virtio-scsi is the
+     * only bootable bus. Null = no driver disk.
+     */
+    val driverIsoPath: String? = null,
     /** Absolute path of the UEFI code flash. Null means "pick the first usable firmware". */
     val firmwareCodePath: String? = null,
     val bootFromCd: Boolean = true,

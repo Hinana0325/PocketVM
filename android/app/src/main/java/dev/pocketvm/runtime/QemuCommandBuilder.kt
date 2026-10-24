@@ -16,6 +16,8 @@ data class LaunchRequest(
     val diskPath: String,
     val diskFormat: String = "qcow2",
     val isoPath: String? = null,
+    /** VirtIO driver ISO attached on the AHCI bus (see [VmConfig.driverIsoPath]). */
+    val driverIsoPath: String? = null,
     val cpuCores: Int = 4,
     val memoryMb: Int = 3072,
     val vncPort: Int = 5900,
@@ -121,7 +123,7 @@ class QemuCommandBuilder {
         // the scsi-cd copy, and the ich9-ahci copy is the one stock WinPE can
         // read (storahci) — but edk2 has no AHCI driver, so it cannot boot it.
         // That split is exactly why USB is preferred whenever it does not crash.
-        if (mediaPath != null && transport == CdTransport.VIRTIO_SCSI) {
+        if ((mediaPath != null || request.driverIsoPath != null) && transport == CdTransport.VIRTIO_SCSI) {
             args += listOf("-device", "virtio-scsi-pci,id=scsi0")
             args += listOf("-device", "ich9-ahci,id=ahci")
         }
@@ -193,6 +195,15 @@ class QemuCommandBuilder {
                 args += listOf("-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1")
                 args += listOf("-drive", "if=none,id=cd1,media=cdrom,readonly=on,format=raw,file=${escapeOption(iso)}")
                 args += listOf("-device", "ide-cd,drive=cd1,bus=ahci.0")
+            }
+            // Driver disk: a VirtIO driver ISO (e.g. Fedora virtio-win) on the AHCI
+            // bus. WinPE has storahci, so it can read this disk and "Load Driver"
+            // vioscsi from it, after which it can read the virtio-scsi install CD
+            // above. Without this, a stock Windows ARM64 ISO cannot install when
+            // USB crashes and virtio-scsi is the only bootable bus.
+            request.driverIsoPath?.let { driverIso ->
+                args += listOf("-drive", "if=none,id=cd2,media=cdrom,readonly=on,format=raw,file=${escapeOption(driverIso)}")
+                args += listOf("-device", "ide-cd,drive=cd2,bus=ahci.0")
             }
         }
 

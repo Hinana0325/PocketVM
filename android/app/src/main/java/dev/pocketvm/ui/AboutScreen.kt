@@ -62,12 +62,12 @@ fun AboutScreen(
             SectionCard(title = "Windows 引导要点", subtitle = "从 CD 启动但卡在固件进度条") {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        "部分机型上 USB 光驱会让 QEMU 崩溃，于是自动降级到 virtio-scsi；但 Windows 引导程序从 virtio-scsi 读不到安装文件，表现为停在 START BOOT OPTION 长时间不动。",
+                        "部分机型（如骁龙 8 Gen3）上 QEMU 的 USB 栈会直接崩溃（SIGILL），光驱和 USB 输入都受影响。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        "解决：① 高级选项把「光驱总线」显式设为 USB（不再崩溃即可正常安装）；② 在 ISO 中注入 vioscsi 驱动后启动；③ 改用已含 VirtIO 驱动的镜像。Linux 不受此限制。",
+                        "「自动」模式下发生过一次 USB 崩溃后，App 会自动整体回退到 virtio-scsi + virtio 输入并记住该选择；之后 Windows 从 virtio-scsi 读不到安装文件，需挂一张含 VirtIO 驱动（vioscsi）的 AHCI 驱动盘，在 WinPE 里「加载驱动」后再装。Linux 内核自带 virtio 驱动，不受此限制。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -210,7 +210,8 @@ private fun OverviewTab(
                 KeyValueRow("虚拟盘", "已用 ${usedBytes / (1024 * 1024)} MB / ${vm.diskSizeGb} GB")
                 KeyValueRow(
                     "光驱 / 固件",
-                    "${vm.cdTransport.label} · ${vm.firmwareCodePath?.substringAfterLast('/') ?: "内置"}",
+                    "${vm.cdTransport.label} · ${vm.firmwareCodePath?.substringAfterLast('/') ?: "内置"}" +
+                        if (vm.driverIsoPath != null) " · 驱动盘已挂" else "",
                 )
                 KeyValueRow(
                     "控制器",
@@ -305,13 +306,13 @@ private fun OverviewTab(
                 ) {
                     Text(
                         "选完启动项后长时间黑屏、或屏幕出现「Display output is not active.」" +
-                            "（这是固件消息，意思是显示控制台在引导交接后没有恢复），" +
-                            "排查顺序：\n" +
+                            "（这是 QEMU 的占位画面：客户机把显示输出关掉后没有恢复），排查顺序：\n" +
                             "① 串口日志里 starting Boot0001 之后是否仍有输出——有就是内核还在启动，TCG 下先等 3-5 分钟；\n" +
-                            "② 编辑页把固件换回内置 2024.02 原版（QEMU_EFI.fd）重试——" +
-                            "新旧固件结果不同即说明所选固件在该设备上有回归；\n" +
-                            "③ Windows 专属：若 Linux 能进而 Windows 卡住，" +
-                            "把「光驱总线」显式设为 USB，或给 ISO 注入 VirtIO 驱动（vioscsi）。",
+                            "② USB 在本机必然崩溃：保持「光驱总线=自动」启动一次，App 会自动记住" +
+                            "virtio-scsi + virtio 输入（光驱和输入一起回退），之后不再走 USB；\n" +
+                            "③ Windows 在 virtio-scsi 下读不到安装文件——挂一张含 VirtIO 驱动（vioscsi）的" +
+                            "AHCI 驱动盘，在 WinPE 里「加载驱动」后再装；\n" +
+                            "④ 仍黑屏则把固件换回内置 2024.02 原版（QEMU_EFI.fd）重试，隔离固件回归。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
