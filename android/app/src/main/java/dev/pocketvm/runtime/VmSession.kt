@@ -20,6 +20,8 @@ import dev.pocketvm.diagnostics.DiagnosticsExporter
 import dev.pocketvm.diagnostics.LogTail
 import dev.pocketvm.diagnostics.ProcessHealth
 import dev.pocketvm.diagnostics.RunManifestStore
+import dev.pocketvm.diagnostics.VmMetrics
+import dev.pocketvm.diagnostics.VmMetricsSampler
 import dev.pocketvm.storage.CheckOutcome
 import dev.pocketvm.storage.DiskProvisioner
 import dev.pocketvm.storage.DiskResult
@@ -104,10 +106,18 @@ class VmSession(
     private val _state = MutableStateFlow<VmRuntimeState>(VmRuntimeState.Idle)
     val state: StateFlow<VmRuntimeState> = _state.asStateFlow()
 
+    /**
+     * Live performance samples for the running VM; null whenever nothing runs.
+     * Host-side only — see [VmMetrics] for what each number means.
+     */
+    private val _metrics = MutableStateFlow<VmMetrics?>(null)
+    val metrics: StateFlow<VmMetrics?> = _metrics.asStateFlow()
+
     private var qemuProcess: Process? = null
     private var monitorJob: Job? = null
     private var serialWatcherJob: Job? = null
     private var healthJob: Job? = null
+    private var metricsJob: Job? = null
 
     /** Last CPU-tick sample; the only way to tell "running" from "wedged". */
     private var lastHealth: ProcessHealth.Sample? = null
@@ -589,6 +599,7 @@ class VmSession(
                 )
                 monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
                 startHealthWatch(launched)
+                startMetricsWatch(launched, client)
                 // Watch the firmware serial console for a UEFI Shell drop and
                 // recover automatically — the backup plan for devices whose edk2
                 // will not auto-boot the CD.
@@ -623,6 +634,7 @@ class VmSession(
             runCatching { launched.destroyForcibly() }
             runCatching { serialWatcherJob?.cancel() }
             runCatching { healthJob?.cancel() }
+            runCatching { metricsJob?.cancel() }
             qemuProcess = null
             activeVmId = null
             client.close()
@@ -1051,6 +1063,44 @@ class VmSession(
 
     fun exportDiagnostics(vmId: String): Result<File> = diagnostics.export(vmId, environmentSummary)
 
+    /**
+     * Feeds the performance dashboard once a second.
+     *
+     * Host-side only: `/proc/<pid>/{stat,statm,io}` for the whole process, plus
+     * `/proc/<tid>/stat` per vCPU thread (the tid list comes from QMP once — it
+     * is stable for a run). A null sample means `/proc/<pid>` went away, which
+     * only happens when the process is being reaped; [awaitExit] clears the
+     * flow, so simply stop here.
+     */
+    private fun startMetricsWatch(process: Process, client: QmpClient) {
+        metricsJob?.cancel()
+        val pid = pidOf(process)
+        if (pid <= 0) return
+        _metrics.value = null
+        metricsJob = scope.launch(Dispatchers.IO) {
+            try {
+                val sampler = VmMetricsSampler(
+                    pid = pid,
+                    pageSizeKb = dev.pocketvm.runtime.DeviceInfo.pageSizeKb().takeIf { it > 0 } ?: 4,
+                )
+                val startedAt = System.currentTimeMillis()
+                val vcpuTids = runCatching { client.cpuThreadIds() }.getOrDefault(emptyList())
+                while (isActive && process.isAlive) {
+                    val now = System.currentTimeMillis()
+                    val sample = sampler.sample(
+                        nowMs = now,
+                        vcpuTids = vcpuTids,
+                        uptimeMs = now - startedAt,
+                    )
+                    _metrics.value = sample
+                    delay(METRICS_INTERVAL_MS)
+                }
+            } catch (t: Throwable) {
+                AgentFeed.event("metrics.error", "pid" to pid, "error" to t.toString())
+            }
+        }
+    }
+
     private suspend fun awaitExit(process: Process, manifest: RunManifest, logFile: File) {
         val code = withContext(Dispatchers.IO) { process.waitFor() }
         // Identity check: a quick stop→start cycle may have installed a *new*
@@ -1061,6 +1111,8 @@ class VmSession(
             runCatching { qmp?.close() }
             runCatching { serialWatcherJob?.cancel() }
             runCatching { healthJob?.cancel() }
+            runCatching { metricsJob?.cancel() }
+            _metrics.value = null
             qmp = null
             qemuProcess = null
             activeVmId = null
@@ -1261,5 +1313,8 @@ class VmSession(
     private companion object {
         /** Must exceed the floor in [ProcessHealth.stalled] or no verdict is ever reached. */
         const val HEALTH_INTERVAL_MS = 10_000L
+
+        /** Dashboard cadence: one second is responsive without burning a core itself. */
+        const val METRICS_INTERVAL_MS = 1_000L
     }
 }

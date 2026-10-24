@@ -16,10 +16,11 @@
 | 进程监督、优雅关机（ACPI→quit→kill）、exit code | 已实现 |
 | 每次启动的 manifest（argv/固件/磁盘/退出码） | 已实现 |
 | 日志尾部读取 + 失败归因 + 诊断包 zip | 已实现 |
+| 性能占用仪表（CPU / 每 vCPU / 内存 / I/O，1 Hz 宿主机侧采样） | 已实现，含单测 |
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.6 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.7 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -34,6 +35,7 @@
 | 0.10.3 | **光驱改走 USB**：edk2 能从 virtio-scsi 光驱引导，但 WinPE 没有 `vioscsi`、读不到 `install.wim`；AHCI 正相反（WinPE 能读，edk2 无驱动引导不了）——**USB 是两边都支持的唯一总线**。新增 `CdTransport`（AUTO/USB/VIRTIO_SCSI），AUTO 先用 USB，若 QEMU 被信号杀死则自动降级 virtio-scsi 重试 |
 | 0.10.5 | **UI 重构 + 最终版固件**：界面从两块平铺卡片升级为带底部导航（虚拟机 / 环境 / 关于）的分层界面——列表页渐变 Hero + 聚合统计 + 可展开环境就绪条 + 重做虚拟机卡片（状态色条/规格 chips/磁盘进度条）；控制台页概览/日志双 Tab；新增环境页与关于页。固件定版为 **edk2 2026.08**（原版 2024.02 兜底并列打包，运行时按文件名排序自动优先 2026.08）；修复提取标记升 v6 避免升级短路、移除误删 `QEMU_EFI-*` 的清理逻辑 |
 | 0.10.6 | **Windows 安装配方（全网调研落地）**：显示设备可配 ramfb / virtio-gpu——ramfb 是社区三份独立教程一致的安装期显示（virtio-gpu 的驱动交接会清空 scanout，安装途中出现「Display output is not active.」占位画面）；挂 VirtIO 驱动盘时安装 ISO 只走 virtio-scsi（**Windows 无法同时配置两个 ISO 设备，同挂必冻结**，richliu 实测）；占位画面排查补 Ctrl+Alt+F1 / `console=tty0`（社区确认这是引导器→登录界面间的正常过渡）；关于页/控制台补完整 Win11 ARM64 安装配方（22589 可用 25226 必坏、`vioscsi → w11 → ARM64`、TESTSIGNING、NetKVM/viogpudo） |
+| 0.10.7 | **性能占用仪表**：控制台新增「性能」Tab，1 Hz 采样 QEMU 进程的 CPU（多线程 TCG 下可超 100%）、每 vCPU 占用、RSS 内存（占手机物理内存比例）、磁盘 I/O（MB/s）与运行时长，附 60 秒 CPU 迷你图。全部宿主机侧采集（`/proc/<pid>/{stat,statm,io}` + QMP `query-cpus-fast`），客户机无需装 agent，Windows 安装过程中也能看 |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
@@ -111,6 +113,24 @@ No errors were found on the image.
 
 注意：Windows 安装程序不带 virtio 网卡驱动（`netkvm`），联网前需先从 VirtIO 驱动盘加载；
 Linux 内核自带，装上即可上网。
+
+## 性能占用仪表
+
+控制台页的「性能」Tab 回答一个问题：**这台虚拟机正在吃掉手机多少资源**。
+采样全部在宿主机侧完成，客户机里不需要装任何 agent，所以 Windows
+安装过程中同样看得到：
+
+| 指标 | 来源 | 说明 |
+| --- | --- | --- |
+| 进程 CPU | `/proc/<pid>/stat` utime+stime 增量 | 以**单核 = 100%** 计。多线程 TCG 让多个 vCPU 线程并行翻译，总值超过 100% 是常态；附最近 60 秒迷你图 |
+| 每 vCPU 占用 | QMP `query-cpus-fast` 拿线程号 → `/proc/<tid>/stat` | 线程号一次运行内不变，只查一次；可看出负载是否摊在所有 vCPU 上 |
+| 内存 | `/proc/<pid>/statm` resident | RSS 含 TCG 翻译缓存，通常高于客户机内存设定；换算成占手机物理内存的比例 |
+| 磁盘 I/O | `/proc/<pid>/io` read/write_bytes 增量 | qcow2 文件实际落到块层的速率，即用户感知的读写 |
+| 运行时长 | 启动时间戳 | — |
+
+每秒采样一次，随 VM 进程启动而开始、退出即清空。采样器是纯增量数学
+（`diagnostics/VmMetrics.kt`），解析器与计算都有单测覆盖——长整型 tick
+增量必须转成浮点再除，否则低于单核满载时全会显示 0%。
 
 ## 装 Windows 11 ARM64（社区验证路径）
 

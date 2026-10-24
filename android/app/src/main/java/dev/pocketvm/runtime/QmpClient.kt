@@ -183,6 +183,22 @@ class QmpClient(private val socketPath: String) : Closeable {
     fun queryStatus(): String? =
         execute("query-status")?.optJSONObject("return")?.optString("status")
 
+    /**
+     * Thread id per vCPU (QMP `query-cpus-fast`), ordered by cpu-index.
+     *
+     * The performance dashboard samples `/proc/<tid>/stat` for each vCPU thread,
+     * and the mapping is stable for the lifetime of a run — so it is fetched
+     * once, not on every sample. Empty when the command is unavailable; the
+     * dashboard then shows the whole-process number only.
+     */
+    fun cpuThreadIds(): List<Int> {
+        val reply = execute("query-cpus-fast") ?: return emptyList()
+        val cpus = reply.optJSONArray("return") ?: return emptyList()
+        return (0 until cpus.length()).mapNotNull { i ->
+            cpus.optJSONObject(i)?.optInt("thread-id")?.takeIf { it > 0 }
+        }
+    }
+
     override fun close() {
         runCatching { writer?.close() }
         runCatching { reader?.close() }

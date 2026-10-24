@@ -103,6 +103,8 @@ data class UiState(
     val lastRuns: kotlin.collections.Map<String, RunManifest> = emptyMap(),
     /** Phone's Wi-Fi/USB-tether IPv4, shown as the VNC endpoint hint. */
     val localIp: String? = null,
+    /** Latest performance sample of the running VM; null when nothing runs. */
+    val metrics: dev.pocketvm.diagnostics.VmMetrics? = null,
 ) {
     val hasUnsavedChanges: Boolean get() = draft != null && draft != baseline
 }
@@ -610,6 +612,11 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     state is VmRuntimeState.Preparing ||
                     state is VmRuntimeState.Stopping
                 if (!keepAlive) VmKeepAliveService.stop(getApplication())
+            }
+        }
+        viewModelScope.launch {
+            container.session.metrics.collect { sample ->
+                _ui.update { it.copy(metrics = sample) }
             }
         }
     }

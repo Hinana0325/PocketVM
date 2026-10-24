@@ -299,6 +299,25 @@ fun SpecChip(text: String, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * Generic horizontal meter, 0..1. The performance dashboard reuses this for
+ * vCPU and memory; [UsageBar] predates it and keeps its own copy.
+ */
+@Composable
+fun MeterBar(
+    fraction: Float,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.primary,
+) {
+    LinearProgressIndicator(
+        progress = { fraction.coerceIn(0f, 1f) },
+        modifier = modifier.fillMaxWidth().height(6.dp),
+        color = color,
+        trackColor = MaterialTheme.colorScheme.surface,
+        strokeCap = StrokeCap.Round,
+    )
+}
+
 @Composable
 fun UsageBar(usedBytes: Long, totalGb: Int, modifier: Modifier = Modifier) {
     val totalBytes = totalGb.toLong() * 1024 * 1024 * 1024L

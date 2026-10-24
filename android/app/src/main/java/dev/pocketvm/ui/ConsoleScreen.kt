@@ -1,5 +1,6 @@
 package dev.pocketvm.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -35,6 +37,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import dev.pocketvm.core.model.LaunchMode
@@ -114,6 +119,7 @@ fun ConsoleScreen(
         ) {
             Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("概览") })
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("日志") })
+            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("性能") })
         }
 
         when (tab) {
@@ -141,7 +147,7 @@ fun ConsoleScreen(
                     copiedError = true
                 },
             )
-            else -> LogsTab(
+            1 -> LogsTab(
                 state = state,
                 vm = vm,
                 running = running,
@@ -152,7 +158,165 @@ fun ConsoleScreen(
                 onToggleArgv = { showArgv = !showArgv },
                 onToggleFollow = { followLog = !followLog },
             )
+            2 -> PerformanceTab(state = state, running = running)
         }
+    }
+}
+
+/**
+ * 性能占用仪表：QEMU 进程在手机上实际占多少。
+ *
+ * 全部数据来自宿主机侧（`/proc/<pid>` + QMP），不需要客户机里装任何 agent，
+ * 因此 Windows 安装过程中也能看。CPU 以「单核的百分比」计——多线程 TCG 下
+ * 多个 vCPU 线程并行翻译，总值超过 100% 是常态而非异常。
+ */
+@Composable
+private fun PerformanceTab(
+    state: UiState,
+    running: Boolean,
+) {
+    val metrics = state.metrics
+    if (!running || metrics == null) {
+        EmptyState(
+            icon = Icons.Filled.Insights,
+            title = "暂无性能数据",
+            subtitle = "虚拟机运行中后，这里以 1 秒间隔采样 QEMU 进程的 CPU、每 vCPU 占用、" +
+                "内存与磁盘 I/O；数据来自 /proc 与 QMP，不需要客户机里装 agent。",
+        )
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            SectionCard(title = "CPU 占用", subtitle = "QEMU 进程 · 单核 = 100%") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "${metrics.cpuPercent.toInt()}%",
+                        style = MaterialTheme.typography.headlineLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    CpuSparkline(history = metrics.cpuHistory)
+                    Text(
+                        "超过 100% 是正常的：多线程 TCG 让 ${metrics.vcpuPercents.size.coerceAtLeast(1)} 个" +
+                            "vCPU 线程并行翻译代码，各自都能吃满一个核。上图是最近 60 秒的进程总占用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        if (metrics.vcpuPercents.isNotEmpty()) {
+            item {
+                SectionCard(title = "每 vCPU 占用", subtitle = "来自 QMP 线程信息") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        metrics.vcpuPercents.forEachIndexed { index, percent ->
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text(
+                                        "vCPU $index",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        "${percent.toInt()}%",
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                                MeterBar(fraction = percent / 100f)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            val phoneMb = state.deviceMemoryMb
+            SectionCard(title = "内存", subtitle = "QEMU 进程常驻内存（RSS）") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KeyValueRow("进程 RSS", "${metrics.rssMb} MB")
+                    if (phoneMb > 0) {
+                        MeterBar(fraction = metrics.rssMb.toFloat() / phoneMb.toFloat())
+                        Text(
+                            "占手机物理内存（${phoneMb} MB）的 " +
+                                "${(metrics.rssMb * 100 / phoneMb).toInt()}%。" +
+                                "RSS 含 TCG 翻译缓存，通常高于客户机内存设定。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            SectionCard(title = "磁盘 I/O", subtitle = "qcow2 文件实际落到块层的速率") {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    KeyValueRow("读", formatRate(metrics.readMBs))
+                    KeyValueRow("写", formatRate(metrics.writeMBs))
+                    Text(
+                        "Windows 安装阶段读 ISO 会持续拉高「读」；写速率突然变大通常是客户机在落盘。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        item {
+            SectionCard(title = "运行时长", subtitle = "本次启动至今") {
+                KeyValueRow("已运行", formatUptime(metrics.uptimeMs))
+            }
+        }
+    }
+}
+
+/** 60-second CPU sparkline; flat until the second sample lands. */
+@Composable
+private fun CpuSparkline(history: List<Float>, modifier: Modifier = Modifier) {
+    val lineColor = MaterialTheme.colorScheme.primary
+    Canvas(modifier = modifier.fillMaxWidth().height(48.dp)) {
+        if (history.size < 2) return@Canvas
+        val max = (history.max() ?: 100f).coerceAtLeast(100f)
+        val stepX = size.width / (history.size - 1).toFloat()
+        val path = Path().apply {
+            history.forEachIndexed { index, value ->
+                val x = index * stepX
+                val y = size.height - (value / max * size.height).coerceIn(0f, size.height)
+                if (index == 0) moveTo(x, y) else lineTo(x, y)
+            }
+        }
+        drawPath(
+            path = path,
+            color = lineColor,
+            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+        )
+    }
+}
+
+private fun formatRate(mbPerSecond: Float): String =
+    String.format(java.util.Locale.US, "%.1f MB/s", mbPerSecond)
+
+private fun formatUptime(ms: Long): String {
+    val totalSeconds = ms / 1000
+    return if (totalSeconds >= 3600) {
+        String.format(
+            java.util.Locale.US,
+            "%d:%02d:%02d",
+            totalSeconds / 3600,
+            (totalSeconds % 3600) / 60,
+            totalSeconds % 60,
+        )
+    } else {
+        String.format(java.util.Locale.US, "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 }
 
