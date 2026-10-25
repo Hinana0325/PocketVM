@@ -69,5 +69,5 @@ cd android
 
 ## 仓库状态与发布
 
-- 这个工作副本**没有 `.git`**（根目录只有 `.gitignore`），`git commit` 之类无从下手。
-- 上游是 `Hinana0325/PocketVM`。沙箱里 git-over-HTTPS 不通，推送靠 `scripts/push_via_api.py`（读 `GH_TOKEN`，走 api.github.com 的 git data API）。这是对外可见的显式动作，未经用户确认不要跑。
+- 这个工作副本**有 `.git`**（remote `https://github.com/Hinana0325/PocketVM.git`，`user.name=Hinana0325`），历史 commit 正常可查。**推送链路现状（2026-10-25 实测）**：github.com:443 在沙箱可达（`curl` 返 200），但凭据全断——`gh` 未登录、沙箱 credential helper（`/usr/local/system/bin/git-credential-helper`）不吐 github.com 凭据、agent-gateway 的 token 服务返回 `Connector "github" is not authorized`。**推送前必须先让用户在 CodeBuddy 设置页完成 GitHub 连接器授权**，之后：`source ~/.codebuddy/skills/github-connector/scripts/get_token.sh github && git remote set-url origin https://oauth2:${GITHUB_TOKEN}@github.com/Hinana0325/PocketVM.git && git push origin main`（推完把 remote URL 恢复成无 token 的形式）。这是对外可见的显式动作，未经用户确认不要跑。
+- `scripts/push_via_api.py` / `gh-sync.py` 是更早的 API 推送方案（读 `GH_TOKEN`、走 api.github.com git data API），为「git-over-HTTPS 不通 + 工作副本无 .git」的时代而写，两个前提现在都不成立；当前同样卡在拿不到 token。别被 gh-sync.py docstring 里「没有 .git」的旧描述误导。
