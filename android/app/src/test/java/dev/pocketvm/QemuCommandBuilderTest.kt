@@ -59,7 +59,19 @@ class QemuCommandBuilderTest {
 
     @Test
     fun `highmem is enabled for guests above one gigabyte`() {
-        assertEquals("virt,highmem=on", valueOf(builder.build(request(memoryMb = 4096)), "-machine"))
+        assertEquals("virt,highmem=on,gic-version=3", valueOf(builder.build(request(memoryMb = 4096)), "-machine"))
+    }
+
+    @Test
+    fun `gicv3 replaces gicv2 for the windows boot manager`() {
+        // On GICv2 the Boot Manager data-aborts writing to physical 0 (ESR
+        // 0x96000047 / FAR 0x0) seconds into its own init, on every run, with
+        // this exact argv. GICv3 is also the only interrupt controller Windows
+        // can use on virt: GICv5 is not ACPI-exposed at all.
+        val args = builder.build(request())
+        val machine = valueOf(args, "-machine")!!
+        assertTrue("机器行必须是 GICv3", machine.contains("gic-version=3"))
+        assertFalse("ITS 不能关：ACPI 仍会描述它，反而必崩", machine.contains("its=off"))
     }
 
     @Test

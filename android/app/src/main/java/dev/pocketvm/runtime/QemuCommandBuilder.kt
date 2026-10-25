@@ -81,6 +81,17 @@ data class LaunchRequest(
  *
  * Design notes that are easy to get wrong:
  * * `-machine virt,highmem=on` is required for guest RAM above 1 GB on ARM.
+ * * `gic-version=3` is what every externally verified Windows-on-`virt`
+ *   configuration uses. On GICv2 the Boot Manager dies seconds into its own
+ *   init with a same-EL data abort writing to physical 0 (ESR 0x96000047,
+ *   FAR 0x0, deadlocked on the exception vector `b .`) — reproduced on every
+ *   run with the App's own argv, on the device and on a PC reproducer. This
+ *   is a partial fix: the same crash still occurs on GICv3 under different
+ *   TCG timing (see AGENTS.md for the full experiment matrix). `its` stays at
+ *   its default `on` on purpose: `its=off` leaves the ITS described in the
+ *   ACPI tables while removing the device (QEMU ≤ 8.2 reverse bug) and
+ *   crashes exactly the same way, and the WinPE bootloader shipped with
+ *   PocketVM postdates the upstream ITS-length fix.
  * * Storage defaults to NVMe + USB CD: Windows Setup has drivers for those, but
  *   not for virtio, so a virtio disk is invisible to a stock installer.
  * * IDE is not available on `virt`, so there is no AHCI fallback.
@@ -96,7 +107,7 @@ class QemuCommandBuilder {
         val args = mutableListOf<String>()
         args += request.executable
         args += listOf("-name", sanitizeName(request.vmName))
-        args += listOf("-machine", "virt,highmem=on")
+        args += listOf("-machine", "virt,highmem=on,gic-version=3")
         args += listOf("-cpu", request.cpuModel?.takeIf { it.isNotBlank() } ?: request.profile.cpu)
         args += listOf("-smp", request.cpuCores.coerceIn(1, 8).toString())
         args += listOf("-m", request.memoryMb.coerceAtLeast(512).toString())
