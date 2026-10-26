@@ -17,8 +17,8 @@ android {
         // memfd_create 是 API 30 符号，QEMU 执行层以 android30 为 target 编译。
         minSdk = 30
         targetSdk = 35
-        versionCode = 36
-        versionName = "0.10.13-qemu11.1.2-edk2026.08"
+        versionCode = 37
+        versionName = "0.10.14-qemu11.1.2-edk2026.08"
 
         // The MVP only ships an arm64 execution layer. 32-bit devices cannot run
         // a 64-bit guest, so there is no point in building other ABIs.
@@ -104,6 +104,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    // SSH 控制台：mwiede 的 JSch 分支，纯 Java、支持 rsa-sha2/ed25519。
+    implementation(libs.jsch)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

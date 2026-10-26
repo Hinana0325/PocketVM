@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.13 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.14 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -42,6 +42,7 @@
 | 0.10.11 | **新增「禁用 USB」选项**：编辑页「引导选项 → USB 总线」设为禁用后，QEMU 不创建 xHCI，USB 键鼠与 USB 光驱全部消失——光驱固定 virtio-scsi + AHCI、输入固定 virtio；给「一碰 USB 栈就 SIGILL」的机型用（本机 usb-storage 实测如此）。配置里对应 `usbDisabled`，即使 CD 总线/输入仍存着 USB 也会被强制覆盖。代价是虚机里没有可用键盘（本机 virtio 键盘收不到按键）。同时修正编辑页里两处过时说明：降级现在只换光驱，不再把输入一起改成 virtio |
 | 0.10.12 | **防回归 + 归因提示**：`app/build.gradle.kts` 新增 `verifyQemuPacPatch`，构建前按 SHA256 校验执行层是否带 PAC 补丁——重建 QEMU 后忘记补丁会直接构建失败，不再把「随机崩」带上真机。`FailureHints` 补上 exit=132 的归因（USB 存储栈 / 旧执行层的 ARMv9 PAC），排障文档新增「跑几十秒到几分钟后自己关闭」条目 |
 | 0.10.13 | **修性能页的三个数据源**：①「已运行」改用 QEMU 进程 `/proc/<pid>/stat` 的 starttime 推算，不再从 QMP 握手开始算（慢启动不再少算）；② RSS 在 `statm` 不可读时回退 `/proc/<pid>/status` 的 `VmRSS`，两者都读不到时显示「不可用」而不是 0；③ 磁盘 I/O 在 `/proc/<pid>/io` 被系统隐藏时回退 QMP `query-blockstats`，同时修掉「一次读失败后下一拍跨缺口求差、算出巨大假峰值」的 bug（vCPU 读失败同理） |
+| 0.10.14 | **新增 App 内 SSH 控制台**：控制台第 4 个 Tab，经 QEMU hostfwd 连接客户机 sshd，逐条执行命令并实时回显 stdout+stderr（mwiede JSch，密码认证）。自带常用快捷命令；密码只在内存里，不落盘。SSH 连接随 VM 停止/切换自动断开，失败原因翻成中文（认证失败/端口拒绝/超时） |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
@@ -116,6 +117,13 @@ No errors were found on the image.
 敞口策略与 VNC 一致：「仅本机」下转发只听 `127.0.0.1`，「局域网」下才听 `0.0.0.0`。
 手机侧端口从 1024 起——Android 应用以自己的 UID 运行，没有 `CAP_NET_BIND_SERVICE`，
 绑定特权端口会直接失败（校验器会报 `FORWARD_HOST_PORT_PRIVILEGED`）。
+
+**App 内 SSH 控制台（0.10.14）**：控制台新增「SSH」Tab，直接连客户机 sshd 执行命令，
+不用再靠 VNC 键盘。用法：编辑页加一条「主机端口（≥1024）→ 客户机 22」的端口转发，
+客户机里装好并启动 `sshd`，然后在 SSH Tab 填用户名/密码连接；命令走独立 exec 通道，
+输出（stdout+stderr）实时回显，自带 `uname -a`、`ip a`、`df -h`、`dmesg | tail`、关机等快捷命令。
+密码只保存在内存里，不写入配置；主机密钥不校验（目标是本机 hostfwd 暴露的 127.0.0.1）。
+支持密码认证，暂不支持私钥登录。
 
 注意：Windows 安装程序不带 virtio 网卡驱动（`netkvm`），联网前需先从 VirtIO 驱动盘加载；
 Linux 内核自带，装上即可上网。

@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,19 +12,23 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -36,16 +41,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.core.model.VncAccess
+import dev.pocketvm.runtime.SshDefaults
+import dev.pocketvm.runtime.SshState
 import dev.pocketvm.ui.theme.MonoTextStyle
 import kotlinx.coroutines.delay
 
@@ -65,6 +75,10 @@ fun ConsoleScreen(
     onEject: () -> Unit,
     onSendKey: () -> Unit,
     onBootFromShell: () -> Unit,
+    onSshConnect: (String, Int, String, String) -> Unit,
+    onSshDisconnect: () -> Unit,
+    onSshRun: (String) -> Unit,
+    onSshClear: () -> Unit,
     onBack: () -> Unit,
 ) {
     val sessionRuntime = state.runtime
@@ -83,6 +97,10 @@ fun ConsoleScreen(
     var copiedError by remember { mutableStateOf(false) }
     var followLog by remember { mutableStateOf(true) }
     var tab by remember { mutableStateOf(0) }
+    // SSH 表单放在这里而不是 SshTab 内部：切到别的 Tab 时 SshTab 会离开组合，
+    // 用户名/密码/命令输入会丢；ConsoleScreen 本身在整个页面生命周期内都在。
+    val sshForwardPort = remember(vm.id, vm.portForwards) { SshDefaults.hostPort(vm.portForwards) }
+    val sshForm = remember(vm.id) { SshFormState(sshForwardPort ?: 2222) }
     val clipboard = LocalClipboardManager.current
     val logScroll = rememberScrollState()
     val serialScroll = rememberScrollState()
@@ -120,6 +138,7 @@ fun ConsoleScreen(
             Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("概览") })
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("日志") })
             Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("性能") })
+            Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("SSH") })
         }
 
         when (tab) {
@@ -159,6 +178,16 @@ fun ConsoleScreen(
                 onToggleFollow = { followLog = !followLog },
             )
             2 -> PerformanceTab(state = state, running = running)
+            3 -> SshTab(
+                state = state,
+                vm = vm,
+                running = running,
+                form = sshForm,
+                onConnect = onSshConnect,
+                onDisconnect = onSshDisconnect,
+                onRun = onSshRun,
+                onClear = onSshClear,
+            )
         }
     }
 }
@@ -721,4 +750,210 @@ private fun errorReport(runtime: VmRuntimeState, log: String): String = buildStr
             "（无输出：进程在产生任何日志之前就退出了）"
         },
     )
+}
+
+/**
+ * SSH 控制台：连接客户机里的 sshd 执行命令。
+ *
+ * 只走 exec 通道，不做终端仿真——目标是「不用 VNC 键盘也能控制 Linux 客户机」，
+ * 不是把 App 做成终端模拟器。密码只留在输入框与 SshConsole 的内存里，不落盘。
+ */
+@Composable
+private fun SshTab(
+    state: UiState,
+    vm: VmConfig,
+    running: Boolean,
+    form: SshFormState,
+    onConnect: (String, Int, String, String) -> Unit,
+    onDisconnect: () -> Unit,
+    onRun: (String) -> Unit,
+    onClear: () -> Unit,
+) {
+    if (!running) {
+        EmptyState(
+            icon = Icons.Filled.Terminal,
+            title = "虚拟机未运行",
+            subtitle = "启动虚拟机后，这里可以通过 SSH 连接客户机执行命令。需要客户机里已启动 sshd，" +
+                "并在编辑页添加「主机端口 → 客户机 22」的端口转发。",
+        )
+        return
+    }
+
+    val forwardPort = SshDefaults.hostPort(vm.portForwards)
+    val connected = state.sshState is SshState.Connected
+    val outputScroll = rememberScrollState()
+
+    LaunchedEffect(state.sshOutput) {
+        if (state.sshOutput.isNotEmpty()) outputScroll.animateScrollTo(outputScroll.maxValue)
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            SectionCard(title = "SSH 连接", subtitle = "经 QEMU hostfwd 连接客户机 22") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = form.host,
+                            onValueChange = { form.host = it },
+                            label = { Text("主机") },
+                            singleLine = true,
+                            enabled = !connected && !state.sshRunning,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = form.port,
+                            onValueChange = { input -> form.port = input.filter(Char::isDigit).take(5) },
+                            label = { Text("端口") },
+                            singleLine = true,
+                            enabled = !connected && !state.sshRunning,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.width(104.dp),
+                        )
+                    }
+                    OutlinedTextField(
+                        value = form.user,
+                        onValueChange = { form.user = it },
+                        label = { Text("用户名") },
+                        singleLine = true,
+                        enabled = !connected && !state.sshRunning,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = form.password,
+                        onValueChange = { form.password = it },
+                        label = { Text("密码") },
+                        singleLine = true,
+                        enabled = !connected && !state.sshRunning,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (connected) {
+                            OutlinedButton(onClick = onDisconnect, enabled = !state.sshRunning) {
+                                Text("断开")
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    onConnect(
+                                        form.host.trim(),
+                                        form.port.toIntOrNull() ?: 0,
+                                        form.user.trim(),
+                                        form.password,
+                                    )
+                                },
+                                enabled = !state.sshRunning,
+                            ) {
+                                Text(if (state.sshRunning) "连接中…" else "连接")
+                            }
+                        }
+                        Text(
+                            when (val ssh = state.sshState) {
+                                is SshState.Connected -> "已连接 ${ssh.user}@${ssh.host}:${ssh.port}"
+                                SshState.Connecting -> "连接中…"
+                                SshState.Disconnected -> "未连接"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        if (forwardPort == null) {
+                            "编辑页还没有「主机端口 → 客户机 22」的端口转发，SSH 连不进来。"
+                        } else {
+                            "客户机需已安装并启动 sshd；端口转发 $forwardPort → 22。" +
+                                "密码只保存在内存里，不写入配置。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (forwardPort == null) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+        }
+
+        item {
+            SectionCard(title = "执行命令", subtitle = "每条命令单独开一个 exec 通道") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = form.command,
+                            onValueChange = { form.command = it },
+                            label = { Text("命令") },
+                            singleLine = true,
+                            enabled = connected && !state.sshRunning,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Button(
+                            onClick = {
+                                onRun(form.command)
+                                form.command = ""
+                            },
+                            enabled = connected && !state.sshRunning && form.command.isNotBlank(),
+                        ) {
+                            Text(if (state.sshRunning) "执行中…" else "执行")
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        listOf("uname -a", "ip a", "df -h", "dmesg | tail -20", "sudo poweroff").forEach { quick ->
+                            TextButton(onClick = { onRun(quick) }, enabled = connected && !state.sshRunning) {
+                                Text(quick)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            SectionCard(title = "输出", subtitle = "stdout + stderr") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(280.dp)
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                RoundedCornerShape(8.dp),
+                            )
+                            .padding(8.dp),
+                    ) {
+                        Text(
+                            text = state.sshOutput.ifEmpty { "尚无输出" },
+                            style = MonoTextStyle.copy(fontSize = 12.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxSize().verticalScroll(outputScroll),
+                        )
+                    }
+                    TextButton(onClick = onClear) { Text("清空") }
+                }
+            }
+        }
+    }
+}
+
+/** SSH 表单的跨 Tab 状态。密码只在内存里，不写入配置。 */
+private class SshFormState(initialPort: Int) {
+    var host by mutableStateOf("127.0.0.1")
+    var port by mutableStateOf(initialPort.toString())
+    var user by mutableStateOf("")
+    var password by mutableStateOf("")
+    var command by mutableStateOf("")
 }

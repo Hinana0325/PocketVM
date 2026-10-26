@@ -16,6 +16,9 @@ import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.runtime.LaunchOutcome
+import dev.pocketvm.runtime.SshConsole
+import dev.pocketvm.runtime.SshDefaults
+import dev.pocketvm.runtime.SshState
 import dev.pocketvm.runtime.VmKeepAliveService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -38,6 +41,9 @@ sealed interface Screen {
 /** Whether this screen sits behind the bottom navigation bar. */
 val Screen.isTopLevel: Boolean
     get() = this is Screen.List || this is Screen.Environment || this is Screen.About
+
+/** SSH 控制台保留的输出上限：超出后从头截断，防止长命令把 UiState 撑爆。 */
+private const val SSH_OUTPUT_LIMIT = 128 * 1024
 
 data class ImportProgress(val copiedBytes: Long, val totalBytes: Long?) {
     val fraction: Float?
@@ -105,6 +111,12 @@ data class UiState(
     val localIp: String? = null,
     /** Latest performance sample of the running VM; null when nothing runs. */
     val metrics: dev.pocketvm.diagnostics.VmMetrics? = null,
+    /** SSH 控制台连接状态；密码不在 UiState 里。 */
+    val sshState: SshState = SshState.Disconnected,
+    /** SSH 输出尾部（stdout + stderr），最多保留 [SSH_OUTPUT_LIMIT] 字节。 */
+    val sshOutput: String = "",
+    /** 正在建连或执行命令。 */
+    val sshRunning: Boolean = false,
 ) {
     val hasUnsavedChanges: Boolean get() = draft != null && draft != baseline
 }
@@ -112,6 +124,9 @@ data class UiState(
 class VmViewModel(app: Application) : AndroidViewModel(app) {
 
     private val container: AppContainer = (app as PocketVmApp).container
+
+    /** SSH 控制台：一条 VM 会话只挂一条 SSH 连接。 */
+    private val sshConsole = SshConsole()
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
@@ -190,6 +205,11 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openConsole(vmId: String) {
+        if ((_ui.value.screen as? Screen.Console)?.vmId != vmId) {
+            // 换了虚拟机：旧 SSH 会话没有意义，清掉输出免得串台。
+            viewModelScope.launch(Dispatchers.IO) { sshConsole.disconnect() }
+            _ui.update { it.copy(sshOutput = "", sshRunning = false) }
+        }
         _ui.update {
             it.copy(
                 screen = Screen.Console(vmId),
@@ -263,8 +283,12 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             // steps and the reason for a failure are shown. Staying on the list
             // made a 20 s prepare phase look like a dead button.
             _ui.update {
-                it.copy(busy = true, notice = null, log = "", screen = Screen.Console(vmId))
+                it.copy(
+                    busy = true, notice = null, log = "", screen = Screen.Console(vmId),
+                    sshOutput = "", sshRunning = false,
+                )
             }
+            withContext(Dispatchers.IO) { sshConsole.disconnect() }
             val outcome = container.session.start(vm)
             // The CD fell back to virtio-scsi: remember it so the next start skips
             // the crash entirely (AUTO no longer retries USB). Input is left as
@@ -351,6 +375,74 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 argv = container.session.currentRun()?.argv ?: it.argv,
             )
         }
+    }
+
+    // ---------- SSH 控制台 ----------
+
+    fun sshConnect(host: String, port: Int, user: String, password: String) {
+        SshDefaults.validate(host, port, user)?.let { message ->
+            _ui.update { it.copy(notice = message) }
+            return
+        }
+        viewModelScope.launch {
+            _ui.update { it.copy(sshRunning = true) }
+            val failure = withContext(Dispatchers.IO) {
+                sshConsole.connect(host, port, user, password)
+            }
+            _ui.update {
+                val line = if (failure == null) "[SSH] 已连接 $user@$host:$port\n" else "[SSH] $failure\n"
+                it.copy(
+                    sshRunning = false,
+                    sshOutput = (it.sshOutput + "\n" + line).takeLast(SSH_OUTPUT_LIMIT),
+                    notice = failure,
+                )
+            }
+        }
+    }
+
+    fun sshRun(command: String) {
+        val cmd = command.trim()
+        if (cmd.isEmpty()) return
+        if (sshConsole.state.value !is SshState.Connected) {
+            _ui.update { it.copy(notice = "先连接 SSH") }
+            return
+        }
+        viewModelScope.launch {
+            _ui.update {
+                it.copy(
+                    sshRunning = true,
+                    sshOutput = (it.sshOutput + "\n$ " + cmd + "\n").takeLast(SSH_OUTPUT_LIMIT),
+                )
+            }
+            val code = withContext(Dispatchers.IO) {
+                sshConsole.run(cmd) { chunk ->
+                    _ui.update { s -> s.copy(sshOutput = (s.sshOutput + chunk).takeLast(SSH_OUTPUT_LIMIT)) }
+                }
+            }
+            _ui.update {
+                it.copy(
+                    sshRunning = false,
+                    sshOutput = if (code == null) {
+                        it.sshOutput
+                    } else {
+                        (it.sshOutput + "[exit $code]\n").takeLast(SSH_OUTPUT_LIMIT)
+                    },
+                )
+            }
+        }
+    }
+
+    fun sshDisconnect() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { sshConsole.disconnect() }
+            _ui.update {
+                it.copy(sshOutput = (it.sshOutput + "\n[SSH] 已断开\n").takeLast(SSH_OUTPUT_LIMIT))
+            }
+        }
+    }
+
+    fun sshClearOutput() {
+        _ui.update { it.copy(sshOutput = "") }
     }
 
     fun exportDiagnostics(vmId: String) {
@@ -608,12 +700,24 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 val keepAlive = state is VmRuntimeState.Running ||
                     state is VmRuntimeState.Preparing ||
                     state is VmRuntimeState.Stopping
-                if (!keepAlive) VmKeepAliveService.stop(getApplication())
+                if (!keepAlive) {
+                    VmKeepAliveService.stop(getApplication())
+                    // QEMU 没了，SSH 对端也就没了：主动收掉 socket，别让下一台
+                    // VM 复用一条已经死掉的会话。
+                    if (sshConsole.state.value !is SshState.Disconnected) {
+                        viewModelScope.launch(Dispatchers.IO) { sshConsole.disconnect() }
+                    }
+                }
             }
         }
         viewModelScope.launch {
             container.session.metrics.collect { sample ->
                 _ui.update { it.copy(metrics = sample) }
+            }
+        }
+        viewModelScope.launch {
+            sshConsole.state.collect { ssh ->
+                _ui.update { it.copy(sshState = ssh) }
             }
         }
     }
