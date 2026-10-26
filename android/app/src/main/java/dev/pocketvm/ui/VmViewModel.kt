@@ -20,7 +20,6 @@ import dev.pocketvm.runtime.LaunchOutcome
 import dev.pocketvm.runtime.SshConsole
 import dev.pocketvm.runtime.SshDefaults
 import dev.pocketvm.runtime.SshState
-import dev.pocketvm.runtime.VmKeepAliveService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -216,8 +215,8 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update {
             it.copy(
                 screen = Screen.Console(vmId),
-                log = container.session.readLog(),
-                serial = container.session.readSerialTail(),
+                log = container.session.readLog(vmId),
+                serial = container.session.readSerialTail(vmId),
                 notice = null,
             )
         }
@@ -263,11 +262,11 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteVm(vmId: String) {
-        // Block deletion in *any* active state: Preparing/Stopping still have a
-        // QEMU process (or one about to fork) writing to the qcow2 and pflash.
-        val busy = container.session.isRunning() ||
-            _ui.value.runtime is VmRuntimeState.Preparing ||
-            _ui.value.runtime is VmRuntimeState.Stopping
+        // 只拦「这一台」还在运行/准备/停止；另一台在运行不该阻止删除 B。
+        val runtime = _ui.value.runtime
+        val busy = container.session.runningVmId() == vmId ||
+            (runtime as? VmRuntimeState.Preparing)?.vmId == vmId ||
+            (runtime as? VmRuntimeState.Stopping)?.vmId == vmId
         if (busy) {
             _ui.update { it.copy(notice = "虚拟机正在运行或正在停止，无法删除") }
             return
@@ -304,21 +303,23 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 is LaunchOutcome.Failed -> outcome.cdTransport
                 else -> null
             }
+            // 一次写回：降级和实际端口可能同时发生，分两次 save 会用同一个旧快照
+            // 互相覆盖（第二次把 cdTransport 又写回 AUTO）。
+            var persisted = vm
             if (finalTransport == CdTransport.VIRTIO_SCSI && vm.cdTransport != CdTransport.VIRTIO_SCSI) {
-                container.configStore.save(
-                    vm.copy(cdTransport = CdTransport.VIRTIO_SCSI),
-                )
+                persisted = persisted.copy(cdTransport = CdTransport.VIRTIO_SCSI)
+            }
+            (outcome as? LaunchOutcome.Started)?.let { started ->
+                if (started.vncPort != persisted.vncPort) {
+                    persisted = persisted.copy(vncPort = started.vncPort)
+                }
+            }
+            if (persisted != vm) {
+                container.configStore.save(persisted)
                 refresh()
             }
             val message = when (outcome) {
                 is LaunchOutcome.Started -> {
-                    VmKeepAliveService.start(getApplication())
-                    if (outcome.vncPort != vm.vncPort) {
-                        // Persist the port we actually bound so the next start and
-                        // the VNC hint stay in sync with reality.
-                        container.configStore.save(vm.copy(vncPort = outcome.vncPort))
-                        refresh()
-                    }
                     buildString {
                         if (outcome.failed.isEmpty()) {
                             append("QEMU 已启动（${outcome.profile.label}），固件画面就绪后连接 VNC")
@@ -343,9 +344,9 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     busy = false,
                     notice = message,
-                    log = container.session.readLog(),
-                    serial = container.session.readSerialTail(),
-                    argv = container.session.currentRun()?.argv ?: it.argv,
+                    log = container.session.readLog(vmId),
+                    serial = container.session.readSerialTail(vmId),
+                    argv = container.session.currentRun(vmId)?.argv ?: it.argv,
                 )
             }
         }
@@ -355,27 +356,25 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _ui.update { it.copy(busy = true, notice = "正在请求关机…") }
             container.session.stop(vmId)
-            // Only release the keep-alive once the process is really gone;
-            // releasing it before an ACPI shutdown finishes is how Android ends
-            // up killing the app mid-write.
+            // 前台服务/唤醒锁由 VmSession 在进程真正退出后释放。
             val stillRunning = container.session.isRunning()
-            if (!stillRunning) VmKeepAliveService.stop(getApplication())
             _ui.update {
                 it.copy(
                     busy = false,
                     notice = if (stillRunning) "已发送关机请求，等待 Windows 响应…" else "虚拟机已停止",
-                    log = container.session.readLog(),
+                    log = container.session.readLog(vmId),
                 )
             }
         }
     }
 
     fun refreshLog() {
+        val vmId = (_ui.value.screen as? Screen.Console)?.vmId
         _ui.update {
             it.copy(
-                log = container.session.readLog(),
-                serial = container.session.readSerialTail(),
-                argv = container.session.currentRun()?.argv ?: it.argv,
+                log = container.session.readLog(vmId),
+                serial = container.session.readSerialTail(vmId),
+                argv = container.session.currentRun(vmId)?.argv ?: it.argv,
             )
         }
     }
@@ -552,13 +551,25 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun clearNotice() = _ui.update { it.copy(notice = null) }
+    fun clearNotice(shown: String? = null) {
+        _ui.update {
+            // 只清掉刚刚展示过的那一条；展示期间新到的通知不能被误吞。
+            if (shown == null || it.notice == shown) it.copy(notice = null) else it
+        }
+    }
 
     /** Answers a pending boot prompt / hits Enter in the guest. */
-    fun sendEnter() {
-        val ok = container.session.sendKey("ret")
-        _ui.update {
-            it.copy(notice = if (ok) "已向客户机发送回车（应答按键提示）" else "按键发送失败（QMP 未连接）")
+    fun sendEnter(vmId: String) {
+        if (container.session.runningVmId() != vmId) {
+            _ui.update { it.copy(notice = "这台虚拟机没有在运行") }
+            return
+        }
+        viewModelScope.launch {
+            // QMP 命令会阻塞到 socket 超时，绝不能放在点击回调的主线程上。
+            val ok = withContext(Dispatchers.IO) { container.session.sendKey("ret") }
+            _ui.update {
+                it.copy(notice = if (ok) "已向客户机发送回车（应答按键提示）" else "按键发送失败（QMP 未连接）")
+            }
         }
     }
 
@@ -676,12 +687,11 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update { it.copy(busy = true, notice = "已卸载安装介质，正在从虚拟磁盘重启…") }
             container.session.stop(vmId)
             val started = container.session.start(updated) is LaunchOutcome.Started
-            if (started) VmKeepAliveService.start(getApplication())
             _ui.update {
                 it.copy(
                     busy = false,
                     notice = if (started) "已卸载介质，正在从虚拟磁盘启动" else "介质已卸载，但重启失败，请手动启动",
-                    log = container.session.readLog(),
+                    log = container.session.readLog(vmId),
                 )
             }
         }
@@ -767,9 +777,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     state is VmRuntimeState.Preparing ||
                     state is VmRuntimeState.Stopping
                 if (!keepAlive) {
-                    VmKeepAliveService.stop(getApplication())
-                    // QEMU 没了，SSH 对端也就没了：主动收掉 socket，别让下一台
-                    // VM 复用一条已经死掉的会话。
+                    // 前台服务由 VmSession 收尾；这里只处理 UI 侧的 SSH 状态。
                     if (sshConsole.state.value !is SshState.Disconnected) {
                         viewModelScope.launch(Dispatchers.IO) { sshConsole.disconnect() }
                     }
@@ -802,8 +810,8 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     val tick = withContext(Dispatchers.IO) {
                         val id = container.session.runningVmId()
                         LogTick(
-                            log = container.session.readLog(),
-                            serial = container.session.readSerialTail(),
+                            log = container.session.readLog(id),
+                            serial = container.session.readSerialTail(id),
                             vmId = id,
                             usedBytes = id?.let {
                                 container.diskProvisioner.usedBytes(container.layout.diskFile(it))

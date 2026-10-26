@@ -151,11 +151,13 @@ class SshConsole {
                 } catch (_: Throwable) {
                     // 本地关通道会让 read 抛异常，属于正常退出路径。
                 } finally {
+                    // 只有「当前这条 shell」关闭才回调；旧通道在重连时被换掉，
+                    // 它的收尾不能把新 shell 的状态改成已关闭。
                     if (shell === channel) {
                         shell = null
                         shellInput = null
+                        onClosed()
                     }
-                    onClosed()
                 }
             }, "pvm-ssh-shell")
             reader.isDaemon = true

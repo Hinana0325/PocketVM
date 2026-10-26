@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import dev.pocketvm.MainActivity
 import dev.pocketvm.R
+import dev.pocketvm.diagnostics.AgentFeed
 
 /**
  * Foreground service that does nothing except keep the process important.
@@ -105,10 +106,17 @@ class VmKeepAliveService : Service() {
         private const val NOTIFICATION_ID = 1001
 
         fun start(context: Context) {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, VmKeepAliveService::class.java),
-            )
+            // Android 12+ 在后台调用 startForegroundService 会抛
+            // ForegroundServiceStartNotAllowedException；这是「保活失败」，不是
+            // 启动失败，绝不能让它把整个 App 带走。
+            runCatching {
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, VmKeepAliveService::class.java),
+                )
+            }.onFailure { t ->
+                AgentFeed.event("keepalive.start_failed", "error" to t.toString())
+            }
         }
 
         fun stop(context: Context) {

@@ -592,8 +592,8 @@ fun CreateVmScreen(
                     // booting with, without reading seven separate controls.
                     Text(
                         "光驱 ${if (draft.usbDisabled) "virtio-scsi+AHCI（USB 已禁用）" else draft.cdTransport.label}" +
-                            if (draft.driverIsoPath != null) " · 驱动盘已挂" else "" +
-                            if (draft.portForwards.isNotEmpty()) " · 转发 ${draft.portForwards.size} 个端口" else "" +
+                            (if (draft.driverIsoPath != null) " · 驱动盘已挂" else "") +
+                            (if (draft.portForwards.isNotEmpty()) " · 转发 ${draft.portForwards.size} 个端口" else "") +
                             " · 输入 ${if (draft.usbDisabled || !draft.usbInput) "virtio" else "USB"} · " +
                             "显示 ${draft.displayDevice.label} · " +
                             "串口恢复 ${if (draft.serialRecovery) "开" else "关"} · " +

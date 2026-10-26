@@ -13,6 +13,9 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -53,12 +57,15 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
     LaunchedEffect(state.notice) {
         val notice = state.notice ?: return@LaunchedEffect
         snackbar.showSnackbar(notice, withDismissAction = true)
-        vm.clearNotice()
+        vm.clearNotice(notice)
     }
 
     // Ask only when a VM actually starts: the notification is what keeps it alive.
-    LaunchedEffect(state.runtime) {
-        if (state.runtime is VmRuntimeState.Running && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+    // 只在「从没运行到开始运行」或换了一台 VM 时请求一次通知权限；
+    // Running.stage 会随引导阶段变化，不能拿整个 runtime 对象当 key。
+    val runningVmId = (state.runtime as? VmRuntimeState.Running)?.vmId
+    LaunchedEffect(runningVmId) {
+        if (runningVmId != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.POST_NOTIFICATIONS,
@@ -117,6 +124,15 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                 }
             },
         ) { padding ->
+        // 自绘 TopAppBar 的页面（新建/控制台）顶部 inset 由 TopAppBar 自己处理，
+        // 再叠加 Scaffold 的顶部 padding 会多出一条状态栏高度的空白。
+        val layoutDirection = LocalLayoutDirection.current
+        val topBarScreenPadding = PaddingValues(
+            start = padding.calculateStartPadding(layoutDirection),
+            top = 0.dp,
+            end = padding.calculateEndPadding(layoutDirection),
+            bottom = padding.calculateBottomPadding(),
+        )
         Box(
             modifier = Modifier.fillMaxSize(),
         ) {
@@ -152,7 +168,7 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                     onImportIso = vm::importIso,
                     onImportDriverIso = vm::importDriverIso,
                     onImportFirmware = vm::importFirmware,
-                    contentPadding = padding,
+                    contentPadding = topBarScreenPadding,
                 )
 
                 is Screen.Console -> {
@@ -163,13 +179,13 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                         ConsoleScreen(
                             state = state,
                             vm = target,
-                            contentPadding = padding,
+                            contentPadding = topBarScreenPadding,
                             onStart = { vm.start(target.id) },
                             onStop = { vm.stop(target.id) },
                             onRefresh = vm::refreshLog,
                             onExport = { vm.exportDiagnostics(target.id) },
                             onEject = { vm.ejectIso(target.id) },
-                            onSendKey = vm::sendEnter,
+                            onSendKey = { vm.sendEnter(target.id) },
                             onBootFromShell = { vm.bootFromShell(target.id) },
                             onSshConnect = vm::sshConnect,
                             onSshDisconnect = vm::sshDisconnect,

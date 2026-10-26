@@ -40,6 +40,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -104,6 +105,9 @@ class VmSession(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
 
+    /** 只保护「进程/QMP 字段的赋值与清理」这一小段，不参与启动/停止的长时间锁。 */
+    private val stateLock = Any()
+
     private val _state = MutableStateFlow<VmRuntimeState>(VmRuntimeState.Idle)
     val state: StateFlow<VmRuntimeState> = _state.asStateFlow()
 
@@ -114,6 +118,7 @@ class VmSession(
     private val _metrics = MutableStateFlow<VmMetrics?>(null)
     val metrics: StateFlow<VmMetrics?> = _metrics.asStateFlow()
 
+    @Volatile
     private var qemuProcess: Process? = null
     private var monitorJob: Job? = null
     private var serialWatcherJob: Job? = null
@@ -141,8 +146,11 @@ class VmSession(
     @Volatile
     private var bootStage = BootStage.FIRMWARE
 
+    @Volatile
     private var qmp: QmpClient? = null
+    @Volatile
     private var currentManifest: RunManifest? = null
+    @Volatile
     private var currentLog: File? = null
 
     /** Which VM the live process belongs to. The UI can open any VM's console. */
@@ -164,7 +172,11 @@ class VmSession(
     /** vmId of the live VM, or null when nothing is running. */
     fun runningVmId(): String? = if (isRunning()) activeVmId else null
 
-    fun currentRun(): RunManifest? = currentManifest
+    /** @param vmId 传入时只在它确实是当前/最近一次运行所属的 VM 时返回。 */
+    fun currentRun(vmId: String? = null): RunManifest? {
+        val manifest = currentManifest ?: return null
+        return if (vmId == null || manifest.vmId == vmId) manifest else null
+    }
 
     /** Injects one keystroke into the guest (used for the boot prompt). */
     fun sendKey(qcode: String = "ret"): Boolean =
@@ -181,7 +193,23 @@ class VmSession(
         qmp?.typeText("$shellFs:\\EFI\\BOOT\\BOOTAA64.EFI\r") == true
     }.getOrDefault(false)
 
-    suspend fun start(config: VmConfig): LaunchOutcome = mutex.withLock {
+    suspend fun start(config: VmConfig): LaunchOutcome = withContext(NonCancellable) {
+        // 前台服务由 session 自己管：它在用户还在 App 内、刚点启动时就拉起，
+        // 不依赖 ViewModel 的 collector（Activity 销毁后 collector 就没了）。
+        VmKeepAliveService.start(appContext)
+        val outcome = try {
+            startLocked(config)
+        } catch (t: Throwable) {
+            if (!isRunning()) VmKeepAliveService.stop(appContext)
+            throw t
+        }
+        if (outcome !is LaunchOutcome.Started && !isRunning()) {
+            VmKeepAliveService.stop(appContext)
+        }
+        outcome
+    }
+
+    private suspend fun startLocked(config: VmConfig): LaunchOutcome = mutex.withLock {
         if (isRunning()) return@withLock LaunchOutcome.Failed("已有虚拟机在运行，请先停止。")
 
         AgentFeed.attach(layout.agentFeedFile())
@@ -549,8 +577,10 @@ class VmSession(
                 return@withLock fail(config.id, "无法启动 QEMU：${t.message}", t.message)
             }
 
-            qemuProcess = launched
-            activeVmId = config.id
+            synchronized(stateLock) {
+                qemuProcess = launched
+                activeVmId = config.id
+            }
 
             // "Process alive" is not proof of a working VM: QEMU can abort during
             // machine init, and it also takes a moment to die. connect() gives up
@@ -580,8 +610,12 @@ class VmSession(
                 // Arm the password before announcing "running": with password=on
                 // and no key set every client is rejected, so the window must be
                 // as short as possible and is never observable by the UI.
-                config.vncPassword?.takeIf { it.isNotBlank() }?.let { password ->
+                val passwordOk = config.vncPassword?.takeIf { it.isNotBlank() }?.let { password ->
                     withContext(Dispatchers.IO) { client.setVncPassword(password) }
+                } ?: true
+                if (!passwordOk) {
+                    AgentFeed.event("vnc.password_failed", "run" to runId)
+                    notes += "VNC 密码设置失败：RFB 客户端会被拒绝，请改回「仅本机」并检查 QMP"
                 }
 
                 qmp = client
@@ -773,6 +807,10 @@ class VmSession(
      * corrupted qcow2, so the forced path waits as long as it reasonably can.
      */
     suspend fun stop(vmId: String, graceMs: Long = 25_000) {
+        withContext(NonCancellable) { stopLocked(vmId, graceMs) }
+    }
+
+    private suspend fun stopLocked(vmId: String, graceMs: Long) {
         // The mutex serializes with start(): calling stop while a launch is in
         // progress waits for it to settle instead of being silently swallowed.
         mutex.withLock {
@@ -817,10 +855,19 @@ class VmSession(
             if (monitor != null) {
                 kotlinx.coroutines.withTimeoutOrNull(10_000) { monitor.join() }
             }
+            // Activity 可能已经销毁，它的 collector 不会再来停服务。
+            VmKeepAliveService.stop(appContext)
         }
     }
 
-    fun readLog(maxLines: Int = 400): String = currentLog?.let { LogTail.read(it, maxLines = maxLines) } ?: ""
+    /**
+     * @param vmId 传入时只返回这台 VM 当前/最近一次运行的日志；控制台 A 不能
+     *   显示 B 的日志（旧实现直接取「最后一次 run」，切 VM 会串台）。
+     */
+    fun readLog(vmId: String? = null, maxLines: Int = 400): String {
+        if (vmId != null && currentManifest?.vmId != vmId) return ""
+        return currentLog?.let { LogTail.read(it, maxLines = maxLines) } ?: ""
+    }
 
     /**
      * Tail of the guest's serial console for the current run.
@@ -830,8 +877,9 @@ class VmSession(
      * The firmware trace — boot options, a Shell drop, the installer's prompt —
      * lands here and nowhere else, so the console screen shows it verbatim.
      */
-    fun readSerialTail(maxLines: Int = 120): String {
+    fun readSerialTail(vmId: String? = null, maxLines: Int = 120): String {
         val manifest = currentManifest ?: return ""
+        if (vmId != null && manifest.vmId != vmId) return ""
         val file = layout.serialLogFile(manifest.vmId, manifest.runId)
         if (!file.exists()) return ""
         return LogTail.read(file, maxBytes = 64 * 1024, maxLines = maxLines)
@@ -960,7 +1008,7 @@ class VmSession(
                     // 是能到达 ConIn 的（我们在 Shell 里打的命令确实被执行了），所以
                     // 这里替他回车。冷却 3 秒：一次提示只按一次，多按的键会漏进后面
                     // 已经接管控制台的客户机。
-                    if (serial.contains(CD_BOOT_PROMPT) && now - lastCdKeyAt > 3_000) {
+                    if (!bootPromptSeen && serial.contains(CD_BOOT_PROMPT) && now - lastCdKeyAt > 3_000) {
                         lastCdKeyAt = now
                         bootPromptSeen = true
                         publishStage(BootStage.BOOT_PROMPT)
@@ -1138,16 +1186,25 @@ class VmSession(
         // Identity check: a quick stop→start cycle may have installed a *new*
         // process and QMP client already. This coroutine only settles the run
         // it actually watched; the new session owns the shared fields now.
-        val ownsSession = qemuProcess === process
+        val ownsSession = synchronized(stateLock) {
+            if (qemuProcess !== process) {
+                false
+            } else {
+                runCatching { qmp?.close() }
+                runCatching { serialWatcherJob?.cancel() }
+                runCatching { healthJob?.cancel() }
+                runCatching { metricsJob?.cancel() }
+                _metrics.value = null
+                qmp = null
+                qemuProcess = null
+                activeVmId = null
+                true
+            }
+        }
         if (ownsSession) {
-            runCatching { qmp?.close() }
-            runCatching { serialWatcherJob?.cancel() }
-            runCatching { healthJob?.cancel() }
-            runCatching { metricsJob?.cancel() }
-            _metrics.value = null
-            qmp = null
-            qemuProcess = null
-            activeVmId = null
+            // VM 已经退出，但前台服务/唤醒锁不能等 UI 来收：Activity 被销毁时
+            // collector 已经不在了，通知和 12h wakelock 会一直挂着。
+            VmKeepAliveService.stop(appContext)
         }
         val hint = FailureHints.fromLog(
             LogTail.read(logFile, maxBytes = 16 * 1024, maxLines = 200),

@@ -1,5 +1,6 @@
 package dev.pocketvm.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -100,6 +101,7 @@ fun ConsoleScreen(
     onSshShellCtrlC: () -> Unit,
     onBack: () -> Unit,
 ) {
+    BackHandler { onBack() }
     val sessionRuntime = state.runtime
     val runtime = when (val r = sessionRuntime) {
         is VmRuntimeState.Running -> if (r.vmId == vm.id) r else VmRuntimeState.Idle
@@ -137,7 +139,8 @@ fun ConsoleScreen(
         is VmRuntimeState.Exited, is VmRuntimeState.Failed -> Tone.Error
         VmRuntimeState.Idle -> Tone.Idle
     }
-    val canToggle = runtime !is VmRuntimeState.Preparing &&
+    val canToggle = !state.busy &&
+        runtime !is VmRuntimeState.Preparing &&
         runtime !is VmRuntimeState.Stopping &&
         (running || otherRunning == null)
 
@@ -516,7 +519,8 @@ private fun OverviewTab(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = if (running) onStop else onStart,
-                        enabled = runtime !is VmRuntimeState.Preparing &&
+                        enabled = !state.busy &&
+                            runtime !is VmRuntimeState.Preparing &&
                             runtime !is VmRuntimeState.Stopping &&
                             otherRunning == null,
                         colors = ButtonDefaults.buttonColors(
@@ -525,13 +529,13 @@ private fun OverviewTab(
                         ),
                     ) {
                         Icon(
-                            if (running) Icons.Filled.Clear else Icons.Filled.PlayArrow,
+                            if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
                             contentDescription = null,
                         )
                         Text(if (running) "停止" else "启动", modifier = Modifier.padding(start = 6.dp))
                     }
                     OutlinedButton(onClick = onExport) { Text("导出诊断包") }
-                    TextButton(onClick = onSendKey) { Text("应答引导提示") }
+                    TextButton(onClick = onSendKey, enabled = running) { Text("应答引导提示") }
                 }
                 otherRunning?.let {
                     Text(
@@ -900,7 +904,7 @@ private fun SshTab(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (connected) {
-                            OutlinedButton(onClick = onDisconnect, enabled = !state.sshRunning) {
+                            OutlinedButton(onClick = onDisconnect) {
                                 Text("断开")
                             }
                         } else {
