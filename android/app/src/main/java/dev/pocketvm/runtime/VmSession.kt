@@ -530,6 +530,13 @@ class VmSession(
                 ),
             )
 
+            // 大小核调度：TCG 的 vCPU 线程限制在性能核上（taskset），小核留给 UI。
+            // taskset 不可用、CPU 同频或频率读不到时，原样启动。
+            val affinity = CpuTopology.read()
+            val taskset = CpuTopology.tasksetPath()
+            val affinityMask = affinity.maskHex?.takeIf { taskset != null }
+            val launchArgv = if (affinityMask != null) listOf(taskset!!, affinityMask) + argv else argv
+
             val manifest = RunManifest(
                 runId = runId,
                 vmId = config.id,
@@ -538,7 +545,7 @@ class VmSession(
                 startedAtEpochMs = System.currentTimeMillis(),
                 executablePath = binary.file.absolutePath,
                 executableVersion = binary.version,
-                argv = argv,
+                argv = launchArgv,
                 firmwareCodePath = firmware.codePath,
                 firmwareVarsPath = firmware.varsPath,
                 diskPath = diskReady.file.absolutePath,
@@ -565,16 +572,26 @@ class VmSession(
                 // The full argv, because on a device the only other way to get it
                 // is reading /proc/<pid>/cmdline — and by then the process that
                 // had it is usually already gone.
-                "argv" to argv.joinToString(" "),
+                "argv" to launchArgv.joinToString(" "),
+                "affinity" to (affinityMask ?: "off"),
             )
 
+            fun startQemu(args: List<String>) = ProcessBuilder(args)
+                .directory(vmDir)
+                .redirectErrorStream(true)
+                .redirectOutput(logFile)
+                .apply { environment().putAll(environment.childEnvironment(layout)) }
+                .start()
+
             val launched = try {
-                ProcessBuilder(argv)
-                    .directory(vmDir)
-                    .redirectErrorStream(true)
-                    .redirectOutput(logFile)
-                    .apply { environment().putAll(environment.childEnvironment(layout)) }
-                    .start()
+                try {
+                    startQemu(launchArgv)
+                } catch (t: Throwable) {
+                    if (affinityMask == null) throw t
+                    // taskset 被 SELinux/ROM 拒绝时不能把整次启动判死，退回不绑核。
+                    AgentFeed.event("launch.affinity_failed", "error" to t.toString())
+                    startQemu(argv)
+                }
             } catch (t: Throwable) {
                 manifests.write(
                     manifest.copy(

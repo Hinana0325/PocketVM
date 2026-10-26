@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.22 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.23 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -51,6 +51,7 @@
 | 0.10.20 | **修「不开虚拟机也卡」**：新增 `perf` 构建类型（release 运行时、debug 签名、包名仍是 `dev.pocketvm.debug`，可直接覆盖安装），APK 从 70 MB 降到 53 MB；Compose 侧移除全屏环境光与卡片/导航的尺寸动画，把光晕移到窗口背景层由系统缓存，Hero 渐变改用 `drawWithCache` 缓存 Brush。debug 版本的 debuggable / Compose 调试开销是这次卡顿的主因。构建：`./gradlew :app:assemblePerf -PpvmSideBySide=true` |
 | 0.10.21 | **客户机按键面板**：控制台新增方向键 / Enter / Esc / Tab / 空格 / F2 / F10 / Del / Ctrl+Alt+Del 与「键入文本」输入，按键经 QMP 直接注入客户机——手机 VNC 客户端没有方向键也能操作固件启动菜单；串口 watcher 另加「Please select boot device:」自动回车兜底。仍是 perf 构建（非 debuggable，可直接覆盖 0.10.20） |
 | 0.10.22 | **实测与细节修复**：真机上滑动 648 帧 Janky 0.15%、90th 9ms；修浅色主题状态栏/导航栏仍是白图标（看不清）；去掉会换行的「应答引导提示」按钮（按键面板已有 Enter）；同时清理死代码 |
+| 0.10.23 | **大小核调度（TCG 性能）**：启动时按各核 `cpuinfo_max_freq` 识别性能核簇，用 `/system/bin/taskset` 把 QEMU 限制在性能核（本机 cpu2–7），小核留给 UI；同频/读不到频率/ taskset 不可用时自动回退。OOBE 反复 0x3B 的机器把 vCPU 从 8 降到 4。新增 CpuTopologyTest（含 SM8650 掩码 fc 的用例） |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
