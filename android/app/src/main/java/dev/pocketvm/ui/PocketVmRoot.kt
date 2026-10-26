@@ -97,7 +97,6 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
     val isTopLevel = state.screen.isTopLevel
 
     Box(modifier = Modifier.fillMaxSize()) {
-        AmbientBackground(modifier = Modifier.fillMaxSize())
         Scaffold(
             containerColor = Color.Transparent,
             snackbarHost = { SnackbarHost(snackbar) },

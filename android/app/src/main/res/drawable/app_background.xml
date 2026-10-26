@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  窗口背景：两团很淡的径向光晕。画在系统窗口层里，由系统缓存，
+  不再每帧在 Compose 画布上重画整屏径向渐变。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/app_bg_base" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="radial"
+                android:centerX="0.95"
+                android:centerY="0.02"
+                android:gradientRadius="420dp"
+                android:startColor="#26FFB74D"
+                android:endColor="#00FFB74D" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="radial"
+                android:centerX="0.02"
+                android:centerY="0.95"
+                android:gradientRadius="380dp"
+                android:startColor="#1A4C7DFF"
+                android:endColor="#004C7DFF" />
+        </shape>
+    </item>
+</layer-list>

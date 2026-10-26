@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.19 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.20 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -48,6 +48,7 @@
 | 0.10.17 | **天玑 / 16 KB 页设备兼容**：PAC 补丁新增的 PT_LOAD 从 4 KB 改成 16 KB 对齐（原执行层本来就是 0x4000），否则部分天玑 9xxx / Android 15+ 的 16 KB 页设备会被 linker64 以 `empty/misaligned PT_LOAD` 拒绝加载；16 KB 设备跳过 4 KB 对齐的静态探针，避免把对齐问题误报成「静态执行不可用」；`FailureHints` 增加对应中文归因。补丁脚本与 Gradle 构建校验同步检查 16 KB 对齐 |
 | 0.10.18 | **UI 超级升级**：页面切换滑动淡入；底部导航改成会展开选中项的悬浮胶囊 dock；首页 Hero 改成深色玻璃 + 琥珀光晕 + 渐变字，统计并入头图；VM 卡片运行中直接显示 CPU / 内存 / I/O 和迷你曲线，并加状态描边；控制台顶栏加状态胶囊 + 一键启停 + 刷新图标，四个 Tab 加图标并做切换动画；执行环境页加 Hero 概览；创建页加配置摘要 chips；状态圆点在启动/停止时呼吸（其余状态零动画）；同时修掉 Scaffold 与页面重复应用 inset 导致的双重留白 |
 | 0.10.19 | **全代码审计修复**：启动/停止改为不可被 UI 取消（NonCancellable），退出 App 不会再留下无人监管的 QEMU；前台服务生命周期收回 VmSession（提前启动、退出/失败自动收，修 Android 12+ 后台启动崩溃与唤醒锁泄漏）；`send-key` 移出主线程并按 vmId 校验；日志/串口/argv 按 vmId 隔离（不再串台）；修复 CD 降级与 VNC 端口两次保存互相覆盖、自动回车每 3 秒重复注入、旧 SSH 通道回调关掉新终端、ISO/固件导入留下半个文件（改 `.part` + 可取消 + 大小校验）、删除 VM 被另一台运行误拦、通知与启动按钮忽略 busy、控制台硬件返回键、创建页摘要被运算符优先级截断等 |
+| 0.10.20 | **修「不开虚拟机也卡」**：新增 `perf` 构建类型（release 运行时、debug 签名、包名仍是 `dev.pocketvm.debug`，可直接覆盖安装），APK 从 70 MB 降到 53 MB；Compose 侧移除全屏环境光与卡片/导航的尺寸动画，把光晕移到窗口背景层由系统缓存，Hero 渐变改用 `drawWithCache` 缓存 Brush。debug 版本的 debuggable / Compose 调试开销是这次卡顿的主因。构建：`./gradlew :app:assemblePerf -PpvmSideBySide=true` |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
@@ -204,7 +205,8 @@ ARM64 的一致结论，PocketVM 的默认配置与回退逻辑就是按它搭�
 ```bash
 # 需要 JDK 17+、Android SDK 35
 cd android
-./gradlew :app:assembleDebug      # 产物 app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug      # 调试用；产物 app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assemblePerf -PpvmSideBySide=true   # 侧载/日常使用：非 debuggable，明显更流畅；产物 apk/perf/app-perf.apk
 ./gradlew :app:testDebugUnitTest  # 参数构建与校验的单元测试
 ```
 
@@ -271,7 +273,8 @@ ARM64（社区验证路径）」。
 ```bash
 NDK=~/android-ndk-r27c scripts/build-qemu-android-dynamic.sh all
 scripts/install-qemu.sh .build-qemu/out-jni     # 拷贝全部 lib*.so
-cd android && ./gradlew :app:assembleDebug
+cd android && ./gradlew :app:assemblePerf -PpvmSideBySide=true   # 日常使用
+cd android && ./gradlew :app:assembleDebug                      # 需要调试器时
 ```
 
 脚本里记录了几个必须踩过的坑（bionic 没有 `shm_open`、`memfd_create` 是 API 30 符号、

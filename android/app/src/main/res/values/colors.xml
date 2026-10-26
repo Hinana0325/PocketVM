@@ -2,4 +2,6 @@
 <resources>
     <color name="brand_amber">#FFB74D</color>
     <color name="brand_ink">#0E0E12</color>
+    <!-- 窗口背景底色：浅色主题用暖纸色；values-night 覆盖成墨色。 -->
+    <color name="app_bg_base">#FAF6EE</color>
 </resources>

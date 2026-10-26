@@ -39,7 +39,9 @@ else
 fi
 
 echo "== APK"
-APK="$ANDROID/app/build/outputs/apk/debug/app-debug.apk"
+# 发布用 perf 变体优先；没有就回退 debug。
+APK="$ANDROID/app/build/outputs/apk/perf/app-perf.apk"
+[ -f "$APK" ] || APK="$ANDROID/app/build/outputs/apk/debug/app-debug.apk"
 if [ -f "$APK" ]; then
     AAPT="$(ls -d "${ANDROID_HOME:-/opt/android-sdk}"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -1)"
     if [ -n "$AAPT" ] && [ -x "$AAPT" ]; then

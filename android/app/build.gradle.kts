@@ -17,8 +17,8 @@ android {
         // memfd_create 是 API 30 符号，QEMU 执行层以 android30 为 target 编译。
         minSdk = 30
         targetSdk = 35
-        versionCode = 42
-        versionName = "0.10.19-qemu11.1.2-edk2026.08"
+        versionCode = 43
+        versionName = "0.10.20-qemu11.1.2-edk2026.08"
 
         // The MVP only ships an arm64 execution layer. 32-bit devices cannot run
         // a 64-bit guest, so there is no point in building other ABIs.
@@ -38,6 +38,17 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        // 侧载用的「性能版」：release 的运行时（非 debuggable，Compose 不带调试开销），
+        // 但用 debug 签名和相同的 dev.pocketvm.debug 包名，可以直接覆盖已装的 debug 版。
+        // 构建：./gradlew :app:assemblePerf -PpvmSideBySide=true
+        create("perf") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isJniDebuggable = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            if (project.hasProperty("pvmSideBySide")) applicationIdSuffix = ".debug"
         }
     }
 

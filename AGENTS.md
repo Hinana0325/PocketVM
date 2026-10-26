@@ -18,7 +18,8 @@ Gradle 根是 `android/`，不是仓库根。全部命令都要先 `cd android`�
 
 ```bash
 cd android
-./gradlew :app:assembleDebug            # 产物 app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug            # 调试用；产物 app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assemblePerf -PpvmSideBySide=true   # 侧载发布用：非 debuggable + debug 签名，产物 apk/perf/app-perf.apk
 ./gradlew :app:testDebugUnitTest
 ./gradlew :app:testDebugUnitTest --tests "dev.pocketvm.QemuCommandBuilderTest"   # 单个测试类
 ```

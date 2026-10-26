@@ -1,7 +1,6 @@
 package dev.pocketvm.ui
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -47,7 +46,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -85,7 +84,6 @@ fun SectionCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .animateContentSize()
             .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(16.dp))
             .border(
                 width = 1.dp,
@@ -306,7 +304,6 @@ fun PocketNavBar(current: Screen, onSelect: (Screen) -> Unit) {
                             .clip(RoundedCornerShape(20.dp))
                             .background(indicator)
                             .clickable { if (!selected) onSelect(dest.screen) }
-                            .animateContentSize()
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -339,27 +336,25 @@ fun HeroHeader(
             .fillMaxWidth()
             .clip(ShapeHero)
             .background(Brush.linearGradient(listOf(Color(0xFF23232E), Color(0xFF101015))))
-            .drawBehind {
+            .drawWithCache {
                 val amberCenter = Offset(size.width * 0.92f, size.height * 0.02f)
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        listOf(Color(0xFFFFB74D).copy(alpha = 0.34f), Color.Transparent),
-                        center = amberCenter,
-                        radius = size.width * 0.85f,
-                    ),
-                    radius = size.width * 0.85f,
+                val amberRadius = size.width * 0.85f
+                val amberBrush = Brush.radialGradient(
+                    listOf(Color(0xFFFFB74D).copy(alpha = 0.34f), Color.Transparent),
                     center = amberCenter,
+                    radius = amberRadius,
                 )
                 val blueCenter = Offset(size.width * 0.02f, size.height * 1.02f)
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        listOf(Color(0xFF4C7DFF).copy(alpha = 0.16f), Color.Transparent),
-                        center = blueCenter,
-                        radius = size.width * 0.7f,
-                    ),
-                    radius = size.width * 0.7f,
+                val blueRadius = size.width * 0.7f
+                val blueBrush = Brush.radialGradient(
+                    listOf(Color(0xFF4C7DFF).copy(alpha = 0.16f), Color.Transparent),
                     center = blueCenter,
+                    radius = blueRadius,
                 )
+                onDrawBehind {
+                    drawCircle(brush = amberBrush, radius = amberRadius, center = amberCenter)
+                    drawCircle(brush = blueBrush, radius = blueRadius, center = blueCenter)
+                }
             }
             .border(1.dp, Color(0xFFFFB74D).copy(alpha = 0.24f), ShapeHero)
             .padding(20.dp),
@@ -410,44 +405,6 @@ fun HeroStat(label: String, value: String, modifier: Modifier = Modifier) {
         )
         Text(label, style = MaterialTheme.typography.labelSmall, color = Color(0x99FFFFFF))
     }
-}
-
-/**
- * 全屏环境光：两团很淡的径向光晕缓慢呼吸。它画在 Scaffold 下面，
- * 不改变任何布局；深色主题里给纯黑背景一点纵深。
- */
-@Composable
-fun AmbientBackground(modifier: Modifier = Modifier) {
-    val primary = MaterialTheme.colorScheme.primary
-    val secondary = MaterialTheme.colorScheme.secondary
-    // 静态光晕：VM 跑起来时不能为了背景动画持续整屏重绘。
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
-            .drawBehind {
-                val topCenter = Offset(size.width * 0.95f, -size.height * 0.04f)
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        listOf(primary.copy(alpha = 0.11f), Color.Transparent),
-                        center = topCenter,
-                        radius = size.width * 0.95f,
-                    ),
-                    radius = size.width * 0.95f,
-                    center = topCenter,
-                )
-                val bottomCenter = Offset(size.width * 0.02f, size.height * 0.72f)
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        listOf(secondary.copy(alpha = 0.08f), Color.Transparent),
-                        center = bottomCenter,
-                        radius = size.width * 0.85f,
-                    ),
-                    radius = size.width * 0.85f,
-                    center = bottomCenter,
-                )
-            },
-    )
 }
 
 /** 迷你折线：性能页和 VM 卡片共用。 */
