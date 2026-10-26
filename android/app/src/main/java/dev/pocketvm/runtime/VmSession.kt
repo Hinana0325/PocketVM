@@ -419,8 +419,9 @@ class VmSession(
         // CD transport is a boot-or-not decision (see CdTransport), so it gets its
         // own fallback rung: AUTO starts on USB and drops to virtio-scsi if the
         // USB stack kills QEMU.
-        var cdTransport = when (config.cdTransport) {
-            CdTransport.AUTO -> CdTransport.USB
+        var cdTransport = when {
+            config.usbDisabled -> CdTransport.VIRTIO_SCSI
+            config.cdTransport == CdTransport.AUTO -> CdTransport.USB
             else -> config.cdTransport
         }
         var cdTransportDowngraded = false
@@ -429,8 +430,8 @@ class VmSession(
         // still moved GRUB's highlight over RFB and QEMU survived the guest's USB
         // enumeration, while virtio-keyboard-pci dropped every key. Only when the
         // same profile dies again with USB input attached is the input bus worth
-        // dropping.
-        var usbInput = config.usbInput
+        // dropping. usbDisabled 从一开始就不带任何 USB 设备。
+        var usbInput = config.usbInput && !config.usbDisabled
         var usbInputDowngraded = false
 
         var index = 0
@@ -475,6 +476,7 @@ class VmSession(
                     storageController = config.storageController,
                     cdTransport = cdTransport,
                     usbInput = usbInput,
+                    usbDisabled = config.usbDisabled,
                     displayDevice = config.displayDevice,
                     cpuModel = config.cpuModel,
                     rng = config.rng,

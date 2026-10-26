@@ -405,6 +405,29 @@ class QemuCommandBuilderTest {
     }
 
     @Test
+    fun `usbDisabled 时整条 USB 总线都不存在`() {
+        // 给「一碰 USB 栈就 SIGILL」的机型：即使显式选了 USB 光驱与 USB 输入，
+        // 禁用开关也必须把 xHCI/USB 键鼠/usb-storage 全部拿掉。
+        val args = builder.build(
+            request().copy(usbDisabled = true, cdTransport = CdTransport.USB, usbInput = true),
+        )
+        assertFalse("不能有 xHCI 控制器", args.any { it.startsWith("qemu-xhci") })
+        assertFalse("不能有 usb 前缀设备", args.any { it.startsWith("usb-") })
+        assertTrue("光驱要落在 virtio-scsi 上", args.any { it == "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=1" })
+        assertTrue("AHCI 副本仍要给 WinPE", args.any { it == "ide-cd,drive=cd1,bus=ahci.0" })
+        assertTrue("输入改 virtio", args.any { it == "virtio-keyboard-pci" })
+    }
+
+    @Test
+    fun `usbDisabled 时无介质也不创建 xhci`() {
+        val args = builder.build(
+            request(iso = null).copy(profile = LaunchProfile.MINIMAL_NO_MEDIA, usbDisabled = true),
+        )
+        assertFalse(args.any { it.startsWith("qemu-xhci") })
+        assertTrue(args.any { it == "virtio-keyboard-pci" })
+    }
+
+    @Test
     fun `display device defaults to ramfb`() {
         // virtio-gpu 的 GOP 没有线性帧缓冲，Windows Boot Manager 清屏时写 NULL 直接
         // Data Abort；ramfb 是实测能进 Windows 安装界面的唯一显示设备。

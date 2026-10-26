@@ -61,6 +61,11 @@ data class LaunchRequest(
      * [QemuCommandBuilder.build] for the measurement that moved it to USB.
      */
     val usbInput: Boolean = true,
+    /**
+     * 彻底禁用 USB：不创建 xHCI、USB 键鼠与 USB 光驱。光驱固定 virtio-scsi +
+     * AHCI，输入固定 virtio。给遇到 USB 栈必崩的机型兜底。
+     */
+    val usbDisabled: Boolean = false,
     /** Display device; see [DisplayDevice]. */
     val displayDevice: DisplayDevice = DisplayDevice.RAMFB,
     /**
@@ -133,10 +138,12 @@ class QemuCommandBuilder {
 
         // Resolve AUTO to USB: it is the only bus both edk2 and WinPE understand
         // (see CdTransport). The launcher downgrades to VIRTIO_SCSI if QEMU dies
-        // on the USB stack, so AUTO never reaches here as AUTO.
-        val transport = when (request.cdTransport) {
-            CdTransport.AUTO, CdTransport.USB -> CdTransport.USB
-            CdTransport.VIRTIO_SCSI -> CdTransport.VIRTIO_SCSI
+        // on the USB stack, so AUTO never reaches here as AUTO. usbDisabled wins
+        // over both: no USB bus exists at all.
+        val transport = when {
+            request.usbDisabled -> CdTransport.VIRTIO_SCSI
+            request.cdTransport == CdTransport.VIRTIO_SCSI -> CdTransport.VIRTIO_SCSI
+            else -> CdTransport.USB
         }
 
         // virtio-scsi + AHCI only exist for the VIRTIO_SCSI transport: edk2 boots
@@ -169,10 +176,11 @@ class QemuCommandBuilder {
         // reached the guest's UEFI Shell.
         //
         // The controller must be declared before the devices that sit on it, or
-        // QEMU answers "Bus 'xhci.0' not found".
-        val needsUsb = (mediaPath != null && transport == CdTransport.USB) || request.usbInput
+        // QEMU answers "Bus 'xhci.0' not found". 禁用 USB 时这条总线整个不存在。
+        val useUsbInput = request.usbInput && !request.usbDisabled
+        val needsUsb = (mediaPath != null && transport == CdTransport.USB) || useUsbInput
         if (needsUsb) args += listOf("-device", "qemu-xhci,id=xhci")
-        if (request.usbInput) {
+        if (useUsbInput) {
             args += listOf("-device", "usb-kbd,bus=xhci.0")
             args += listOf("-device", "usb-tablet,bus=xhci.0")
         } else {

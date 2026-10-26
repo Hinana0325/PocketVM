@@ -572,10 +572,10 @@ fun CreateVmScreen(
                     // Collapsed summary: enough to confirm what a VM is actually
                     // booting with, without reading seven separate controls.
                     Text(
-                        "光驱 ${draft.cdTransport.label}" +
+                        "光驱 ${if (draft.usbDisabled) "virtio-scsi+AHCI（USB 已禁用）" else draft.cdTransport.label}" +
                             if (draft.driverIsoPath != null) " · 驱动盘已挂" else "" +
                             if (draft.portForwards.isNotEmpty()) " · 转发 ${draft.portForwards.size} 个端口" else "" +
-                            " · 输入 ${if (draft.usbInput) "USB" else "virtio"} · " +
+                            " · 输入 ${if (draft.usbDisabled || !draft.usbInput) "virtio" else "USB"} · " +
                             "显示 ${draft.displayDevice.label} · " +
                             "串口恢复 ${if (draft.serialRecovery) "开" else "关"} · " +
                             "CPU ${draft.cpuModel ?: "跟随档位"} · 提取镜像 ${if (draft.useBootImage) "开" else "关"}",
@@ -586,37 +586,53 @@ fun CreateVmScreen(
 
                 if (advanced) {
                     ChoiceRow(
-                        label = "光驱总线",
-                        options = listOf(
-                            CdTransport.AUTO to "自动",
-                            CdTransport.USB to "USB",
-                            CdTransport.VIRTIO_SCSI to "virtio-scsi+AHCI",
-                        ),
-                        selected = draft.cdTransport,
-                        onSelect = { value -> onUpdate { it.copy(cdTransport = value) } },
+                        label = "USB 总线",
+                        options = listOf(false to "启用", true to "禁用"),
+                        selected = draft.usbDisabled,
+                        onSelect = { value -> onUpdate { it.copy(usbDisabled = value) } },
                     )
                     Text(
-                        "USB 是 edk2 与 WinPE 都支持的总线（edk2 无 AHCI 驱动，WinPE 无 vioscsi），" +
-                            "但部分机型（如骁龙 8 Gen3）上 QEMU 的 USB 栈会直接崩溃（SIGILL）。「自动」先用 USB，" +
-                            "一旦被信号杀死就整体回退：光驱改 virtio-scsi + AHCI、输入同步改 virtio，并记住这个选择；" +
-                            "Windows 在 virtio-scsi 下需配合上方「驱动盘」加载 vioscsi 才能读安装文件" +
-                            "（挂了驱动盘时安装 ISO 只走 virtio-scsi：两个 ISO 设备同屏会让 Windows 安装冻结）。",
+                        "禁用后 QEMU 不创建 xHCI 控制器，USB 键鼠与 USB 光驱都不会出现：光驱固定走 " +
+                            "virtio-scsi + AHCI、输入固定走 virtio。给「一碰 USB 栈就 SIGILL」的机型用。" +
+                            "注意：本机 virtio 键盘收不到按键，禁用后只能看画面或跑无人值守安装。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
-                    ChoiceRow(
-                        label = "输入设备",
-                        options = listOf(true to "USB", false to "virtio"),
-                        selected = draft.usbInput,
-                        onSelect = { value -> onUpdate { it.copy(usbInput = value) } },
-                    )
-                    Text(
-                        "USB 键鼠与 USB 光驱是同一条 USB 栈：若启动时发生过 USB 崩溃，输入会被自动改为 virtio" +
-                            "（固件菜单里可能无法用 virtio 键盘操作，但客户机系统内正常）。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (!draft.usbDisabled) {
+                        ChoiceRow(
+                            label = "光驱总线",
+                            options = listOf(
+                                CdTransport.AUTO to "自动",
+                                CdTransport.USB to "USB",
+                                CdTransport.VIRTIO_SCSI to "virtio-scsi+AHCI",
+                            ),
+                            selected = draft.cdTransport,
+                            onSelect = { value -> onUpdate { it.copy(cdTransport = value) } },
+                        )
+                        Text(
+                            "USB 是 edk2 与 WinPE 都支持的总线（edk2 无 AHCI 驱动，WinPE 无 vioscsi），" +
+                                "但部分机型上 QEMU 的 USB 栈会直接崩溃（SIGILL）。「自动」先用 USB，" +
+                                "一旦被信号杀死就改为 virtio-scsi + AHCI（键鼠仍走 USB）并记住这个选择；" +
+                                "Windows 在 virtio-scsi 下需配合上方「驱动盘」加载 vioscsi 才能读安装文件" +
+                                "（挂了驱动盘时安装 ISO 只走 virtio-scsi：两个 ISO 设备同屏会让 Windows 安装冻结）。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        ChoiceRow(
+                            label = "输入设备",
+                            options = listOf(true to "USB", false to "virtio"),
+                            selected = draft.usbInput,
+                            onSelect = { value -> onUpdate { it.copy(usbInput = value) } },
+                        )
+                        Text(
+                            "键鼠默认走 USB（本机 virtio 键盘收不到按键）；只有同一档再次被信号杀死时" +
+                                "才会自动把输入降为 virtio。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
 
                     ChoiceRow(
                         label = "显示设备",

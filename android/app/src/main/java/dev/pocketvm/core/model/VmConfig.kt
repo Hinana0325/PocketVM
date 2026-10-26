@@ -91,6 +91,13 @@ data class VmConfig(
     /** Keyboard/tablet over USB (true) or virtio (false). See QemuCommandBuilder. */
     val usbInput: Boolean = true,
     /**
+     * 彻底禁用 USB：不创建 xHCI 控制器、USB 键鼠和 USB 光驱，光驱固定走
+     * virtio-scsi + AHCI、输入固定走 virtio。给「碰到 USB 栈就 SIGILL」的机型
+     * 用。代价是本机 virtio 键盘收不到按键（见 AGENTS.md），禁用后只能看画面
+     * 或跑无人值守安装。
+     */
+    val usbDisabled: Boolean = false,
+    /**
      * Display device for the guest — see [DisplayDevice]. ramfb is the default:
      * virtio-gpu's GOP has no linear framebuffer and Windows Boot Manager dies
      * on it before Setup starts.

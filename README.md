@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.10 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.11 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -39,6 +39,7 @@
 | 0.10.8 | **修复子进程 PID 获取（真机上仪表/健康探针静默失效的根因）**：`Process.pid()` 的反射 invoke 在 JDK 16+ 撞模块封装、在 ART 上是隐藏 API，两条反射路都断时 `pidOf` 返回 -1，健康探针与性能仪表会**静默不启动**。新增 `/proc` 扫描兜底（`diagnostics/ChildProcess.kt`：ppid==本进程 且 cmdline 含 qemu 的直接子进程），任何 Linux/ART 上都成立；补 9 个测试：5 个假 /proc 夹具 + 4 个**真内核**集成测试（解析测试 JVM 自身 /proc、采样真实忙等进程、双子进程中按 qemu 名扫描、已回收 PID 返回 null） |
 | 0.10.9 | **GICv3 修复 bootmgfw 启动即 Data Abort**：`-machine virt,highmem=on,gic-version=3` 对齐 Windows on virt 已验证配置；同版修掉降级把 `usbInput` 一起写回 false、导致降级一次后键盘永久失效的问题——现在只换光驱、输入保持 USB |
 | 0.10.10 | **修复「虚拟机自己关闭」的根因：ARMv9 PAC + 跨线程协程切换**。bionic 的 `sigsetjmp/siglongjmp` 用每线程 APIA 密钥签名 SP/LR，QEMU sigaltstack 协程在别的线程首次 enter 时 `autiasp` 必失败，FEAT_FPAC 直接 SIGILL（exit=132，tombstone 在 libc `longjmp+460`）——表现为跑 50–300 秒后随机消失。新增 `scripts/patch-qemu-pac.py` + `scripts/qemu-pac-shim.S`：把 `sigsetjmp/siglongjmp` 的 .plt 槽改跳新增 PT_LOAD 里的无签名 `jmp_save/jmp_restore`。真机同配置 11 分钟不崩并**首次进入 Windows 11 安装程序界面**。同时把显示设备默认改为 `ramfb`、降级只换光驱不换输入 |
+| 0.10.11 | **新增「禁用 USB」选项**：编辑页「引导选项 → USB 总线」设为禁用后，QEMU 不创建 xHCI，USB 键鼠与 USB 光驱全部消失——光驱固定 virtio-scsi + AHCI、输入固定 virtio；给「一碰 USB 栈就 SIGILL」的机型用（本机 usb-storage 实测如此）。配置里对应 `usbDisabled`，即使 CD 总线/输入仍存着 USB 也会被强制覆盖。代价是虚机里没有可用键盘（本机 virtio 键盘收不到按键）。同时修正编辑页里两处过时说明：降级现在只换光驱，不再把输入一起改成 virtio |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
