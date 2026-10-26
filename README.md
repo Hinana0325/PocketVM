@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.8 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.10 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -37,6 +37,8 @@
 | 0.10.6 | **Windows 安装配方（全网调研落地）**：显示设备可配 ramfb / virtio-gpu——ramfb 是社区三份独立教程一致的安装期显示（virtio-gpu 的驱动交接会清空 scanout，安装途中出现「Display output is not active.」占位画面）；挂 VirtIO 驱动盘时安装 ISO 只走 virtio-scsi（**Windows 无法同时配置两个 ISO 设备，同挂必冻结**，richliu 实测）；占位画面排查补 Ctrl+Alt+F1 / `console=tty0`（社区确认这是引导器→登录界面间的正常过渡）；关于页/控制台补完整 Win11 ARM64 安装配方（22589 可用 25226 必坏、`vioscsi → w11 → ARM64`、TESTSIGNING、NetKVM/viogpudo） |
 | 0.10.7 | **性能占用仪表**：控制台新增「性能」Tab，1 Hz 采样 QEMU 进程的 CPU（多线程 TCG 下可超 100%）、每 vCPU 占用、RSS 内存（占手机物理内存比例）、磁盘 I/O（MB/s）与运行时长，附 60 秒 CPU 迷你图。全部宿主机侧采集（`/proc/<pid>/{stat,statm,io}` + QMP `query-cpus-fast`），客户机无需装 agent，Windows 安装过程中也能看 |
 | 0.10.8 | **修复子进程 PID 获取（真机上仪表/健康探针静默失效的根因）**：`Process.pid()` 的反射 invoke 在 JDK 16+ 撞模块封装、在 ART 上是隐藏 API，两条反射路都断时 `pidOf` 返回 -1，健康探针与性能仪表会**静默不启动**。新增 `/proc` 扫描兜底（`diagnostics/ChildProcess.kt`：ppid==本进程 且 cmdline 含 qemu 的直接子进程），任何 Linux/ART 上都成立；补 9 个测试：5 个假 /proc 夹具 + 4 个**真内核**集成测试（解析测试 JVM 自身 /proc、采样真实忙等进程、双子进程中按 qemu 名扫描、已回收 PID 返回 null） |
+| 0.10.9 | **GICv3 修复 bootmgfw 启动即 Data Abort**：`-machine virt,highmem=on,gic-version=3` 对齐 Windows on virt 已验证配置；同版修掉降级把 `usbInput` 一起写回 false、导致降级一次后键盘永久失效的问题——现在只换光驱、输入保持 USB |
+| 0.10.10 | **修复「虚拟机自己关闭」的根因：ARMv9 PAC + 跨线程协程切换**。bionic 的 `sigsetjmp/siglongjmp` 用每线程 APIA 密钥签名 SP/LR，QEMU sigaltstack 协程在别的线程首次 enter 时 `autiasp` 必失败，FEAT_FPAC 直接 SIGILL（exit=132，tombstone 在 libc `longjmp+460`）——表现为跑 50–300 秒后随机消失。新增 `scripts/patch-qemu-pac.py` + `scripts/qemu-pac-shim.S`：把 `sigsetjmp/siglongjmp` 的 .plt 槽改跳新增 PT_LOAD 里的无签名 `jmp_save/jmp_restore`。真机同配置 11 分钟不崩并**首次进入 Windows 11 安装程序界面**。同时把显示设备默认改为 `ramfb`、降级只换光驱不换输入 |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
@@ -310,7 +312,7 @@ docs/                       架构、排障、打包与推送
 | APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
 | 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
 | 安装介质启动 | **通过**：固件从 USB 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。USB 崩溃回退 virtio-scsi 后：无驱动盘时同一 ISO 双挂（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`）；挂驱动盘时只走 virtio-cd（两个 ISO 设备同屏会冻结安装） |
-| Windows 安装全流程 | **进行中**：USB 整体回退 + 驱动盘 + ramfb 显示 + 单 ISO 设备策略已按社区验证配方就位；上次真机停在 bootmgr 阶段（virtio-scsi 读不到 `install.wim`），待按上方配方挂驱动盘复测。历史上另有一次 WinPE 早期内核 Data Abort（ESR `0x25/0x96000047`，FAR `0x0`，指令 `0x…637200: b .`），PC 上同配置逐位复现，与加速档位/内存/固件无关——那是 USB 光驱时代的配置，当前 virtio-scsi + 驱动盘链路尚未复测该问题 |
+| Windows 安装全流程 | **进行中**：0.10.10 已修掉两个拦路问题——① 显示设备：`virtio-gpu-pci` 的 GOP 没有线性帧缓冲（`Mode->FrameBufferBase=0`、`FrameBufferSize=0`），bootmgfw 把 NULL 存成目标表面，首次清屏 memcpy 写地址 0，触发 Data Abort（ESR `0x96000047`、FAR `0x0`），默认改为 `ramfb`；② 随机消失：ARMv9 PAC 使跨线程 `siglongjmp` 的 `autiasp` 失败（exit=132，libc `longjmp+460`），执行层已打无签名协程切换补丁。真机同配置跑到 **Windows 11 安装程序窗口**并稳定 11 分钟以上；安装尚未完成，下一步按上方配方挂 VirtIO 驱动盘，让 WinPE 读到 `install.wim` |
 
 第一次上机时最值得盯的三件事：`QemuEnvironment` 是否报 `QEMU_MISSING`（找不到 .so）、
 日志里有没有 `Could not read keymap`、以及 VNC 端口是否真的在监听。
