@@ -62,7 +62,7 @@ data class LaunchRequest(
      */
     val usbInput: Boolean = true,
     /** Display device; see [DisplayDevice]. */
-    val displayDevice: DisplayDevice = DisplayDevice.VIRTIO_GPU,
+    val displayDevice: DisplayDevice = DisplayDevice.RAMFB,
     /**
      * Unix socket for the firmware/guest serial console. Null disables it.
      * When present, VmSession watches it and auto-recovers from a UEFI Shell
@@ -149,8 +149,11 @@ class QemuCommandBuilder {
             args += listOf("-device", "ich9-ahci,id=ahci")
         }
 
-        // Display: ramfb or virtio-gpu — see DisplayDevice for why the Windows
-        // install path wants the dumb framebuffer (no driver-handover reset).
+        // Display: ramfb by default. virtio-gpu's GOP reports
+        // FrameBufferBase/Size = 0 (no linear framebuffer), and Windows Boot
+        // Manager dereferences that NULL on its first clear-screen — see
+        // DisplayDevice for the gdbstub evidence. Linux guests can still opt
+        // into virtio-gpu (1280x800) because their DRM driver works.
         args += listOf(
             "-device",
             when (request.displayDevice) {

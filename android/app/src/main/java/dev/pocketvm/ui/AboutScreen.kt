@@ -86,9 +86,10 @@ fun AboutScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        "2. 编辑页把「显示设备」切成 ramfb：这是社区安装 Windows ARM64 的一致选择，" +
-                            "virtio-gpu 的驱动交接会清空显示输出（Display output is not active）。" +
-                            "ramfb 固定 800x600，固件界面按 F10 可调高（写入变量存储，重启保留）。",
+                        "2. 显示设备保持 ramfb（默认值）：virtio-gpu 的 GOP 没有线性帧缓冲，Windows " +
+                            "引导管理器清屏时会写空指针并 Data Abort，安装程序根本起不来；ramfb 是实测唯一" +
+                            "能进 Windows 安装界面的设备。ramfb 固定 800x600，固件界面按 F10 可调高" +
+                            "（写入变量存储，重启保留）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

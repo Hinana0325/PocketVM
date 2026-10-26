@@ -17,25 +17,30 @@ data class PortForward(
 /**
  * Which display device the guest sees.
  *
- * Community-verified Windows ARM64 installs on `virt` (dariaphoebe's gist,
- * richliu's guide, sekin's Win10 guide) all use **ramfb**, not virtio-gpu: the
- * moment the guest's virtio-gpu driver initialises it issues a device reset,
- * which makes QEMU drop the scanout (`ui/console.c dpy_gfx_replace_surface`)
- * and paint the "Display output is not active." placeholder — right in the
- * middle of Setup. ramfb is a dumb framebuffer with no such handover, at the
- * cost of a fixed 800x600 (raise to 1024x768 via the firmware setup, F10; the
- * choice persists because PocketVM keeps a writable vars pflash).
+ * **ramfb is the default because virtio-gpu cannot boot Windows at all on this
+ * firmware.** `VirtioGpuDxe` produces a GOP whose `Mode->FrameBufferBase` and
+ * `FrameBufferSize` are both 0 (PixelFormat 3, BGRx): virtio-gpu has no linear
+ * framebuffer in guest memory, only 2D blits. Windows' Boot Manager explicitly
+ * skips mapping in that case, stores NULL as its destination surface, and the
+ * first clear-screen memcpy writes to physical 0 — a same-EL Data Abort (ESR
+ * 0x96000047, FAR 0x0) on the firmware exception vector. Measured 2026-10-26 by
+ * single-stepping BOOTAA64.EFI with the gdbstub: initializer RVA 0x32ea0,
+ * faulting store RVA 0x3990, caller RVA 0x30a68. With `-device ramfb` the same
+ * ISO boots to the Windows Setup UI.
  *
- * virtio-gpu stays the default because it is what was measured on this device:
- * the firmware picture comes up at 1280x800, and Linux guests drive it fine.
- * Switch to ramfb for the Windows install attempt.
+ * ramfb is a dumb linear framebuffer: fixed 800x600 by default, raised to
+ * 1024x768 via the firmware setup (F10) and persisted in the writable vars
+ * pflash. It has no guest driver, which is fine for Windows (Setup and the
+ * basic display use the EFI framebuffer) but leaves a Linux guest without a
+ * console after handoff — pick virtio-gpu for Linux VMs, where the virtio-gpu
+ * DRM driver works.
  */
 @Serializable
 enum class DisplayDevice(val label: String) {
-    /** Dumb linear framebuffer; the community's install-time display. */
+    /** Dumb linear framebuffer; required for Windows on this firmware. */
     RAMFB("ramfb"),
 
-    /** virtio-gpu-pci: 1280x800 firmware picture, guest driver handover risk. */
+    /** virtio-gpu-pci: 1280x800 firmware picture; Windows cannot use its GOP. */
     VIRTIO_GPU("virtio-gpu"),
     ;
 }
@@ -86,11 +91,11 @@ data class VmConfig(
     /** Keyboard/tablet over USB (true) or virtio (false). See QemuCommandBuilder. */
     val usbInput: Boolean = true,
     /**
-     * Display device for the guest — see [DisplayDevice]. virtio-gpu is the
-     * measured default on this device; ramfb is what every community-verified
-     * Windows ARM64 install uses, because it has no driver-handover reset.
+     * Display device for the guest — see [DisplayDevice]. ramfb is the default:
+     * virtio-gpu's GOP has no linear framebuffer and Windows Boot Manager dies
+     * on it before Setup starts.
      */
-    val displayDevice: DisplayDevice = DisplayDevice.VIRTIO_GPU,
+    val displayDevice: DisplayDevice = DisplayDevice.RAMFB,
     /**
      * Firmware serial console + automatic UEFI Shell recovery. Off means no
      * `-serial` at all; keep it on unless you are debugging something else.

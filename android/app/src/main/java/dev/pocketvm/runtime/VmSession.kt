@@ -424,13 +424,14 @@ class VmSession(
             else -> config.cdTransport
         }
         var cdTransportDowngraded = false
-        // USB input shares the xHCI controller with usb-storage. When the stack
-        // proves fatal (signal kill, see below), the CD is not the only thing that
-        // has to move: usb-kbd/usb-tablet sit on the same bus and kill QEMU the
-        // moment the guest's HID driver touches them — a crash no later rung of
-        // the ladder would survive, because the ladder only moves the CD. So the
-        // downgrade takes the whole USB bus down at once.
+        // The CD downgrade keeps USB input. Measured on the Xiaomi 14 Pro
+        // (2026-10-25): with the CD moved to virtio-scsi + AHCI, usb-kbd on xHCI
+        // still moved GRUB's highlight over RFB and QEMU survived the guest's USB
+        // enumeration, while virtio-keyboard-pci dropped every key. Only when the
+        // same profile dies again with USB input attached is the input bus worth
+        // dropping.
         var usbInput = config.usbInput
+        var usbInputDowngraded = false
 
         var index = 0
         while (index < ladder.size) {
@@ -706,14 +707,21 @@ class VmSession(
             // The CD sat on USB and QEMU was killed by a signal: that is the
             // SIGILL the USB mass-storage chain produces on some devices (e.g.
             // Snapdragon 8 Gen3). Retry the same profile with the CD on
-            // virtio-scsi + AHCI *and* input on virtio — the whole USB bus goes,
-            // because usb-kbd/usb-tablet on the same xHCI controller crash the
-            // same way once the guest's HID driver enumerates them.
+            // virtio-scsi + AHCI and leave USB input alone — keyboard/tablet are
+            // a separate device stack and measured working with this CD, unlike
+            // virtio input.
             if (cdTransport == CdTransport.USB && code >= 128) {
                 cdTransport = CdTransport.VIRTIO_SCSI
-                usbInput = false
                 cdTransportDowngraded = true
-                notes += "USB 导致 QEMU 崩溃（exit=$code），本次改为 virtio-scsi + AHCI，输入同步改为 virtio"
+                notes += "USB 光驱导致 QEMU 崩溃（exit=$code），本次改为 virtio-scsi + AHCI，输入保持 USB"
+                continue
+            }
+            // Same profile died again with the USB keyboard/tablet attached: the
+            // input bus is now the remaining suspect. Retry once on virtio.
+            if (usbInput && code >= 128) {
+                usbInput = false
+                usbInputDowngraded = true
+                notes += "USB 输入导致 QEMU 崩溃（exit=$code），本次输入改为 virtio"
                 continue
             }
             index += 1
@@ -735,10 +743,14 @@ class VmSession(
                 append("\n（引导镜像已挂载时 QEMU 直接崩溃，本次已回退为光盘引导）")
             }
             if (cdTransportDowngraded) {
-                append("\n（USB 导致 QEMU 崩溃，已整体回退：光驱改 virtio-scsi + AHCI、输入改 virtio。" +
-                    "本机 USB 栈必然崩溃，而 WinPE 缺 vioscsi 驱动、读不到 virtio-scsi 上的 install.wim——" +
+                append("\n（USB 光驱导致 QEMU 崩溃，已改为 virtio-scsi + AHCI，键鼠仍走 USB。" +
+                    "WinPE 缺 vioscsi 驱动，读不到 virtio-scsi 上的 install.wim——" +
                     "请挂一张含 VirtIO 驱动的 AHCI 驱动盘（在 WinPE 里加载 vioscsi 后再装），" +
                     "或改用已注入 vioscsi 的 Windows 镜像）")
+            }
+            if (usbInputDowngraded) {
+                append("\n（USB 键鼠也导致 QEMU 崩溃，本次输入改为 virtio；" +
+                    "若键盘无响应，请在编辑页把输入设备改回 USB）")
             }
         }
         AgentFeed.event(

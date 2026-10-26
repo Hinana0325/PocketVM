@@ -621,17 +621,18 @@ fun CreateVmScreen(
                     ChoiceRow(
                         label = "显示设备",
                         options = listOf(
-                            DisplayDevice.VIRTIO_GPU to "virtio-gpu",
                             DisplayDevice.RAMFB to "ramfb",
+                            DisplayDevice.VIRTIO_GPU to "virtio-gpu",
                         ),
                         selected = draft.displayDevice,
                         onSelect = { value -> onUpdate { it.copy(displayDevice = value) } },
                     )
                     Text(
-                        "virtio-gpu 固件画面 1280x800（本机实测）；ramfb 是社区安装 Windows ARM64 的" +
-                            "验证组合——virtio-gpu 的驱动交接会让 QEMU 清空显示输出，安装途中可能出现" +
-                            "「Display output is not active.」占位画面。ramfb 固定 800x600，" +
-                            "可在固件界面按 F10 进 Setup 把首选分辨率改成 1024x768（会写入变量存储，重启保留）。",
+                        "ramfb 是默认值，也是 Windows 唯一能启动的显示设备：virtio-gpu 的 GOP 没有线性" +
+                            "帧缓冲，Windows 引导管理器清屏时写空指针会直接 Data Abort（本机实测）。" +
+                            "ramfb 固定 800x600，可在固件界面按 F10 进 Setup 把首选分辨率改成 1024x768" +
+                            "（写入变量存储，重启保留）。virtio-gpu 只建议给 Linux 客户机用，它没有 ramfb " +
+                            "驱动，切过去后内核交接会黑屏；Linux 相反，virtio-gpu 有 DRM 驱动。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

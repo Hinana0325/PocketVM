@@ -266,10 +266,10 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(busy = true, notice = null, log = "", screen = Screen.Console(vmId))
             }
             val outcome = container.session.start(vm)
-            // USB crashed on this device and we fell back to virtio-scsi: remember
-            // it so the next start skips the crash entirely (AUTO no longer retries
-            // USB). usbInput goes down with it — usb-kbd/usb-tablet sit on the same
-            // xHCI bus and crash the same way once the guest enumerates them.
+            // The CD fell back to virtio-scsi: remember it so the next start skips
+            // the crash entirely (AUTO no longer retries USB). Input is left as
+            // configured — the downgrade now keeps USB key/tablet, and virtio
+            // input is the one that drops keys on this hardware.
             // Only persists when the transport actually changed, so an explicit
             // VIRTIO_SCSI choice is never silently overridden.
             val finalTransport = when (outcome) {
@@ -279,10 +279,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (finalTransport == CdTransport.VIRTIO_SCSI && vm.cdTransport != CdTransport.VIRTIO_SCSI) {
                 container.configStore.save(
-                    vm.copy(
-                        cdTransport = CdTransport.VIRTIO_SCSI,
-                        usbInput = false,
-                    ),
+                    vm.copy(cdTransport = CdTransport.VIRTIO_SCSI),
                 )
                 refresh()
             }

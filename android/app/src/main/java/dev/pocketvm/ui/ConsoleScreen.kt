@@ -474,15 +474,17 @@ private fun OverviewTab(
                             "排查顺序：\n" +
                             "① 串口日志里 starting Boot0001 之后是否仍有输出——有就是系统还在启动，TCG 下先等 5-10 分钟；\n" +
                             "② 黑屏时先在 VNC 客户端里按 Ctrl+Alt+F1 强制切 TTY，画面通常会回来；\n" +
-                            "③ USB 在本机必然崩溃：保持「光驱总线=自动」启动一次，App 会自动记住" +
-                            "virtio-scsi + virtio 输入（光驱和输入一起回退），之后不再走 USB；\n" +
+                            "③ USB 光驱在本机会崩：保持「光驱总线=自动」启动一次，App 会自动改成" +
+                            "virtio-scsi + AHCI，键鼠仍走 USB（实测方向键可用）；只有同一档再次崩溃" +
+                            "才会把输入降为 virtio，而本机 virtio 键盘收不到按键——需要键盘时请在编辑页" +
+                            "把输入设备改回 USB；\n" +
                             "④ Windows 在 virtio-scsi 下读不到安装文件：挂 VirtIO 驱动盘（virtio-win），" +
                             "在 WinPE 的「加载驱动」里进 驱动盘盘符 → vioscsi → w11 → ARM64" +
                             "（认准含 vioscsi.inf 的目录）；挂了驱动盘时光盘只走 virtio-scsi，" +
                             "两个 ISO 设备同屏会让 Windows 安装冻结；\n" +
-                            "⑤ 仍黑屏就把编辑页「显示设备」切成 ramfb：这是社区安装 Windows ARM64 的验证组合，" +
-                            "virtio-gpu 的驱动交接正是占位画面的来源；ramfb 固定 800x600，" +
-                            "可在固件界面按 F10 进 Setup 调分辨率（会写入变量存储，重启保留）；\n" +
+                            "⑤ 仍黑屏就确认编辑页「显示设备」是 ramfb（默认值）：virtio-gpu 的 GOP " +
+                            "没有线性帧缓冲，Windows 引导管理器会写空指针 Data Abort；ramfb 固定 " +
+                            "800x600，可在固件界面按 F10 进 Setup 调分辨率（会写入变量存储，重启保留）；\n" +
                             "⑥ 以上无效再把固件换回内置 2024.02 原版（QEMU_EFI.fd）重试，隔离固件回归。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

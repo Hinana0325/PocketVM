@@ -405,20 +405,18 @@ class QemuCommandBuilderTest {
     }
 
     @Test
-    fun `display device defaults to virtio-gpu`() {
-        // Measured on the device: the firmware picture comes up at 1280x800.
+    fun `display device defaults to ramfb`() {
+        // virtio-gpu 的 GOP 没有线性帧缓冲，Windows Boot Manager 清屏时写 NULL 直接
+        // Data Abort；ramfb 是实测能进 Windows 安装界面的唯一显示设备。
         val args = builder.build(request())
-        assertTrue(args.any { it == "virtio-gpu-pci" })
-        assertFalse(args.any { it == "ramfb" })
+        assertTrue(args.any { it == "ramfb" })
+        assertFalse(args.any { it == "virtio-gpu-pci" })
     }
 
     @Test
-    fun `ramfb is selectable for the windows install path`() {
-        // Every community-verified Windows ARM64 install on virt uses ramfb:
-        // virtio-gpu's driver handover resets the device and QEMU drops the
-        // scanout mid-Setup ("Display output is not active.").
-        val args = builder.build(request().copy(displayDevice = DisplayDevice.RAMFB))
-        assertTrue(args.any { it == "ramfb" })
-        assertFalse("ramfb 与 virtio-gpu 不并存", args.any { it == "virtio-gpu-pci" })
+    fun `virtio-gpu is selectable for linux guests`() {
+        val args = builder.build(request().copy(displayDevice = DisplayDevice.VIRTIO_GPU))
+        assertTrue(args.any { it == "virtio-gpu-pci" })
+        assertFalse("ramfb 与 virtio-gpu 不并存", args.any { it == "ramfb" })
     }
 }
