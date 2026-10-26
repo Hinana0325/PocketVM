@@ -558,21 +558,6 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Answers a pending boot prompt / hits Enter in the guest. */
-    fun sendEnter(vmId: String) {
-        if (container.session.runningVmId() != vmId) {
-            _ui.update { it.copy(notice = "这台虚拟机没有在运行") }
-            return
-        }
-        viewModelScope.launch {
-            // QMP 命令会阻塞到 socket 超时，绝不能放在点击回调的主线程上。
-            val ok = withContext(Dispatchers.IO) { container.session.sendKey("ret") }
-            _ui.update {
-                it.copy(notice = if (ok) "已向客户机发送回车（应答按键提示）" else "按键发送失败（QMP 未连接）")
-            }
-        }
-    }
-
     /**
      * 单个按键（方向键、Esc、F2 等）。手机 VNC 客户端通常没有这些键，
      * 所以这是固件菜单/安装界面唯一可靠的输入途径。静默发送，不弹提示。

@@ -184,7 +184,6 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                             onRefresh = vm::refreshLog,
                             onExport = { vm.exportDiagnostics(target.id) },
                             onEject = { vm.ejectIso(target.id) },
-                            onSendKey = { vm.sendEnter(target.id) },
                             onGuestKey = { code -> vm.sendGuestKey(target.id, code) },
                             onGuestCombo = { codes -> vm.sendGuestCombo(target.id, codes) },
                             onGuestText = { text -> vm.typeGuestText(target.id, text) },

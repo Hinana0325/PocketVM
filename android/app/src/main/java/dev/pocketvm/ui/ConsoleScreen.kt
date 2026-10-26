@@ -89,7 +89,6 @@ fun ConsoleScreen(
     onRefresh: () -> Unit,
     onExport: () -> Unit,
     onEject: () -> Unit,
-    onSendKey: () -> Unit,
     onGuestKey: (String) -> Unit,
     onGuestCombo: (List<String>) -> Unit,
     onGuestText: (String) -> Unit,
@@ -238,7 +237,6 @@ fun ConsoleScreen(
                 onStop = onStop,
                 onExport = onExport,
                 onEject = onEject,
-                onSendKey = onSendKey,
                 onGuestKey = onGuestKey,
                 onGuestCombo = onGuestCombo,
                 onGuestText = onGuestText,
@@ -445,7 +443,6 @@ private fun OverviewTab(
     onStop: () -> Unit,
     onExport: () -> Unit,
     onEject: () -> Unit,
-    onSendKey: () -> Unit,
     onGuestKey: (String) -> Unit,
     onGuestCombo: (List<String>) -> Unit,
     onGuestText: (String) -> Unit,
@@ -545,7 +542,6 @@ private fun OverviewTab(
                         Text(if (running) "停止" else "启动", modifier = Modifier.padding(start = 6.dp))
                     }
                     OutlinedButton(onClick = onExport) { Text("导出诊断包") }
-                    TextButton(onClick = onSendKey, enabled = running) { Text("应答引导提示") }
                 }
                 otherRunning?.let {
                     Text(
