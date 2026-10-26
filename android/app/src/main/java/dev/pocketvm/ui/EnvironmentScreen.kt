@@ -3,7 +3,9 @@ package dev.pocketvm.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
@@ -28,6 +30,40 @@ fun EnvironmentScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item {
+            HeroHeader(
+                title = "执行环境",
+                subtitle = "QEMU 执行层 · 固件 · 设备能力",
+                trailing = {
+                    StatusChip(
+                        text = if (state.env?.ready == true) "已就绪" else "未就绪",
+                        tone = if (state.env?.ready == true) Tone.Ok else Tone.Error,
+                        onDarkSurface = true,
+                    )
+                },
+            ) {
+                Row(
+                    modifier = androidx.compose.ui.Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    HeroStat(
+                        "执行层",
+                        state.env?.version ?: "未知",
+                        modifier = androidx.compose.ui.Modifier.weight(1f),
+                    )
+                    HeroStat(
+                        "页大小",
+                        state.env?.pageSizeKb?.takeIf { it > 0 }?.let { "$it KB" } ?: "—",
+                        modifier = androidx.compose.ui.Modifier.weight(1f),
+                    )
+                    HeroStat(
+                        "SoC",
+                        state.env?.soc ?: "—",
+                        modifier = androidx.compose.ui.Modifier.weight(1f),
+                    )
+                }
+            }
+        }
         item {
             ReadinessBanner(
                 env = state.env,

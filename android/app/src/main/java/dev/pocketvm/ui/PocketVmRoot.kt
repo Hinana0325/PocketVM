@@ -5,12 +5,21 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -22,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -79,33 +89,49 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
     }
     val isTopLevel = state.screen.isTopLevel
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbar) },
-        topBar = {
-            if (showTopBar) PocketTopBar(title = topTitle)
-        },
-        bottomBar = {
-            if (isTopLevel) PocketNavBar(current = state.screen, onSelect = { vm.navigate(it) })
-        },
-        floatingActionButton = {
-            if (state.screen is Screen.List) {
-                ExtendedFloatingActionButton(
-                    onClick = vm::newVm,
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                    text = { Text("新建虚拟机") },
-                )
-            }
-        },
-    ) { padding ->
+    Box(modifier = Modifier.fillMaxSize()) {
+        AmbientBackground(modifier = Modifier.fillMaxSize())
+        Scaffold(
+            containerColor = Color.Transparent,
+            snackbarHost = { SnackbarHost(snackbar) },
+            topBar = {
+                if (showTopBar) PocketTopBar(title = topTitle)
+            },
+            bottomBar = {
+                if (isTopLevel) PocketNavBar(current = state.screen, onSelect = { vm.navigate(it) })
+            },
+            floatingActionButton = {
+                if (state.screen is Screen.List) {
+                    ExtendedFloatingActionButton(
+                        onClick = vm::newVm,
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        shape = RoundedCornerShape(18.dp),
+                        elevation = FloatingActionButtonDefaults.elevation(
+                            defaultElevation = 8.dp,
+                            pressedElevation = 12.dp,
+                        ),
+                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                        text = { Text("新建虚拟机") },
+                    )
+                }
+            },
+        ) { padding ->
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+            modifier = Modifier.fillMaxSize(),
         ) {
-            when (val screen = state.screen) {
+            AnimatedContent(
+                targetState = state.screen,
+                transitionSpec = {
+                    val forward = targetState is Screen.Console || targetState is Screen.Create
+                    (fadeIn(tween(240)) + slideInHorizontally { if (forward) it / 8 else -it / 8 })
+                        .togetherWith(
+                            fadeOut(tween(160)) + slideOutHorizontally { if (forward) -it / 12 else it / 12 },
+                        )
+                },
+                label = "screen",
+            ) { screen ->
+            when (screen) {
                 Screen.List -> VmListScreen(
                     state = state,
                     contentPadding = padding,
@@ -169,7 +195,9 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                     modifier = Modifier.padding(padding),
                 )
             }
+            }
         }
+    }
     }
 }
 

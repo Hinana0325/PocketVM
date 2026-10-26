@@ -1,5 +1,6 @@
 package dev.pocketvm.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -68,7 +70,7 @@ fun VmListScreen(
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(contentPadding),
-        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
@@ -79,23 +81,22 @@ fun VmListScreen(
                     StatusChip(
                         text = if (env?.ready == true) "环境就绪" else "环境未就绪",
                         tone = if (env?.ready == true) Tone.Ok else Tone.Error,
+                        onDarkSurface = true,
                     )
                 },
-            )
-        }
-
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                StatPill("虚拟机", "${state.vms.size}", modifier = Modifier.weight(1f))
-                StatPill("运行中", if (runningId != null) "1" else "0", modifier = Modifier.weight(1f))
-                StatPill(
-                    "执行层",
-                    if (env?.ready == true) "就绪" else "缺失",
-                    modifier = Modifier.weight(1f),
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    HeroStat("虚拟机", "${state.vms.size}", modifier = Modifier.weight(1f))
+                    HeroStat("运行中", if (runningId != null) "1" else "0", modifier = Modifier.weight(1f))
+                    HeroStat(
+                        "执行层",
+                        if (env?.ready == true) "就绪" else "缺失",
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
 
@@ -131,6 +132,7 @@ fun VmListScreen(
                     usedBytes = state.diskUsage[vm.id] ?: 0L,
                     runtime = state.runtime,
                     runningId = runningId,
+                    metrics = if (runningId == vm.id) state.metrics else null,
                     busy = state.busy,
                     lastRun = state.lastRuns[vm.id],
                     onOpen = { onOpen(vm.id) },
@@ -176,6 +178,7 @@ private fun VmCard(
     usedBytes: Long,
     runtime: VmRuntimeState,
     runningId: String?,
+    metrics: dev.pocketvm.diagnostics.VmMetrics?,
     busy: Boolean,
     lastRun: RunManifest?,
     onOpen: () -> Unit,
@@ -201,6 +204,7 @@ private fun VmCard(
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
         shape = ShapeCard,
+        border = if (isRunning) BorderStroke(1.dp, Success.copy(alpha = 0.35f)) else null,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row {
@@ -275,6 +279,23 @@ private fun VmCard(
                 }
 
                 UsageBar(usedBytes = usedBytes, totalGb = vm.diskSizeGb)
+
+                if (isRunning && metrics != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        LiveMetric("CPU", "${metrics.cpuPercent.toInt()}%")
+                        LiveMetric("内存", metrics.rssMb?.let { "$it MB" } ?: "—")
+                        LiveMetric("I/O", liveIoLabel(metrics))
+                        Sparkline(
+                            history = metrics.cpuHistory,
+                            modifier = Modifier.weight(1f).height(30.dp),
+                            color = Success,
+                        )
+                    }
+                }
 
                 Text(
                     "光驱 ${vm.cdTransport.label} · 固件 ${vm.firmwareCodePath?.substringAfterLast('/') ?: "内置"}" +
@@ -365,4 +386,23 @@ private fun VmCard(
             }
         }
     }
+}
+
+@Composable
+private fun LiveMetric(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        Text(
+            value,
+            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+private fun liveIoLabel(m: dev.pocketvm.diagnostics.VmMetrics): String {
+    val read = m.readMBs
+    val write = m.writeMBs
+    if (read == null || write == null) return "—"
+    return String.format(java.util.Locale.US, "%.1f MB/s", read + write)
 }

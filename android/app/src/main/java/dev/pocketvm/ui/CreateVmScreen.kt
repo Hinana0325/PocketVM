@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -128,6 +129,24 @@ fun CreateVmScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SpecChip("${draft.cpuCores} vCPU")
+                SpecChip("${draft.memoryMb} MB")
+                SpecChip("${draft.diskSizeGb} GB")
+                SpecChip(draft.displayDevice.label)
+                SpecChip(
+                    when {
+                        draft.usbDisabled -> "USB 已禁用"
+                        draft.usbInput -> "USB 输入"
+                        else -> "virtio 输入"
+                    },
+                )
+                if (draft.driverIsoPath != null) SpecChip("驱动盘已挂")
+            }
+
             SectionCard(title = "基本配置") {
                 OutlinedTextField(
                     value = draft.name,

@@ -2,10 +2,16 @@ package dev.pocketvm.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,9 +37,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,11 +49,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import dev.pocketvm.ui.theme.Danger
 import dev.pocketvm.ui.theme.ShapeChip
@@ -137,8 +147,14 @@ fun CollapsibleSection(
 }
 
 @Composable
-fun StatusChip(text: String, tone: Tone, modifier: Modifier = Modifier) {
-    val dark = isSystemInDarkTheme()
+fun StatusChip(
+    text: String,
+    tone: Tone,
+    modifier: Modifier = Modifier,
+    onDarkSurface: Boolean = false,
+) {
+    // Hero 那张深色玻璃在浅色主题下也存在，所以不能只看系统明暗。
+    val dark = onDarkSurface || isSystemInDarkTheme()
     // 浅色主题下用加深的语义色，16% 透明底上的 11sp 文本也能过 AA（≥4.5:1）。
     val color = when (tone) {
         Tone.Idle -> if (dark) Color(0xFF8A8A96) else Color(0xFF5F594B)
@@ -147,6 +163,19 @@ fun StatusChip(text: String, tone: Tone, modifier: Modifier = Modifier) {
         Tone.Error -> if (dark) Danger else Color(0xFFA02020)
     }
     val animated by animateColorAsState(color, animationSpec = tween(400), label = "statusTone")
+    // 启动中/停止中时让圆点呼吸；其余状态不创建无限动画，避免常驻重绘。
+    val dotAlpha = if (tone == Tone.Busy) {
+        val transition = rememberInfiniteTransition(label = "statusPulse")
+        val pulse by transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+            label = "statusPulseValue",
+        )
+        pulse
+    } else {
+        1f
+    }
     Row(
         modifier = modifier
             .background(animated.copy(alpha = 0.16f), ShapeChip)
@@ -157,7 +186,7 @@ fun StatusChip(text: String, tone: Tone, modifier: Modifier = Modifier) {
         Box(
             modifier = Modifier
                 .size(6.dp)
-                .background(animated, CircleShape),
+                .background(animated.copy(alpha = dotAlpha), CircleShape),
         )
         Text(
             text,
@@ -201,7 +230,7 @@ fun PocketTopBar(
 ) {
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor = Color.Transparent,
             titleContentColor = MaterialTheme.colorScheme.onBackground,
         ),
         title = {
@@ -244,73 +273,220 @@ fun PocketNavBar(current: Screen, onSelect: (Screen) -> Unit) {
         NavDestination(Screen.Environment, "环境", Icons.Filled.Memory),
         NavDestination(Screen.About, "关于", Icons.Filled.Info),
     )
-    NavigationBar(containerColor = MaterialTheme.colorScheme.background) {
-        items.forEach { dest ->
-            val selected = current == dest.screen
-            NavigationBarItem(
-                selected = selected,
-                onClick = { if (!selected) onSelect(dest.screen) },
-                icon = { Icon(dest.icon, contentDescription = dest.label) },
-                label = { Text(dest.label) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
-            )
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(26.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f),
+            shadowElevation = 14.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(6.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                items.forEach { dest ->
+                    val selected = current == dest.screen
+                    val indicator by animateColorAsState(
+                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                        else Color.Transparent,
+                        animationSpec = tween(300),
+                        label = "navIndicator",
+                    )
+                    val content by animateColorAsState(
+                        if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        animationSpec = tween(300),
+                        label = "navContent",
+                    )
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(indicator)
+                            .clickable { if (!selected) onSelect(dest.screen) }
+                            .animateContentSize()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(dest.icon, contentDescription = dest.label, tint = content, modifier = Modifier.size(20.dp))
+                        if (selected) {
+                            Text(dest.label, color = content, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
+/**
+ * 品牌头图：深色玻璃 + 琥珀光晕 + 渐变字。比纯色渐变更有层次，
+ * 也顺手把「运行中」等实时信息收进头图，首页不再是一排孤立的小卡片。
+ */
 @Composable
 fun HeroHeader(
     title: String,
     subtitle: String,
     modifier: Modifier = Modifier,
     trailing: @Composable (() -> Unit)? = null,
+    content: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     Box(
         modifier = modifier
             .fillMaxWidth()
             .clip(ShapeHero)
-            .background(dev.pocketvm.ui.theme.HeroGradient)
+            .background(Brush.linearGradient(listOf(Color(0xFF23232E), Color(0xFF101015))))
             .drawBehind {
-                // 两层半透明圆给渐变一点"光斑"质感，不用额外图片资源。
+                val amberCenter = Offset(size.width * 0.92f, size.height * 0.02f)
                 drawCircle(
-                    color = Color.White.copy(alpha = 0.12f),
-                    radius = size.width * 0.42f,
-                    center = Offset(size.width * 0.94f, size.height * 0.10f),
+                    brush = Brush.radialGradient(
+                        listOf(Color(0xFFFFB74D).copy(alpha = 0.34f), Color.Transparent),
+                        center = amberCenter,
+                        radius = size.width * 0.85f,
+                    ),
+                    radius = size.width * 0.85f,
+                    center = amberCenter,
                 )
+                val blueCenter = Offset(size.width * 0.02f, size.height * 1.02f)
                 drawCircle(
-                    color = Color.White.copy(alpha = 0.07f),
-                    radius = size.width * 0.28f,
-                    center = Offset(size.width * 0.80f, size.height * 0.98f),
-                )
-                drawCircle(
-                    color = Color(0xFF1A1200).copy(alpha = 0.06f),
-                    radius = size.width * 0.30f,
-                    center = Offset(size.width * 0.06f, size.height * 1.02f),
+                    brush = Brush.radialGradient(
+                        listOf(Color(0xFF4C7DFF).copy(alpha = 0.16f), Color.Transparent),
+                        center = blueCenter,
+                        radius = size.width * 0.7f,
+                    ),
+                    radius = size.width * 0.7f,
+                    center = blueCenter,
                 )
             }
+            .border(1.dp, Color(0xFFFFB74D).copy(alpha = 0.24f), ShapeHero)
             .padding(20.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            ">_",
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp),
+            style = TextStyle(
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 64.sp,
+            ),
+            color = Color.White.copy(alpha = 0.05f),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 title,
-                style = MaterialTheme.typography.displaySmall,
-                color = Color(0xFF1A1200),
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                style = MaterialTheme.typography.displaySmall.copy(
+                    brush = Brush.linearGradient(listOf(Color(0xFFFFD98E), Color(0xFFFFA726))),
+                    letterSpacing = 0.4.sp,
+                ),
             )
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF3A2A08),
-            )
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFB9B9C6))
+            content?.invoke(this)
         }
         if (trailing != null) {
             Box(Modifier.align(Alignment.TopEnd)) { trailing() }
+        }
+    }
+}
+
+/** 头图里的迷你统计块，半透明白底让它在深色玻璃上自然分层。 */
+@Composable
+fun HeroStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White.copy(alpha = 0.07f))
+            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(
+            value,
+            style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
+            color = Color(0xFFF3F3F7),
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Color(0x99FFFFFF))
+    }
+}
+
+/**
+ * 全屏环境光：两团很淡的径向光晕缓慢呼吸。它画在 Scaffold 下面，
+ * 不改变任何布局；深色主题里给纯黑背景一点纵深。
+ */
+@Composable
+fun AmbientBackground(modifier: Modifier = Modifier) {
+    val primary = MaterialTheme.colorScheme.primary
+    val secondary = MaterialTheme.colorScheme.secondary
+    // 静态光晕：VM 跑起来时不能为了背景动画持续整屏重绘。
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .drawBehind {
+                val topCenter = Offset(size.width * 0.95f, -size.height * 0.04f)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(primary.copy(alpha = 0.11f), Color.Transparent),
+                        center = topCenter,
+                        radius = size.width * 0.95f,
+                    ),
+                    radius = size.width * 0.95f,
+                    center = topCenter,
+                )
+                val bottomCenter = Offset(size.width * 0.02f, size.height * 0.72f)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(secondary.copy(alpha = 0.08f), Color.Transparent),
+                        center = bottomCenter,
+                        radius = size.width * 0.85f,
+                    ),
+                    radius = size.width * 0.85f,
+                    center = bottomCenter,
+                )
+            },
+    )
+}
+
+/** 迷你折线：性能页和 VM 卡片共用。 */
+@Composable
+fun Sparkline(
+    history: List<Float>,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.primary,
+    fill: Boolean = true,
+    showEndDot: Boolean = true,
+) {
+    Canvas(modifier = modifier) {
+        if (history.size < 2) return@Canvas
+        val max = (history.max() ?: 100f).coerceAtLeast(100f)
+        val stepX = size.width / (history.size - 1).toFloat()
+        fun y(value: Float) = size.height - (value / max * size.height).coerceIn(0f, size.height)
+        val line = Path().apply {
+            history.forEachIndexed { index, value ->
+                val x = index * stepX
+                if (index == 0) moveTo(x, y(value)) else lineTo(x, y(value))
+            }
+        }
+        if (fill) {
+            val area = Path().apply {
+                moveTo(0f, size.height)
+                history.forEachIndexed { index, value -> lineTo(index * stepX, y(value)) }
+                lineTo(size.width, size.height)
+                close()
+            }
+            drawPath(
+                path = area,
+                brush = Brush.verticalGradient(
+                    listOf(color.copy(alpha = 0.30f), color.copy(alpha = 0.02f)),
+                ),
+            )
+        }
+        drawPath(line, color = color, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+        if (showEndDot) {
+            drawCircle(color, radius = 3.dp.toPx(), center = Offset(size.width, y(history.last())))
         }
     }
 }

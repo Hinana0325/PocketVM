@@ -1,5 +1,11 @@
 package dev.pocketvm.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -12,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
@@ -19,13 +26,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -110,7 +123,23 @@ fun ConsoleScreen(
     val clipboard = LocalClipboardManager.current
     val logScroll = rememberScrollState()
     val serialScroll = rememberScrollState()
-    val usedBytes = state.diskUsage[vm.id] ?: 0L
+    val shortStatus = when (runtime) {
+        is VmRuntimeState.Running -> "运行中"
+        is VmRuntimeState.Preparing -> "启动中"
+        is VmRuntimeState.Stopping -> "停止中"
+        is VmRuntimeState.Exited -> "已退出"
+        is VmRuntimeState.Failed -> "失败"
+        VmRuntimeState.Idle -> "未运行"
+    }
+    val statusTone = when (runtime) {
+        is VmRuntimeState.Running -> Tone.Ok
+        is VmRuntimeState.Preparing, is VmRuntimeState.Stopping -> Tone.Busy
+        is VmRuntimeState.Exited, is VmRuntimeState.Failed -> Tone.Error
+        VmRuntimeState.Idle -> Tone.Idle
+    }
+    val canToggle = runtime !is VmRuntimeState.Preparing &&
+        runtime !is VmRuntimeState.Stopping &&
+        (running || otherRunning == null)
 
     LaunchedEffect(copied, copiedError) {
         if (copied || copiedError) {
@@ -133,7 +162,17 @@ fun ConsoleScreen(
             showBack = true,
             onBack = onBack,
             actions = {
-                TextButton(onClick = { onRefresh() }) { Text("刷新") }
+                StatusChip(text = shortStatus, tone = statusTone)
+                IconButton(onClick = if (running) onStop else onStart, enabled = canToggle) {
+                    Icon(
+                        if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                        contentDescription = if (running) "停止" else "启动",
+                        tint = if (running) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(onClick = { onRefresh() }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+                }
             },
         )
 
@@ -141,13 +180,41 @@ fun ConsoleScreen(
             selectedTabIndex = tab,
             containerColor = MaterialTheme.colorScheme.background,
         ) {
-            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("概览") })
-            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("日志") })
-            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("性能") })
-            Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("SSH") })
+            Tab(
+                selected = tab == 0,
+                onClick = { tab = 0 },
+                icon = { Icon(Icons.Filled.Dashboard, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                text = { Text("概览") },
+            )
+            Tab(
+                selected = tab == 1,
+                onClick = { tab = 1 },
+                icon = { Icon(Icons.AutoMirrored.Filled.Article, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                text = { Text("日志") },
+            )
+            Tab(
+                selected = tab == 2,
+                onClick = { tab = 2 },
+                icon = { Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                text = { Text("性能") },
+            )
+            Tab(
+                selected = tab == 3,
+                onClick = { tab = 3 },
+                icon = { Icon(Icons.Filled.Terminal, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                text = { Text("SSH") },
+            )
         }
 
-        when (tab) {
+        AnimatedContent(
+            targetState = tab,
+            transitionSpec = {
+                (fadeIn(tween(200)) + scaleIn(initialScale = 0.98f))
+                    .togetherWith(fadeOut(tween(120)))
+            },
+            label = "consoleTab",
+        ) { activeTab ->
+            when (activeTab) {
             0 -> OverviewTab(
                 state = state,
                 vm = vm,
@@ -198,6 +265,7 @@ fun ConsoleScreen(
                 onShellSend = onSshShellSend,
                 onShellCtrlC = onSshShellCtrlC,
             )
+            }
         }
     }
 }
@@ -238,7 +306,10 @@ private fun PerformanceTab(
                         style = MaterialTheme.typography.headlineLarge,
                         color = MaterialTheme.colorScheme.primary,
                     )
-                    CpuSparkline(history = metrics.cpuHistory)
+                    Sparkline(
+                        history = metrics.cpuHistory,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    )
                     Text(
                         "超过 100% 是正常的：多线程 TCG 让 ${metrics.vcpuPercents.size.coerceAtLeast(1)} 个" +
                             "vCPU 线程并行翻译代码，各自都能吃满一个核。上图是最近 60 秒的进程总占用。",
@@ -332,46 +403,6 @@ private fun PerformanceTab(
     }
 }
 
-/** 60-second CPU sparkline; flat until the second sample lands. */
-@Composable
-private fun CpuSparkline(history: List<Float>, modifier: Modifier = Modifier) {
-    val lineColor = MaterialTheme.colorScheme.primary
-    Canvas(modifier = modifier.fillMaxWidth().height(48.dp)) {
-        if (history.size < 2) return@Canvas
-        val max = (history.max() ?: 100f).coerceAtLeast(100f)
-        val stepX = size.width / (history.size - 1).toFloat()
-        fun y(value: Float) = size.height - (value / max * size.height).coerceIn(0f, size.height)
-
-        val line = Path().apply {
-            history.forEachIndexed { index, value ->
-                val x = index * stepX
-                if (index == 0) moveTo(x, y(value)) else lineTo(x, y(value))
-            }
-        }
-        val fill = Path().apply {
-            moveTo(0f, size.height)
-            history.forEachIndexed { index, value -> lineTo(index * stepX, y(value)) }
-            lineTo(size.width, size.height)
-            close()
-        }
-        drawPath(
-            path = fill,
-            brush = Brush.verticalGradient(
-                listOf(lineColor.copy(alpha = 0.30f), lineColor.copy(alpha = 0.02f)),
-            ),
-        )
-        drawPath(
-            path = line,
-            color = lineColor,
-            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
-        )
-        drawCircle(
-            color = lineColor,
-            radius = 3.dp.toPx(),
-            center = Offset(size.width, y(history.last())),
-        )
-    }
-}
 
 private fun formatRate(mbPerSecond: Float): String =
     String.format(java.util.Locale.US, "%.1f MB/s", mbPerSecond)
