@@ -199,6 +199,29 @@ class QmpClient(private val socketPath: String) : Closeable {
         }
     }
 
+    /**
+     * Cumulative device I/O from QMP `query-blockstats`, summed over all nodes.
+     *
+     * Fallback for the dashboard's disk card: Android may deny `/proc/<pid>/io`
+     * even to the app that owns the process. QMP is already open, and these are
+     * the counters the guest's block layer actually moved — a different (and
+     * arguably more honest) view than procfs block bytes.
+     */
+    fun blockIoBytes(): Pair<Long, Long>? {
+        val reply = execute("query-blockstats") ?: return null
+        val stats = reply.optJSONArray("return") ?: return null
+        var read = 0L
+        var write = 0L
+        var seen = false
+        for (i in 0 until stats.length()) {
+            val node = stats.optJSONObject(i)?.optJSONObject("stats") ?: continue
+            read += node.optLong("rd_bytes", 0L)
+            write += node.optLong("wr_bytes", 0L)
+            seen = true
+        }
+        return if (seen) read to write else null
+    }
+
     override fun close() {
         runCatching { writer?.close() }
         runCatching { reader?.close() }

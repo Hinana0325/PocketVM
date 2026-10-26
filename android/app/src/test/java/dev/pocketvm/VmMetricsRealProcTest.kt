@@ -87,7 +87,7 @@ class VmMetricsRealProcTest {
             val first = sampler.sample(nowMs = t0, vcpuTids = emptyList(), uptimeMs = 0L)
             assertNotNull(first)
             assertEquals(0f, first!!.cpuPercent, 0.001f) // no delta yet
-            assertTrue("live process RSS should be > 0, was ${first.rssMb}", first.rssMb > 0L)
+            assertTrue("live process RSS should be > 0, was ${first.rssMb}", (first.rssMb ?: 0L) > 0L)
 
             Thread.sleep(1_100)
             val t1 = System.currentTimeMillis()

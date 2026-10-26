@@ -9,18 +9,25 @@ import org.junit.Test
 
 class VmMetricsTest {
 
-    /** /proc/<pid>/stat with the given utime/stime; comm deliberately contains ") ". */
+    /**
+     * `/proc/<pid>/stat` with the given utime/stime; comm deliberately contains ") ".
+     * Field 22 (starttime) is 12345 ticks — 123.45 s after boot.
+     */
     private fun stat(utime: Long, stime: Long): String =
-        "42 (qemu ) aarch64) S 1 1 1 0 -1 4194560 100 0 0 0 $utime $stime 0 0 20 0 1"
+        "42 (qemu ) aarch64) S 1 1 1 0 -1 4194560 100 0 0 0 $utime $stime 0 0 20 0 1 0 12345"
 
-    private fun samplerWith(files: MutableMap<String, String>, historySize: Int = 60) =
-        VmMetricsSampler(
-            pid = 42,
-            pageSizeKb = 4,
-            clockTicksPerSecond = 100,
-            historySize = historySize,
-            readFile = { path -> files[path] },
-        )
+    private fun samplerWith(
+        files: MutableMap<String, String>,
+        historySize: Int = 60,
+        ioFallback: (() -> Pair<Long, Long>?)? = null,
+    ) = VmMetricsSampler(
+        pid = 42,
+        pageSizeKb = 4,
+        clockTicksPerSecond = 100,
+        historySize = historySize,
+        readFile = { path -> files[path] },
+        ioFallback = ioFallback,
+    )
 
     @Test
     fun `cpu ticks survive a comm full of parens and spaces`() {
@@ -30,9 +37,24 @@ class VmMetricsTest {
     }
 
     @Test
+    fun `starttime and uptime give the process age`() {
+        // 1000 s of boot uptime minus a 123.45 s old process.
+        assertEquals(876_550L, ProcStats.processAgeMs(stat(0, 0), "1000.00 500.00"))
+        assertNull(ProcStats.processAgeMs("42 (x) S 1", "1000.00"))
+        assertNull(ProcStats.processAgeMs(stat(0, 0), "not-a-number"))
+    }
+
+    @Test
     fun `statm resident is the second field`() {
         assertEquals(25000L, ProcStats.rssPages("90000 25000 20000 1 0 5000 0\n"))
         assertNull(ProcStats.rssPages("90000\n"))
+    }
+
+    @Test
+    fun `status VmRSS is the fallback when statm is unreadable`() {
+        val status = "Name:\tqemu-system-aarch64\nState:\tS (sleeping)\nVmRSS:\t  204800 kB\n"
+        assertEquals(204800L, ProcStats.rssKbFromStatus(status))
+        assertNull(ProcStats.rssKbFromStatus("Name:\tqemu\n"))
     }
 
     @Test
@@ -51,7 +73,7 @@ class VmMetricsTest {
     }
 
     @Test
-    fun `first sample reports absolute values and zero rates`() {
+    fun `first sample reports absolute values and no rates`() {
         val files = mutableMapOf(
             "/proc/42/stat" to stat(utime = 100, stime = 50),
             // 25600 resident pages x 4 KiB = exactly 100 MiB.
@@ -63,10 +85,10 @@ class VmMetricsTest {
         val first = sampler.sample(nowMs = 1_000, vcpuTids = listOf(700, 701), uptimeMs = 1_000)
 
         requireNotNull(first)
-        // 25000 pages x 4 KiB = 100 MiB of RSS, straight from statm.
-        assertEquals(100L, first.rssMb)
+        assertEquals(100L, first.rssMb!!)
         assertEquals(0f, first.cpuPercent, 0.001f)
-        assertEquals(0f, first.readMBs, 0.001f)
+        assertNull("没有第二个样本就没有速率", first.readMBs)
+        assertNull(first.writeMBs)
         assertTrue("还没有第二个样本，历史应为空", first.cpuHistory.isEmpty())
     }
 
@@ -95,9 +117,83 @@ class VmMetricsTest {
         assertEquals(50f, second.cpuPercent, 0.001f)
         assertEquals(30f, second.vcpuPercents[0], 0.001f)
         assertEquals(20f, second.vcpuPercents[1], 0.001f)
-        assertEquals(2f, second.readMBs, 0.001f)
-        assertEquals(0f, second.writeMBs, 0.001f)
+        assertEquals(2f, second.readMBs!!, 0.001f)
+        assertEquals(0f, second.writeMBs!!, 0.001f)
         assertEquals(listOf(50f), second.cpuHistory)
+    }
+
+    @Test
+    fun `a missing io read never produces a fake burst`() {
+        val files = mutableMapOf(
+            "/proc/42/stat" to stat(0, 0),
+            "/proc/42/statm" to "90000 25000 20000 1 0 5000 0",
+            "/proc/42/io" to "read_bytes: 1048576\nwrite_bytes: 0\n",
+        )
+        val sampler = samplerWith(files)
+        sampler.sample(nowMs = 1_000, vcpuTids = emptyList(), uptimeMs = 1_000)
+
+        files.remove("/proc/42/io")
+        val gap = sampler.sample(nowMs = 2_000, vcpuTids = emptyList(), uptimeMs = 2_000)
+        assertNull("读不到 io 就是未知，不是 0", gap!!.readMBs)
+
+        files["/proc/42/io"] = "read_bytes: 2097152\nwrite_bytes: 0\n"
+        val back = sampler.sample(nowMs = 3_000, vcpuTids = emptyList(), uptimeMs = 3_000)
+        assertNull("数据源刚恢复的一拍不跨缺口求差", back!!.readMBs)
+
+        files["/proc/42/io"] = "read_bytes: 3145728\nwrite_bytes: 0\n"
+        val steady = sampler.sample(nowMs = 4_000, vcpuTids = emptyList(), uptimeMs = 4_000)
+        assertEquals(1f, steady!!.readMBs!!, 0.001f)
+    }
+
+    @Test
+    fun `qmp blockstats is used when proc io is hidden`() {
+        val files = mutableMapOf(
+            "/proc/42/stat" to stat(0, 0),
+            "/proc/42/statm" to "90000 25000 20000 1 0 5000 0",
+            // no /proc/42/io at all — the Android SELinux case
+        )
+        var qmpRead = 1048576L
+        val sampler = samplerWith(files, ioFallback = { qmpRead to 0L })
+
+        val first = sampler.sample(nowMs = 1_000, vcpuTids = emptyList(), uptimeMs = 1_000)
+        assertNull(first!!.readMBs)
+
+        qmpRead += 2 * 1048576L
+        val second = sampler.sample(nowMs = 2_000, vcpuTids = emptyList(), uptimeMs = 2_000)
+        assertEquals(2f, second!!.readMBs!!, 0.001f)
+        assertEquals(0f, second.writeMBs!!, 0.001f)
+    }
+
+    @Test
+    fun `rss falls back to status when statm is unreadable`() {
+        val files = mutableMapOf(
+            "/proc/42/stat" to stat(0, 0),
+            "/proc/42/status" to "Name:\tqemu-system-aarch64\nVmRSS:\t  204800 kB\n",
+        )
+        val sample = samplerWith(files).sample(nowMs = 1_000, vcpuTids = emptyList(), uptimeMs = 1_000)
+        requireNotNull(sample)
+        assertEquals(200L, sample.rssMb)
+    }
+
+    @Test
+    fun `an unreadable vcpu stat does not spike the next sample`() {
+        val files = mutableMapOf(
+            "/proc/42/stat" to stat(0, 0),
+            "/proc/42/statm" to "90000 25000 20000 1 0 5000 0",
+            "/proc/42/io" to "read_bytes: 0\nwrite_bytes: 0\n",
+        )
+        val sampler = samplerWith(files)
+        sampler.sample(nowMs = 1_000, vcpuTids = listOf(700), uptimeMs = 1_000)
+
+        // Thread stat appears only now: its absolute counter must not be treated
+        // as "this core burned 10 ticks in the last second".
+        files["/proc/700/stat"] = stat(utime = 10, stime = 0)
+        val second = sampler.sample(nowMs = 2_000, vcpuTids = listOf(700), uptimeMs = 2_000)
+        assertEquals(0f, second!!.vcpuPercents[0], 0.001f)
+
+        files["/proc/700/stat"] = stat(utime = 20, stime = 0)
+        val third = sampler.sample(nowMs = 3_000, vcpuTids = listOf(700), uptimeMs = 3_000)
+        assertEquals(10f, third!!.vcpuPercents[0], 0.001f)
     }
 
     @Test

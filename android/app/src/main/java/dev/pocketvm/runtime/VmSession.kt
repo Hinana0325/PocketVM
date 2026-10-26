@@ -19,6 +19,7 @@ import dev.pocketvm.diagnostics.AgentFeed
 import dev.pocketvm.diagnostics.DiagnosticsExporter
 import dev.pocketvm.diagnostics.LogTail
 import dev.pocketvm.diagnostics.ProcessHealth
+import dev.pocketvm.diagnostics.ProcStats
 import dev.pocketvm.diagnostics.RunManifestStore
 import dev.pocketvm.diagnostics.VmMetrics
 import dev.pocketvm.diagnostics.VmMetricsSampler
@@ -1086,6 +1087,18 @@ class VmSession(
      * only happens when the process is being reaped; [awaitExit] clears the
      * flow, so simply stop here.
      */
+    /**
+     * Wall-clock launch time from `/proc/<pid>/stat` starttime + `/proc/uptime`.
+     *
+     * Null when procfs is unreadable; the caller then falls back to "now", which
+     * under-reports the uptime but keeps the dashboard running.
+     */
+    private fun processStartedAt(pid: Int): Long? = runCatching {
+        val stat = File("/proc/$pid/stat").readText()
+        val uptime = File("/proc/uptime").readText()
+        ProcStats.processAgeMs(stat, uptime)?.let { System.currentTimeMillis() - it }
+    }.getOrNull()
+
     private fun startMetricsWatch(process: Process, client: QmpClient) {
         metricsJob?.cancel()
         val pid = pidOf(process)
@@ -1096,8 +1109,13 @@ class VmSession(
                 val sampler = VmMetricsSampler(
                     pid = pid,
                     pageSizeKb = dev.pocketvm.runtime.DeviceInfo.pageSizeKb().takeIf { it > 0 } ?: 4,
+                    // Android 可能连自己子进程的 /proc/<pid>/io 都不给读；
+                    // QMP 已经连着，块设备计数是现成的兜底。
+                    ioFallback = { client.blockIoBytes() },
                 )
-                val startedAt = System.currentTimeMillis()
+                // 从 QEMU 进程自己的 starttime 推启动时刻：QMP 握手要等固件起步，
+                // 用它当锚点会把「已运行」显示得比实际短一截。
+                val startedAt = processStartedAt(pid) ?: System.currentTimeMillis()
                 val vcpuTids = runCatching { client.cpuThreadIds() }.getOrDefault(emptyList())
                 while (isActive && process.isAlive) {
                     val now = System.currentTimeMillis()

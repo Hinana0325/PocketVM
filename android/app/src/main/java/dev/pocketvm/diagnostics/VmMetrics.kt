@@ -20,19 +20,29 @@ data class VmMetrics(
     val cpuPercent: Float,
     /** Per-vCPU usage, each 0..100. Empty when QMP could not enumerate threads. */
     val vcpuPercents: List<Float>,
-    /** Resident set of the QEMU process, MiB (translation buffers included). */
-    val rssMb: Long,
-    /** Block-layer throughput of the process, MiB/s. */
-    val readMBs: Float,
-    val writeMBs: Float,
-    /** Wall time since launch, ms. */
+    /**
+     * Resident set of the QEMU process, MiB (translation buffers included).
+     * Null when neither `/proc/<pid>/statm` nor `/proc/<pid>/status` could be
+     * read — Android denies those files on some builds.
+     */
+    val rssMb: Long?,
+    /**
+     * Block-layer throughput, MiB/s. Null when no usable I/O source exists or
+     * this is the first sample from a new source. `/proc/<pid>/io` is the
+     * primary source; QMP `query-blockstats` is the fallback (it reports the
+     * devices' counters, which Android SELinux may still allow when procfs is
+     * locked down).
+     */
+    val readMBs: Float?,
+    val writeMBs: Float?,
+    /** Wall time since the QEMU process started, ms. */
     val uptimeMs: Long,
     /** Recent [cpuPercent] history, oldest first, for the sparkline. */
     val cpuHistory: List<Float>,
 )
 
 /**
- * Pure parsers for the three `/proc` files the sampler reads.
+ * Pure parsers for the `/proc` files the sampler reads.
  *
  * Split out from the sampler so the awkward formats (comm in parens, key/value
  * lines) can be unit-tested with synthetic strings instead of a live process.
@@ -47,6 +57,16 @@ object ProcStats {
         val fields = statm.trim().split(' ')
         if (fields.size < 2) return null
         return fields[1].toLongOrNull()
+    }
+
+    /** `/proc/<pid>/status` `VmRSS:` in KiB — fallback when statm is unreadable. */
+    fun rssKbFromStatus(status: String): Long? {
+        for (line in status.lineSequence()) {
+            if (line.startsWith("VmRSS:")) {
+                return line.substringAfter(':').trim().substringBefore(' ').toLongOrNull()
+            }
+        }
+        return null
     }
 
     /**
@@ -82,12 +102,37 @@ object ProcStats {
         val stime = fields[12].toLongOrNull() ?: return null
         return utime + stime
     }
+
+    /** `/proc/<pid>/stat` field 22 (starttime), in ticks since boot. */
+    fun startTicks(stat: String): Long? {
+        val close = stat.lastIndexOf(')')
+        if (close < 0) return null
+        val fields = stat.substring(close + 1).trim().split(' ')
+        if (fields.size < 20) return null
+        // 字段 22 = state(3) 之后的 index 19。
+        return fields[19].toLongOrNull()
+    }
+
+    /**
+     * Age of the process in milliseconds: `/proc/uptime` minus its start time.
+     *
+     * This is what the dashboard's「已运行」needs — anchoring on the QMP handshake
+     * (or on the moment the UI started sampling) loses the whole firmware
+     * bring-up and makes a 3-minute-old VM look 3 seconds old.
+     */
+    fun processAgeMs(stat: String, uptime: String, clockTicksPerSecond: Long = 100): Long? {
+        val ticks = startTicks(stat) ?: return null
+        val upSeconds = uptime.trim().split(' ').firstOrNull()?.toDoubleOrNull() ?: return null
+        val ageMs = upSeconds * 1000.0 - ticks.toDouble() * 1000.0 / clockTicksPerSecond
+        return ageMs.toLong().coerceAtLeast(0L)
+    }
 }
 
 /**
  * Turns raw `/proc` counters into [VmMetrics] by differencing consecutive
  * samples. Absolute counters (RSS, uptime) are reported as-is; rates (CPU, I/O)
- * need two samples, so the first call returns zero rates rather than nonsense.
+ * need two samples, so the first call returns null/zero rates rather than
+ * nonsense.
  *
  * Not thread-safe: the caller samples from one coroutine.
  */
@@ -99,15 +144,22 @@ class VmMetricsSampler(
     private val readFile: (String) -> String? = { path ->
         runCatching { File(path).readText() }.getOrNull()
     },
+    /**
+     * Called only when `/proc/<pid>/io` is unreadable. Returns cumulative
+     * read/write bytes from another source (today: QMP `query-blockstats`).
+     */
+    private val ioFallback: (() -> Pair<Long, Long>?)? = null,
 ) {
 
     private data class Snapshot(
         val epochMs: Long,
         val cpuTicks: Long,
-        val readBytes: Long,
-        val writeBytes: Long,
-        /** tid -> ticks at sample time. */
-        val vcpuTicks: Map<Int, Long>,
+        /** "proc" / "qmp"; switching source invalidates the byte delta. */
+        val ioSource: String?,
+        val readBytes: Long?,
+        val writeBytes: Long?,
+        /** tid -> ticks at sample time; null when that thread's stat is unreadable. */
+        val vcpuTicks: Map<Int, Long?>,
     )
 
     private var prev: Snapshot? = null
@@ -129,21 +181,35 @@ class VmMetricsSampler(
         val cpuTicks = readFile("/proc/$pid/stat")?.let { ProcStats.cpuTicks(it) }
             ?: run { prev = null; return null }
 
-        val rssMb = readFile("/proc/$pid/statm")
-            ?.let { ProcStats.rssPages(it) }
+        // Android locks down procfs on some builds: statm and status are two
+        // different files, so try both before admitting we do not know.
+        val rssMb = readFile("/proc/$pid/statm")?.let { ProcStats.rssPages(it) }
             ?.let { pages -> pages * pageSizeKb / 1024 }
-            ?: 0L
+            ?: readFile("/proc/$pid/status")?.let { ProcStats.rssKbFromStatus(it) }
+                ?.let { kb -> kb / 1024 }
 
-        val io = readFile("/proc/$pid/io")?.let { ProcStats.ioBytes(it) }
-        val readBytes = io?.first ?: 0L
-        val writeBytes = io?.second ?: 0L
+        var ioSource: String? = null
+        var readBytes: Long? = null
+        var writeBytes: Long? = null
+        readFile("/proc/$pid/io")?.let { ProcStats.ioBytes(it) }?.let { bytes ->
+            ioSource = "proc"
+            readBytes = bytes.first
+            writeBytes = bytes.second
+        }
+        if (ioSource == null) {
+            ioFallback?.invoke()?.let { bytes ->
+                ioSource = "qmp"
+                readBytes = bytes.first
+                writeBytes = bytes.second
+            }
+        }
 
         val vcpuTicks = vcpuTids.associateWith { tid ->
-            readFile("/proc/$tid/stat")?.let { ProcStats.cpuTicks(it) } ?: 0L
+            readFile("/proc/$tid/stat")?.let { ProcStats.cpuTicks(it) }
         }
 
         val before = prev
-        prev = Snapshot(nowMs, cpuTicks, readBytes, writeBytes, vcpuTicks)
+        prev = Snapshot(nowMs, cpuTicks, ioSource, readBytes, writeBytes, vcpuTicks)
 
         val dtMs = before?.let { nowMs - it.epochMs } ?: 0L
         if (before == null || dtMs <= 0) {
@@ -154,8 +220,8 @@ class VmMetricsSampler(
                 cpuPercent = 0f,
                 vcpuPercents = vcpuTids.map { 0f },
                 rssMb = rssMb,
-                readMBs = 0f,
-                writeMBs = 0f,
+                readMBs = null,
+                writeMBs = null,
                 uptimeMs = uptimeMs,
                 cpuHistory = history.toList(),
             )
@@ -168,13 +234,28 @@ class VmMetricsSampler(
         val cpuPercent = (dCpu.toDouble() / clockTicksPerSecond / seconds * 100).toFloat()
 
         val vcpuPercents = vcpuTids.map { tid ->
-            val beforeTicks = before.vcpuTicks[tid] ?: return@map 0f
-            val d = (vcpuTicks[tid]!! - beforeTicks).coerceAtLeast(0L)
+            val now = vcpuTicks[tid]
+            val then = before.vcpuTicks[tid]
+            // A missing read is "unknown", not zero: reporting 0 and then
+            // differencing against it produced a fake 100% spike next sample.
+            if (now == null || then == null) return@map 0f
+            val d = (now - then).coerceAtLeast(0L)
             (d.toDouble() / clockTicksPerSecond / seconds * 100).coerceIn(0.0, 100.0).toFloat()
         }
 
-        val readMBs = ((readBytes - before.readBytes).coerceAtLeast(0L) / 1048576.0 / seconds).toFloat()
-        val writeMBs = ((writeBytes - before.writeBytes).coerceAtLeast(0L) / 1048576.0 / seconds).toFloat()
+        // Rates only make sense between two samples of the same source. Android
+        // may hide /proc/<pid>/io for one second and hand it back the next; a
+        // delta across that gap is either a huge fake burst (0 -> real counter)
+        // or garbage (proc bytes vs QMP device bytes).
+        var readMBs: Float? = null
+        var writeMBs: Float? = null
+        if (ioSource != null && ioSource == before.ioSource &&
+            readBytes != null && writeBytes != null &&
+            before.readBytes != null && before.writeBytes != null
+        ) {
+            readMBs = ((readBytes - before.readBytes).coerceAtLeast(0L) / 1048576.0 / seconds).toFloat()
+            writeMBs = ((writeBytes - before.writeBytes).coerceAtLeast(0L) / 1048576.0 / seconds).toFloat()
+        }
 
         history.addLast(cpuPercent)
         while (history.size > historySize) history.removeFirst()

@@ -240,15 +240,22 @@ private fun PerformanceTab(
 
         item {
             val phoneMb = state.deviceMemoryMb
+            val rss = metrics.rssMb
             SectionCard(title = "内存", subtitle = "QEMU 进程常驻内存（RSS）") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KeyValueRow("进程 RSS", "${metrics.rssMb} MB")
-                    if (phoneMb > 0) {
-                        MeterBar(fraction = metrics.rssMb.toFloat() / phoneMb.toFloat())
+                    KeyValueRow("进程 RSS", rss?.let { "$it MB" } ?: "不可用")
+                    if (rss != null && phoneMb > 0) {
+                        MeterBar(fraction = rss.toFloat() / phoneMb.toFloat())
                         Text(
                             "占手机物理内存（${phoneMb} MB）的 " +
-                                "${(metrics.rssMb * 100 / phoneMb).toInt()}%。" +
-                                "RSS 含 TCG 翻译缓存，通常高于客户机内存设定。",
+                                "${(rss * 100 / phoneMb)}%。" +
+                                "RSS 含 TCG 翻译缓存，未触及的客户机内存不计入，所以可能低于客户机设定值。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (rss == null) {
+                        Text(
+                            "系统没有提供 /proc 里的 statm/status，读不到 RSS；CPU 与 vCPU 数据不受影响。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -258,12 +265,19 @@ private fun PerformanceTab(
         }
 
         item {
-            SectionCard(title = "磁盘 I/O", subtitle = "qcow2 文件实际落到块层的速率") {
+            val read = metrics.readMBs
+            val write = metrics.writeMBs
+            SectionCard(title = "磁盘 I/O", subtitle = "块层读到/写出的速率") {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    KeyValueRow("读", formatRate(metrics.readMBs))
-                    KeyValueRow("写", formatRate(metrics.writeMBs))
+                    KeyValueRow("读", read?.let(::formatRate) ?: "不可用")
+                    KeyValueRow("写", write?.let(::formatRate) ?: "不可用")
                     Text(
-                        "Windows 安装阶段读 ISO 会持续拉高「读」；写速率突然变大通常是客户机在落盘。",
+                        if (read == null || write == null) {
+                            "这一秒没有可用的 I/O 数据：/proc/<pid>/io 可能被系统禁用，QMP 也没给出块统计。" +
+                                "首秒与数据源切换时也会显示「不可用」，下一拍会恢复。"
+                        } else {
+                            "Windows 安装阶段读 ISO 会持续拉高「读」；写速率突然变大通常是客户机在落盘。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

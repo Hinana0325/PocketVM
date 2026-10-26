@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.12 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.13 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -41,6 +41,7 @@
 | 0.10.10 | **修复「虚拟机自己关闭」的根因：ARMv9 PAC + 跨线程协程切换**。bionic 的 `sigsetjmp/siglongjmp` 用每线程 APIA 密钥签名 SP/LR，QEMU sigaltstack 协程在别的线程首次 enter 时 `autiasp` 必失败，FEAT_FPAC 直接 SIGILL（exit=132，tombstone 在 libc `longjmp+460`）——表现为跑 50–300 秒后随机消失。新增 `scripts/patch-qemu-pac.py` + `scripts/qemu-pac-shim.S`：把 `sigsetjmp/siglongjmp` 的 .plt 槽改跳新增 PT_LOAD 里的无签名 `jmp_save/jmp_restore`。真机同配置 11 分钟不崩并**首次进入 Windows 11 安装程序界面**。同时把显示设备默认改为 `ramfb`、降级只换光驱不换输入 |
 | 0.10.11 | **新增「禁用 USB」选项**：编辑页「引导选项 → USB 总线」设为禁用后，QEMU 不创建 xHCI，USB 键鼠与 USB 光驱全部消失——光驱固定 virtio-scsi + AHCI、输入固定 virtio；给「一碰 USB 栈就 SIGILL」的机型用（本机 usb-storage 实测如此）。配置里对应 `usbDisabled`，即使 CD 总线/输入仍存着 USB 也会被强制覆盖。代价是虚机里没有可用键盘（本机 virtio 键盘收不到按键）。同时修正编辑页里两处过时说明：降级现在只换光驱，不再把输入一起改成 virtio |
 | 0.10.12 | **防回归 + 归因提示**：`app/build.gradle.kts` 新增 `verifyQemuPacPatch`，构建前按 SHA256 校验执行层是否带 PAC 补丁——重建 QEMU 后忘记补丁会直接构建失败，不再把「随机崩」带上真机。`FailureHints` 补上 exit=132 的归因（USB 存储栈 / 旧执行层的 ARMv9 PAC），排障文档新增「跑几十秒到几分钟后自己关闭」条目 |
+| 0.10.13 | **修性能页的三个数据源**：①「已运行」改用 QEMU 进程 `/proc/<pid>/stat` 的 starttime 推算，不再从 QMP 握手开始算（慢启动不再少算）；② RSS 在 `statm` 不可读时回退 `/proc/<pid>/status` 的 `VmRSS`，两者都读不到时显示「不可用」而不是 0；③ 磁盘 I/O 在 `/proc/<pid>/io` 被系统隐藏时回退 QMP `query-blockstats`，同时修掉「一次读失败后下一拍跨缺口求差、算出巨大假峰值」的 bug（vCPU 读失败同理） |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
