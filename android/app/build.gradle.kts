@@ -1,3 +1,4 @@
+import java.security.MessageDigest
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -16,8 +17,8 @@ android {
         // memfd_create 是 API 30 符号，QEMU 执行层以 android30 为 target 编译。
         minSdk = 30
         targetSdk = 35
-        versionCode = 34
-        versionName = "0.10.11-qemu11.1.2-edk2026.08"
+        versionCode = 35
+        versionName = "0.10.12-qemu11.1.2-edk2026.08"
 
         // The MVP only ships an arm64 execution layer. 32-bit devices cannot run
         // a 64-bit guest, so there is no point in building other ABIs.
@@ -69,6 +70,32 @@ kotlin {
         jvmTarget.set(JvmTarget.JVM_17)
     }
 }
+
+// 执行层必须带 PAC-free 协程补丁：ARMv9 上未打补丁的 QEMU 会在 50–300 秒内
+// 因 siglongjmp 的 autiasp 校验失败随机 SIGILL（exit=132，见 AGENTS.md）。
+// 哈希与 scripts/patch-qemu-pac.py 的 PATCHED_SHA256 一致。
+val qemuPacPatchedSha256 =
+    "2d5f7c00606b9c6b8ea4f9585013421e2bcad827f597d8053acdb21ea9936335"
+
+val verifyQemuPacPatch by tasks.registering {
+    val binary = file("src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so")
+    inputs.file(binary)
+    doLast {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(binary.readBytes())
+            .joinToString("") { "%02x".format(it) }
+        if (digest != qemuPacPatchedSha256) {
+            throw GradleException(
+                "执行层没有 PAC 补丁（sha256=$digest）。\n" +
+                    "重建 QEMU 后必须重新打补丁：\n" +
+                    "  python scripts/patch-qemu-pac.py --input <新构建的 .so> " +
+                    "--output android/app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so",
+            )
+        }
+    }
+}
+
+tasks.named("preBuild") { dependsOn(verifyQemuPacPatch) }
 
 dependencies {
     implementation(libs.androidx.core.ktx)

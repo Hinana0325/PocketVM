@@ -158,6 +158,12 @@ object FailureHints {
             139 -> "QEMU 启动即段错误（SIGSEGV）。若连 --version 都跑不出来，问题在执行层本身：" +
                 "静态链接的 bionic 可执行文件在部分设备上无法自举，需要改成动态链接（PIE），" +
                 "由 /system/bin/linker64 加载。可先看「静态执行自检」是否也失败来确认。"
+            132 -> "QEMU 被 SIGILL 杀死（exit=132）。两个已知来源：\n" +
+                "① USB 存储栈——本机（骁龙 8 Gen3）上 usb-storage 起步即崩；把光驱总线改成 " +
+                "virtio-scsi+AHCI，或打开编辑页的「禁用 USB」；\n" +
+                "② ARMv9 PAC——0.10.10 以前的执行层在跨线程协程切换时 autiasp 校验失败，跑几十秒到" +
+                "几分钟后随机消失（现在已内置补丁）。若已是最新版仍出现，检查 APK 里的执行层是否被" +
+                "换成未打补丁的构建（scripts/patch-qemu-pac.py --verify）。"
             1 -> "QEMU 以通用错误退出，完整原因见日志最后 20 行。"
             else -> null
         }

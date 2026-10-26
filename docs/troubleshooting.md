@@ -33,9 +33,21 @@
 | `No space left on device` | 存储满 |
 | `pflash` / `invalid size` | 固件与 vars 不等长 |
 
-退出码：`137` 说明被系统 SIGKILL（内存压力或省电策略），`139` 是段错误。
+退出码：`137` 说明被系统 SIGKILL（内存压力或省电策略），`139` 是段错误，`132` 是 SIGILL
+（USB 存储栈，或 0.10.10 之前的 PAC 缺陷——见下）。
 
 ## 常见现象
+
+**「虚拟机跑了几十秒到几分钟后自己关闭」**
+QEMU 被 SIGILL 杀死（exit=132），App 侧只有 `EXITED_ERROR` + `failureHint`。两个来源：
+
+1. **USB 存储栈**：本机（骁龙 8 Gen3）上 `usb-storage` 起步即崩。把「光驱总线」改成
+   `virtio-scsi+AHCI`，或打开编辑页的「USB 总线 → 禁用」（后者连 xHCI 都不创建）。
+2. **ARMv9 PAC**（0.10.10 之前的执行层）：bionic 的 `sigsetjmp/siglongjmp` 用**每线程**
+   APIA 密钥给 SP/LR 签名，QEMU sigaltstack 协程跨线程首次 enter 时 `autiasp` 校验失败，
+   FEAT_FPAC 直接 SIGILL。tombstone 停在 `libc longjmp+460`，`x0=x1=3`（`COROUTINE_ENTER`）。
+   0.10.10 起执行层内置无签名协程切换补丁；构建前 `verifyQemuPacPatch` 会按 SHA256 校验，
+   重建 QEMU 后忘记补丁会直接构建失败。
 
 **界面显示「QEMU 启动后立即退出」但日志为空**
 fork 成功但 QEMU 在打开日志前就死了，常见于 `libqemu-system-aarch64.so` 依赖缺失。

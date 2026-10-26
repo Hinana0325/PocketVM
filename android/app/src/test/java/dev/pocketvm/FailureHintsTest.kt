@@ -34,6 +34,14 @@ class FailureHintsTest {
     }
 
     @Test
+    fun `SIGILL names both the usb stack and the old PAC bug`() {
+        val hint = FailureHints.fromLog("", 132)
+        assertTrue(hint!!.contains("禁用 USB"))
+        assertTrue(hint.contains("PAC"))
+        assertTrue(hint.contains("patch-qemu-pac.py"))
+    }
+
+    @Test
     fun `pflash size mismatch is detected`() {
         val hint = FailureHints.fromLog("qemu-system-aarch64: pflash invalid size 4194304")
         assertTrue(hint!!.contains("等长"))
