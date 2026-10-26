@@ -41,6 +41,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -338,17 +340,35 @@ private fun CpuSparkline(history: List<Float>, modifier: Modifier = Modifier) {
         if (history.size < 2) return@Canvas
         val max = (history.max() ?: 100f).coerceAtLeast(100f)
         val stepX = size.width / (history.size - 1).toFloat()
-        val path = Path().apply {
+        fun y(value: Float) = size.height - (value / max * size.height).coerceIn(0f, size.height)
+
+        val line = Path().apply {
             history.forEachIndexed { index, value ->
                 val x = index * stepX
-                val y = size.height - (value / max * size.height).coerceIn(0f, size.height)
-                if (index == 0) moveTo(x, y) else lineTo(x, y)
+                if (index == 0) moveTo(x, y(value)) else lineTo(x, y(value))
             }
         }
+        val fill = Path().apply {
+            moveTo(0f, size.height)
+            history.forEachIndexed { index, value -> lineTo(index * stepX, y(value)) }
+            lineTo(size.width, size.height)
+            close()
+        }
         drawPath(
-            path = path,
+            path = fill,
+            brush = Brush.verticalGradient(
+                listOf(lineColor.copy(alpha = 0.30f), lineColor.copy(alpha = 0.02f)),
+            ),
+        )
+        drawPath(
+            path = line,
             color = lineColor,
             style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+        )
+        drawCircle(
+            color = lineColor,
+            radius = 3.dp.toPx(),
+            center = Offset(size.width, y(history.last())),
         )
     }
 }

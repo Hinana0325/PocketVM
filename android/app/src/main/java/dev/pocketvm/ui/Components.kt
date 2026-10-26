@@ -1,6 +1,12 @@
 package dev.pocketvm.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -33,8 +40,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -64,7 +75,13 @@ fun SectionCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .animateContentSize()
             .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(16.dp))
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                shape = RoundedCornerShape(16.dp),
+            )
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -121,22 +138,31 @@ fun CollapsibleSection(
 
 @Composable
 fun StatusChip(text: String, tone: Tone, modifier: Modifier = Modifier) {
+    val dark = isSystemInDarkTheme()
+    // 浅色主题下用加深的语义色，16% 透明底上的 11sp 文本也能过 AA（≥4.5:1）。
     val color = when (tone) {
-        Tone.Idle -> Color(0xFF6B6B78)
-        Tone.Busy -> Color(0xFFFFB74D)
-        Tone.Ok -> Success
-        Tone.Error -> Danger
+        Tone.Idle -> if (dark) Color(0xFF8A8A96) else Color(0xFF5F594B)
+        Tone.Busy -> if (dark) Color(0xFFFFB74D) else Color(0xFF7A4E00)
+        Tone.Ok -> if (dark) Success else Color(0xFF24614A)
+        Tone.Error -> if (dark) Danger else Color(0xFFA02020)
     }
+    val animated by animateColorAsState(color, animationSpec = tween(400), label = "statusTone")
     Row(
         modifier = modifier
-            .background(color.copy(alpha = 0.16f), ShapeChip)
+            .background(animated.copy(alpha = 0.16f), ShapeChip)
             .padding(horizontal = 10.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .background(animated, CircleShape),
+        )
         Text(
             text,
             style = MaterialTheme.typography.labelSmall,
-            color = color,
+            color = animated,
         )
     }
 }
@@ -229,7 +255,7 @@ fun PocketNavBar(current: Screen, onSelect: (Screen) -> Unit) {
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = MaterialTheme.colorScheme.primary,
                     selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 ),
@@ -248,7 +274,26 @@ fun HeroHeader(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .background(dev.pocketvm.ui.theme.HeroGradient, ShapeHero)
+            .clip(ShapeHero)
+            .background(dev.pocketvm.ui.theme.HeroGradient)
+            .drawBehind {
+                // 两层半透明圆给渐变一点"光斑"质感，不用额外图片资源。
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.12f),
+                    radius = size.width * 0.42f,
+                    center = Offset(size.width * 0.94f, size.height * 0.10f),
+                )
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.07f),
+                    radius = size.width * 0.28f,
+                    center = Offset(size.width * 0.80f, size.height * 0.98f),
+                )
+                drawCircle(
+                    color = Color(0xFF1A1200).copy(alpha = 0.06f),
+                    radius = size.width * 0.30f,
+                    center = Offset(size.width * 0.06f, size.height * 1.02f),
+                )
+            }
             .padding(20.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -278,7 +323,11 @@ fun StatPill(label: String, value: String, modifier: Modifier = Modifier) {
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Text(value, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+        Text(
+            value,
+            style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum"),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -309,8 +358,13 @@ fun MeterBar(
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.primary,
 ) {
+    val animated by animateFloatAsState(
+        targetValue = fraction.coerceIn(0f, 1f),
+        animationSpec = tween(600),
+        label = "meterBar",
+    )
     LinearProgressIndicator(
-        progress = { fraction.coerceIn(0f, 1f) },
+        progress = { animated },
         modifier = modifier.fillMaxWidth().height(6.dp),
         color = color,
         trackColor = MaterialTheme.colorScheme.surface,
@@ -322,9 +376,14 @@ fun MeterBar(
 fun UsageBar(usedBytes: Long, totalGb: Int, modifier: Modifier = Modifier) {
     val totalBytes = totalGb.toLong() * 1024 * 1024 * 1024L
     val fraction = if (totalBytes > 0) (usedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
+    val animated by animateFloatAsState(
+        targetValue = fraction,
+        animationSpec = tween(600),
+        label = "usageBar",
+    )
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         LinearProgressIndicator(
-            progress = { fraction },
+            progress = { animated },
             modifier = Modifier.fillMaxWidth().height(6.dp),
             color = if (fraction > 0.9f) Danger else MaterialTheme.colorScheme.primary,
             trackColor = MaterialTheme.colorScheme.surface,
@@ -352,18 +411,30 @@ fun EmptyState(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(72.dp)
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh, ShapeHero),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                modifier = Modifier.size(36.dp),
-                tint = MaterialTheme.colorScheme.primary,
+        Box(contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier
+                    .size(112.dp)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.05f), CircleShape),
             )
+            Box(
+                modifier = Modifier
+                    .size(88.dp)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+            )
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh, ShapeHero),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(32.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
         Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
         Text(

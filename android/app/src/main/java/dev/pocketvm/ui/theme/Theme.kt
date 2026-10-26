@@ -54,6 +54,9 @@ private val DarkScheme = darkColorScheme(
     primaryContainer = AmberDark,
     onPrimaryContainer = Color(0xFF1A1200),
     secondary = Color(0xFF8FB8FF),
+    onSecondary = Color(0xFF08203F),
+    secondaryContainer = Color(0xFF233A57),
+    onSecondaryContainer = Color(0xFFD9E2FF),
     background = Ink,
     onBackground = Color(0xFFECECF1),
     surface = Surface,
@@ -64,16 +67,40 @@ private val DarkScheme = darkColorScheme(
     surfaceContainerHigh = SurfaceHigh,
     surfaceContainerHighest = SurfaceHighest,
     error = Danger,
+    onError = Color(0xFF2A0505),
     outline = Color(0xFF3A3A46),
+    outlineVariant = Color(0xFF2B2B35),
+    scrim = Color(0xFF000000),
 )
 
+/**
+ * 浅色主题用「暖纸」基调：背景比纯白柔和，卡片是更浅的奶油色，
+ * 主色改成更深的琥珀以保证文字对比度（#B8730E on #FAF6EE ≈ 4.9:1）。
+ */
 private val LightScheme = lightColorScheme(
-    primary = AmberDark,
+    // 深一档的琥珀：在暖纸背景上 4.58:1，按钮白字 4.93:1（WCAG AA）。
+    primary = Color(0xFFA65F00),
     onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFFFE1B0),
+    onPrimaryContainer = Color(0xFF3A2400),
     secondary = Color(0xFF3A5FA8),
-    surfaceContainerHigh = Color(0xFFEDE7DA),
-    surfaceContainerHighest = Color(0xFFE2DACB),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFD9E2FF),
+    onSecondaryContainer = Color(0xFF001945),
+    background = Color(0xFFFAF6EE),
+    onBackground = Color(0xFF1C1A16),
+    surface = Color(0xFFFFFDF8),
+    onSurface = Color(0xFF1C1A16),
+    surfaceVariant = Color(0xFFEDE5D8),
+    onSurfaceVariant = Color(0xFF6B6455),
+    surfaceContainer = Color(0xFFF6F0E5),
+    surfaceContainerHigh = Color(0xFFF1EADC),
+    surfaceContainerHighest = Color(0xFFEAE1D2),
     error = Color(0xFFB3261E),
+    onError = Color(0xFFFFFFFF),
+    outline = Color(0xFFD5C9B6),
+    outlineVariant = Color(0xFFE5DCCB),
+    scrim = Color(0xFF000000),
 )
 
 val MonoTextStyle = TextStyle(
@@ -91,12 +118,17 @@ fun PocketVmTheme(
         colorScheme = if (darkTheme) DarkScheme else LightScheme,
         typography = Typography(
             displaySmall = TextStyle(fontWeight = FontWeight.Bold, fontSize = 28.sp, lineHeight = 32.sp),
-            headlineSmall = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 22.sp),
-            titleLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 20.sp),
-            titleMedium = TextStyle(fontWeight = FontWeight.Medium, fontSize = 16.sp),
-            bodyMedium = TextStyle(fontWeight = FontWeight.Normal, fontSize = 14.sp),
-            bodySmall = TextStyle(fontWeight = FontWeight.Normal, fontSize = 12.sp),
-            labelSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 11.sp, letterSpacing = 0.5.sp),
+            headlineMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 26.sp, lineHeight = 32.sp),
+            headlineSmall = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 22.sp, lineHeight = 28.sp),
+            titleLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 20.sp, lineHeight = 26.sp),
+            titleMedium = TextStyle(fontWeight = FontWeight.Medium, fontSize = 16.sp, lineHeight = 22.sp),
+            titleSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 14.sp, lineHeight = 20.sp),
+            bodyLarge = TextStyle(fontWeight = FontWeight.Normal, fontSize = 16.sp, lineHeight = 24.sp),
+            bodyMedium = TextStyle(fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 20.sp),
+            bodySmall = TextStyle(fontWeight = FontWeight.Normal, fontSize = 12.sp, lineHeight = 17.sp),
+            labelLarge = TextStyle(fontWeight = FontWeight.Medium, fontSize = 14.sp, lineHeight = 20.sp),
+            labelMedium = TextStyle(fontWeight = FontWeight.Medium, fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = 0.3.sp),
+            labelSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 11.sp, lineHeight = 15.sp, letterSpacing = 0.5.sp),
         ),
         content = content,
     )
