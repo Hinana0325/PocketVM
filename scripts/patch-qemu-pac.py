@@ -34,12 +34,17 @@ ORIG_SIZE = 0x2071388
 ORIG_SHA256 = "5d58f119e41aaef2c71319752400fc22104081366e0fd96b5149ee594225b617"
 
 # 打完补丁后的身份，--verify 用它做严格校验。
-PATCHED_SIZE = 0x2081000
-PATCHED_SHA256 = "2d5f7c00606b9c6b8ea4f9585013421e2bcad827f597d8053acdb21ea9936335"
+PATCHED_SIZE = 0x2084000
+PATCHED_SHA256 = "23f22b576fca0221dc261ed3eb0f887fdcac9b5ded3e98d294d6efad7a2f9f24"
 
-NEW_OFF = 0x2080000      # 新段在文件中的偏移（紧跟原文件末尾，按页对齐）
+# 新段：偏移/虚拟地址/长度全部按 16 KiB 对齐。
+# 天玑 9xxx / Android 15+ 的 16 KB 页设备要求每个 PT_LOAD 的 p_align ≥ 0x4000，
+# 否则 linker64 直接报 empty/misaligned PT_LOAD；原执行层本来就是 0x4000，
+# 补丁新增的段不能破坏这一点。
+NEW_OFF = 0x2080000      # 新段在文件中的偏移（紧跟原文件末尾）
 NEW_VADDR = 0x2140000    # 新段虚拟地址（原 exec 段的 vaddr-offset 差为 0x4000）
-NEW_SIZE = 0x1000
+NEW_SIZE = 0x4000
+NEW_ALIGN = 0x4000
 NEW_FLAGS = 5            # PF_R | PF_X
 
 # sigsetjmp / siglongjmp 的 .plt 槽（虚拟地址，不是文件偏移；v2o 会换算）
@@ -121,6 +126,10 @@ def check_original(raw):
     phdrs = parse_phdrs(raw)
     if phdrs[11]["type"] != PT_NOTE:
         die("程序头 #11 不是 PT_NOTE，布局已变化")
+    # 16 KB 页设备的硬要求，原执行层本来就满足；补丁不能把它改坏。
+    for p in phdrs:
+        if p["type"] == PT_LOAD and p["align"] < NEW_ALIGN:
+            die("原执行层有 PT_LOAD 的 p_align < 0x4000，16 KB 页设备无法加载")
     for va in (STUB_SAVE_VA, STUB_RESTORE_VA):
         word, = struct.unpack_from("<I", raw, v2o(phdrs, va))
         # adrp x16, ...
@@ -143,10 +152,12 @@ def build_patched(raw):
     out += page
 
     ph = phdrs[11]
+    if NEW_OFF % NEW_ALIGN or NEW_VADDR % NEW_ALIGN or NEW_SIZE % NEW_ALIGN:
+        die("新增段的偏移/地址/长度不是 16 KB 对齐")
     struct.pack_into(
         "<IIQQQQQQ", out, ph["pos"],
         PT_LOAD, NEW_FLAGS, NEW_OFF, NEW_VADDR, NEW_VADDR,
-        NEW_SIZE, NEW_SIZE, 0x1000,
+        NEW_SIZE, NEW_SIZE, NEW_ALIGN,
     )
 
     save_va = NEW_VADDR
@@ -172,8 +183,11 @@ def verify_patched(raw):
     ph = phdrs[11]
     if not (ph["type"] == PT_LOAD and ph["flags"] == NEW_FLAGS
             and ph["off"] == NEW_OFF and ph["vaddr"] == NEW_VADDR
-            and ph["filesz"] == NEW_SIZE):
+            and ph["filesz"] == NEW_SIZE and ph["align"] == NEW_ALIGN):
         die("程序头 #11 不是预期的新 PT_LOAD")
+    for p in phdrs:
+        if p["type"] == PT_LOAD and p["align"] < NEW_ALIGN:
+            die("有 PT_LOAD 的 p_align < 0x4000，16 KB 页设备无法加载")
     blob = bytes.fromhex(SHIM_HEX)
     if raw[NEW_OFF:NEW_OFF + len(blob)] != blob:
         die("新增页里的 shim 字节不匹配")

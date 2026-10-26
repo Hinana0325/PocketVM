@@ -126,6 +126,9 @@ class QemuEnvironment(context: Context) {
      * linked and executed through /system/bin/linker64.
      */
     private fun probeStaticExec(nativeLibDir: File?, layout: VmStorageLayout): Boolean? {
+        // 16 KB 页设备（部分天玑 9xxx / Android 15+）：探针本身是 4 KB 对齐的
+        // ET_EXEC，exec 必然失败，不能把它算成「静态执行不可用」。
+        if (!DeviceInfo.shouldProbeStaticExec(DeviceInfo.pageSizeKb())) return null
         val file = nativeLibDir?.let { File(it, "libpvm-probe.so") }?.takeIf { it.isFile } ?: return null
         file.setExecutable(true, false)
         val process = try {

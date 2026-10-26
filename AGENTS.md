@@ -9,6 +9,7 @@ PocketVM：在未 Root 的 arm64 Android 手机上用 QEMU TCG 跑 Windows ARM64
 - **不要改成静态链接**。`-static`（即使 `-no-pie`/ET_EXEC）在本机实测 `exit=139`，问题在 bionic 静态运行时自举而非 PIE 标志位。动态 PIE 由 `/system/bin/linker64` 加载，是唯一验证过的形态。
 - 只构建 `arm64-v8a`；`minSdk = 30` 是 `memfd_create` 的下限，不要降。
 - **执行层 .so 从 0.10.10 起带了「PAC-free 协程切换」补丁**：ARMv9（本机 SM8650）上 bionic 的 `sigsetjmp/siglongjmp` 用**每线程**的 APIA 密钥给 SP/LR 签名，而 QEMU 的 sigaltstack 协程允许在 A 线程创建、在 B 线程首次 enter，`longjmp` 里的 `autiasp` 校验必然失败；FEAT_FPAC 直接 SIGILL，进程以 exit=132 消失（tombstone 停在 `libc longjmp+460`，`x0=x1=3` 即 `COROUTINE_ENTER`）。`scripts/patch-qemu-pac.py` 把 `sigsetjmp/siglongjmp` 的 .plt 槽改跳新增 PT_LOAD 里的 `jmp_save/jmp_restore`（`scripts/qemu-pac-shim.S`）。**重建 QEMU 后必须重新打补丁**（`--verify` 会拦下未打补丁的二进制，`android/app/build.gradle.kts` 的 `verifyQemuPacPatch` 也会在构建前按 SHA256 拦下），否则又会随机崩在 50–300 秒之间。别用 `prctl(PR_PAC_SET_ENABLED_KEYS)` 试图绕过：Linux 的 PAC 钥匙开关是 per-thread 的，管不到 QEMU 自己的线程。
+- **16 KB 页设备（部分天玑 9xxx / Android 15+）**：执行层所有 PT_LOAD 的 `p_align` 必须 ≥ `0x4000`，否则 linker64 报 `empty/misaligned PT_LOAD` 直接拒绝加载。原 QEMU 构建本来就是 0x4000；`scripts/patch-qemu-pac.py` 新增的段也是 0x4000（16 KB 页），脚本与 Gradle 校验都会检查。`libpvm-probe.so`（静态执行自检）是 4 KB 对齐的 ET_EXEC，在 16 KB 设备上跳过，否则会把对齐问题误报成「静态执行不可用」。
 - 没有要求时不要重建 QEMU：需要 Linux + NDK r27c + meson/ninja/patchelf，5–10 分钟 / 24 核，`scripts/build-qemu-android*.sh` 是 bash 脚本，`.build-qemu/` 有几个 GB（已 gitignore）。脚本头部的注释记录了必须踩过的坑，改参数前先读。
 
 ## 常用命令

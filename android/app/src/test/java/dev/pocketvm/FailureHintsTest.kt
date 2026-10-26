@@ -10,6 +10,21 @@ import org.junit.Test
 class FailureHintsTest {
 
     @Test
+    fun `misaligned PT_LOAD is explained as a 16 KB page problem`() {
+        val hint = FailureHints.fromLog(
+            "CANNOT LINK EXECUTABLE \"/data/app/libqemu-system-aarch64.so\": " +
+                "empty/misaligned PT_LOAD segment",
+        )
+        assertTrue(hint!!.contains("16 KB"))
+        assertTrue(hint.contains("p_align"))
+        assertTrue(
+            FailureHints.isConfigFatal(
+                "CANNOT LINK EXECUTABLE \"/x.so\": empty/misaligned PT_LOAD segment",
+            ),
+        )
+    }
+
+    @Test
     fun `permission denied mentions both exec and socket paths`() {
         val hint = FailureHints.fromLog("/data/user/0/dev.pocketvm/files/qemu: Permission denied")
         assertTrue(hint!!.contains("执行层"))

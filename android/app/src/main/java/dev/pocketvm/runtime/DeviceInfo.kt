@@ -27,6 +27,13 @@ object DeviceInfo {
         Os.sysconf(OsConstants._SC_PAGESIZE) / 1024
     }.getOrDefault(0L)
 
+    /**
+     * 静态探针（`libpvm-probe.so`）是 4 KB 对齐的 ET_EXEC，16 KB 页设备上
+     * 内核根本无法 exec 它；这时跑探针只会把「对齐不兼容」误报成「静态链接不可用」。
+     * 这只影响自检文案，执行层本身（QEMU 11.1.2）已按 16 KB 对齐。
+     */
+    fun shouldProbeStaticExec(pageSizeKb: Long): Boolean = pageSizeKb in 1..4
+
     fun abi(): String = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
 
     /** Coarse vendor bucket, used only for diagnostics text. */

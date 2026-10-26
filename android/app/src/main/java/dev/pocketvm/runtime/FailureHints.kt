@@ -19,6 +19,17 @@ object FailureHints {
     // Order matters: the first matching rule wins, so file-specific patterns must
     // precede the generic "Permission denied" (which really means "cannot exec").
     private val RULES: List<Rule> = listOf(
+        // 必须排在 "CANNOT LINK EXECUTABLE" 之前：那一条会把对齐错误误判成缺库。
+        Rule(
+            Regex(
+                "empty/misaligned PT_LOAD|invalid p_align|not aligned to page size|misaligned",
+                RegexOption.IGNORE_CASE,
+            ),
+            "执行层 ELF 段对齐不足：16 KB 页设备（部分天玑 9xxx / Android 15+）要求所有 " +
+                "PT_LOAD 的 p_align ≥ 16384，否则 linker64 直接拒绝加载。0.10.17 起打包的执行层" +
+                "已按 16 KB 对齐；若仍出现，说明用的是旧版 .so（重建 QEMU 后必须重新打补丁）。",
+            configFatal = true,
+        ),
         Rule(
             Regex("couldn't find \"(.*)\"|library \"(.*)\" not found|CANNOT LINK EXECUTABLE"),
             "动态库缺失。执行层依赖的 libglib/libpixman 等必须与 QEMU 一起放进 jniLibs/arm64-v8a，且 SONAME 必须是 lib*.so。",

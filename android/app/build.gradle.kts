@@ -17,8 +17,8 @@ android {
         // memfd_create 是 API 30 符号，QEMU 执行层以 android30 为 target 编译。
         minSdk = 30
         targetSdk = 35
-        versionCode = 39
-        versionName = "0.10.16-qemu11.1.2-edk2026.08"
+        versionCode = 40
+        versionName = "0.10.17-qemu11.1.2-edk2026.08"
 
         // The MVP only ships an arm64 execution layer. 32-bit devices cannot run
         // a 64-bit guest, so there is no point in building other ABIs.
@@ -73,9 +73,10 @@ kotlin {
 
 // 执行层必须带 PAC-free 协程补丁：ARMv9 上未打补丁的 QEMU 会在 50–300 秒内
 // 因 siglongjmp 的 autiasp 校验失败随机 SIGILL（exit=132，见 AGENTS.md）。
-// 哈希与 scripts/patch-qemu-pac.py 的 PATCHED_SHA256 一致。
+// 哈希与 scripts/patch-qemu-pac.py 的 PATCHED_SHA256 一致；新增段按 16 KB 对齐，
+// 天玑 9xxx / Android 15+ 的 16 KB 页设备才能加载。
 val qemuPacPatchedSha256 =
-    "2d5f7c00606b9c6b8ea4f9585013421e2bcad827f597d8053acdb21ea9936335"
+    "23f22b576fca0221dc261ed3eb0f887fdcac9b5ded3e98d294d6efad7a2f9f24"
 
 val verifyQemuPacPatch by tasks.registering {
     val binary = file("src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so")
