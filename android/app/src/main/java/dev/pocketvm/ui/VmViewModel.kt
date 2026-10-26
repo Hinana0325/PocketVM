@@ -573,6 +573,37 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 单个按键（方向键、Esc、F2 等）。手机 VNC 客户端通常没有这些键，
+     * 所以这是固件菜单/安装界面唯一可靠的输入途径。静默发送，不弹提示。
+     */
+    fun sendGuestKey(vmId: String, qcode: String) {
+        if (container.session.runningVmId() != vmId) return
+        viewModelScope.launch(Dispatchers.IO) { container.session.sendKey(qcode) }
+    }
+
+    /** 组合键，例如 Ctrl+Alt+Del。 */
+    fun sendGuestCombo(vmId: String, qcodes: List<String>) {
+        if (container.session.runningVmId() != vmId) return
+        viewModelScope.launch(Dispatchers.IO) { container.session.sendKeys(qcodes) }
+    }
+
+    /** 把一段文本打给客户机（US 布局子集），末尾由调用方决定是否带回车。 */
+    fun typeGuestText(vmId: String, text: String) {
+        val payload = text.take(200)
+        if (payload.isEmpty()) return
+        if (container.session.runningVmId() != vmId) {
+            _ui.update { it.copy(notice = "这台虚拟机没有在运行") }
+            return
+        }
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { container.session.typeText(payload) }
+            if (!ok) {
+                _ui.update { it.copy(notice = "文本发送失败：只支持 US 布局的字母/数字/常用符号") }
+            }
+        }
+    }
+
     // ---------- media ----------
 
     fun importIso(uri: Uri) {

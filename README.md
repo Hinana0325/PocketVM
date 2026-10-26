@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.20 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.21 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -49,6 +49,7 @@
 | 0.10.18 | **UI 超级升级**：页面切换滑动淡入；底部导航改成会展开选中项的悬浮胶囊 dock；首页 Hero 改成深色玻璃 + 琥珀光晕 + 渐变字，统计并入头图；VM 卡片运行中直接显示 CPU / 内存 / I/O 和迷你曲线，并加状态描边；控制台顶栏加状态胶囊 + 一键启停 + 刷新图标，四个 Tab 加图标并做切换动画；执行环境页加 Hero 概览；创建页加配置摘要 chips；状态圆点在启动/停止时呼吸（其余状态零动画）；同时修掉 Scaffold 与页面重复应用 inset 导致的双重留白 |
 | 0.10.19 | **全代码审计修复**：启动/停止改为不可被 UI 取消（NonCancellable），退出 App 不会再留下无人监管的 QEMU；前台服务生命周期收回 VmSession（提前启动、退出/失败自动收，修 Android 12+ 后台启动崩溃与唤醒锁泄漏）；`send-key` 移出主线程并按 vmId 校验；日志/串口/argv 按 vmId 隔离（不再串台）；修复 CD 降级与 VNC 端口两次保存互相覆盖、自动回车每 3 秒重复注入、旧 SSH 通道回调关掉新终端、ISO/固件导入留下半个文件（改 `.part` + 可取消 + 大小校验）、删除 VM 被另一台运行误拦、通知与启动按钮忽略 busy、控制台硬件返回键、创建页摘要被运算符优先级截断等 |
 | 0.10.20 | **修「不开虚拟机也卡」**：新增 `perf` 构建类型（release 运行时、debug 签名、包名仍是 `dev.pocketvm.debug`，可直接覆盖安装），APK 从 70 MB 降到 53 MB；Compose 侧移除全屏环境光与卡片/导航的尺寸动画，把光晕移到窗口背景层由系统缓存，Hero 渐变改用 `drawWithCache` 缓存 Brush。debug 版本的 debuggable / Compose 调试开销是这次卡顿的主因。构建：`./gradlew :app:assemblePerf -PpvmSideBySide=true` |
+| 0.10.21 | **客户机按键面板**：控制台新增方向键 / Enter / Esc / Tab / 空格 / F2 / F10 / Del / Ctrl+Alt+Del 与「键入文本」输入，按键经 QMP 直接注入客户机——手机 VNC 客户端没有方向键也能操作固件启动菜单；串口 watcher 另加「Please select boot device:」自动回车兜底。仍是 perf 构建（非 debuggable，可直接覆盖 0.10.20） |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。

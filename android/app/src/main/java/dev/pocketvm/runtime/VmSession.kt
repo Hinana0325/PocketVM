@@ -182,6 +182,17 @@ class VmSession(
     fun sendKey(qcode: String = "ret"): Boolean =
         runCatching { qmp?.sendKey(qcode) == true }.getOrDefault(false)
 
+    /** 组合键，例如 Ctrl+Alt+Del。 */
+    fun sendKeys(qcodes: List<String>): Boolean =
+        runCatching { qmp?.sendKeys(qcodes) == true }.getOrDefault(false)
+
+    /**
+     * Types [text] into the guest as keystrokes (US 布局子集，见 [QmpClient.typeText]）。
+     * 阻塞：每个字符 ~95 ms，必须放在 IO 线程上调用。
+     */
+    fun typeText(text: String): Boolean =
+        runCatching { qmp?.typeText(text) == true }.getOrDefault(false)
+
     /**
      * Types the UEFI Shell boot command into the guest. When the firmware drops
      * to the shell instead of booting the installer, this is the one line the
@@ -966,6 +977,7 @@ class VmSession(
             // 0 = nothing typed yet, 1 = `map` sent, n>1 = candidate n-2 sent.
             var shellStep = 0
             var bootPromptSeen = false
+            var bootMenuSeen = false
             var lastCommandAt = 0L
             var lastCdKeyAt = 0L
             var totalBytes = 0L
@@ -1015,6 +1027,19 @@ class VmSession(
                         AgentFeed.event("serial.boot_prompt", "path" to path, "bytes" to totalBytes)
                         sendSerial(output, "\r")
                         qemuLog?.let { appendLogMarker(it, "客户机等待“按任意键从 CD 启动”，已自动回车") }
+                    }
+
+                    // 固件找不到可启动项时会停在 "Please select boot device:" 菜单，
+                    // 默认高亮第一项（CD-ROM）。手机上既没有方向键也很难切回 VNC，
+                    // 这里替用户回车一次；菜单文本同样会镜像到串口。
+                    if (!bootMenuSeen && serial.contains("Please select boot device") &&
+                        now - lastCommandAt > 2_500
+                    ) {
+                        bootMenuSeen = true
+                        lastCommandAt = now
+                        publishStage(BootStage.BOOT_PROMPT)
+                        AgentFeed.event("serial.boot_menu", "path" to path)
+                        sendSerial(output, "\r")
                     }
 
                     // 兜底：固件没选中启动项、掉进 UEFI Shell 时，替用户敲一条 EFI

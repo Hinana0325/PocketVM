@@ -128,11 +128,23 @@ class QmpClient(private val socketPath: String) : Closeable {
      * "Press any key to boot from CD" prompt, which otherwise times out while
      * the user is still switching to their VNC client.
      */
-    fun sendKey(qcode: String): Boolean = execute(
-        "send-key",
-        mapOf("keys" to listOf(mapOf("type" to "qcode", "data" to qcode))),
-        timeoutMs = 2000,
-    )?.has("return") == true
+    fun sendKey(qcode: String): Boolean = sendKeys(listOf(qcode))
+
+    /**
+     * 一次按下多个键（组合键，如 Ctrl+Alt+Del）。QMP 的 `send-key` 原生接受
+     * qcode 列表，同一个请求里按下比逐键发送更接近真实按键。
+     */
+    fun sendKeys(qcodes: List<String>): Boolean {
+        if (qcodes.isEmpty()) return false
+        return execute(
+            "send-key",
+            mapOf(
+                "keys" to qcodes.map { mapOf("type" to "qcode", "data" to it) },
+                "hold-time" to 60,
+            ),
+            timeoutMs = 2000,
+        )?.has("return") == true
+    }
 
     /**
      * Types [text] one character at a time, via QMP `send-key`.

@@ -90,6 +90,9 @@ fun ConsoleScreen(
     onExport: () -> Unit,
     onEject: () -> Unit,
     onSendKey: () -> Unit,
+    onGuestKey: (String) -> Unit,
+    onGuestCombo: (List<String>) -> Unit,
+    onGuestText: (String) -> Unit,
     onBootFromShell: () -> Unit,
     onSshConnect: (String, Int, String, String) -> Unit,
     onSshDisconnect: () -> Unit,
@@ -236,6 +239,9 @@ fun ConsoleScreen(
                 onExport = onExport,
                 onEject = onEject,
                 onSendKey = onSendKey,
+                onGuestKey = onGuestKey,
+                onGuestCombo = onGuestCombo,
+                onGuestText = onGuestText,
                 onBootFromShell = onBootFromShell,
                 onCopyError = {
                     clipboard.setText(AnnotatedString(errorReport(runtime, state.log)))
@@ -440,10 +446,14 @@ private fun OverviewTab(
     onExport: () -> Unit,
     onEject: () -> Unit,
     onSendKey: () -> Unit,
+    onGuestKey: (String) -> Unit,
+    onGuestCombo: (List<String>) -> Unit,
+    onGuestText: (String) -> Unit,
     onBootFromShell: () -> Unit,
     onCopyError: () -> Unit,
 ) {
     val usedBytes = state.diskUsage[vm.id] ?: 0L
+    var guestText by remember { mutableStateOf("") }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -540,6 +550,85 @@ private fun OverviewTab(
                 otherRunning?.let {
                     Text(
                         "另一台虚拟机正在运行，需先停止才能启动这一台。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        item {
+            SectionCard(
+                title = "客户机按键",
+                subtitle = "手机 VNC 客户端没有方向键/功能键时，用这里发给客户机",
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("↑" to "up", "↓" to "down", "←" to "left", "→" to "right").forEach { (label, code) ->
+                            OutlinedButton(
+                                onClick = { onGuestKey(code) },
+                                enabled = running,
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 6.dp),
+                            ) { Text(label) }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("Enter" to "ret", "Esc" to "esc", "Tab" to "tab", "空格" to "spc").forEach { (label, code) ->
+                            OutlinedButton(
+                                onClick = { onGuestKey(code) },
+                                enabled = running,
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 6.dp),
+                            ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("F2" to "f2", "F10" to "f10", "Del" to "delete").forEach { (label, code) ->
+                            OutlinedButton(
+                                onClick = { onGuestKey(code) },
+                                enabled = running,
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 6.dp),
+                            ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                        }
+                        OutlinedButton(
+                            onClick = { onGuestCombo(listOf("ctrl", "alt", "delete")) },
+                            enabled = running,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(vertical = 6.dp),
+                        ) { Text("Ctrl+Alt+Del", style = MaterialTheme.typography.labelSmall) }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = guestText,
+                            onValueChange = { guestText = it.take(200) },
+                            label = { Text("键入文本") },
+                            singleLine = true,
+                            enabled = running,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Button(
+                            onClick = {
+                                onGuestText(guestText)
+                                guestText = ""
+                            },
+                            enabled = running && guestText.isNotEmpty(),
+                        ) { Text("输入") }
+                        Button(
+                            onClick = {
+                                onGuestText(guestText + "\r")
+                                guestText = ""
+                            },
+                            enabled = running && guestText.isNotEmpty(),
+                        ) { Text("输入+⏎") }
+                    }
+                    Text(
+                        "按键经 QMP 直接注入客户机，和 VNC 客户端里的键盘等价；" +
+                            "方向键用于固件启动菜单，Enter 用于「按任意键从 CD 启动」。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
