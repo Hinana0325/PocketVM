@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.14 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.15 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -43,6 +43,7 @@
 | 0.10.12 | **防回归 + 归因提示**：`app/build.gradle.kts` 新增 `verifyQemuPacPatch`，构建前按 SHA256 校验执行层是否带 PAC 补丁——重建 QEMU 后忘记补丁会直接构建失败，不再把「随机崩」带上真机。`FailureHints` 补上 exit=132 的归因（USB 存储栈 / 旧执行层的 ARMv9 PAC），排障文档新增「跑几十秒到几分钟后自己关闭」条目 |
 | 0.10.13 | **修性能页的三个数据源**：①「已运行」改用 QEMU 进程 `/proc/<pid>/stat` 的 starttime 推算，不再从 QMP 握手开始算（慢启动不再少算）；② RSS 在 `statm` 不可读时回退 `/proc/<pid>/status` 的 `VmRSS`，两者都读不到时显示「不可用」而不是 0；③ 磁盘 I/O 在 `/proc/<pid>/io` 被系统隐藏时回退 QMP `query-blockstats`，同时修掉「一次读失败后下一拍跨缺口求差、算出巨大假峰值」的 bug（vCPU 读失败同理） |
 | 0.10.14 | **新增 App 内 SSH 控制台**：控制台第 4 个 Tab，经 QEMU hostfwd 连接客户机 sshd，逐条执行命令并实时回显 stdout+stderr（mwiede JSch，密码认证）。自带常用快捷命令；密码只在内存里，不落盘。SSH 连接随 VM 停止/切换自动断开，失败原因翻成中文（认证失败/端口拒绝/超时） |
+| 0.10.15 | **SSH 交互终端（PTY）**：SSH Tab 新增「交互终端」卡片，打开 `shell` 通道（xterm-256color，160×40），支持 sudo 密码提示这类必须真实终端的命令；输出自动剥 ANSI 转义（颜色/光标/OSC 标题）后与命令模式共用输出区，「^C」按钮发送 Ctrl+C。命令模式（exec）保留，适合脚本化的一次性命令 |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
@@ -124,6 +125,11 @@ No errors were found on the image.
 输出（stdout+stderr）实时回显，自带 `uname -a`、`ip a`、`df -h`、`dmesg | tail`、关机等快捷命令。
 密码只保存在内存里，不写入配置；主机密钥不校验（目标是本机 hostfwd 暴露的 127.0.0.1）。
 支持密码认证，暂不支持私钥登录。
+
+**SSH 交互终端（0.10.15）**：同一个 SSH Tab 里可以「打开交互终端」——走 PTY shell
+（xterm-256color），`sudo` 的密码提示、需要真实终端的命令都能用；输出自动去掉 ANSI
+转义序列，与命令模式共用输出区；「^C」按钮发送 Ctrl+C。命令模式保留，适合一次性、
+脚本化的命令。
 
 注意：Windows 安装程序不带 virtio 网卡驱动（`netkvm`），联网前需先从 VirtIO 驱动盘加载；
 Linux 内核自带，装上即可上网。

@@ -79,6 +79,10 @@ fun ConsoleScreen(
     onSshDisconnect: () -> Unit,
     onSshRun: (String) -> Unit,
     onSshClear: () -> Unit,
+    onSshOpenShell: () -> Unit,
+    onSshCloseShell: () -> Unit,
+    onSshShellSend: (String) -> Unit,
+    onSshShellCtrlC: () -> Unit,
     onBack: () -> Unit,
 ) {
     val sessionRuntime = state.runtime
@@ -187,6 +191,10 @@ fun ConsoleScreen(
                 onDisconnect = onSshDisconnect,
                 onRun = onSshRun,
                 onClear = onSshClear,
+                onOpenShell = onSshOpenShell,
+                onCloseShell = onSshCloseShell,
+                onShellSend = onSshShellSend,
+                onShellCtrlC = onSshShellCtrlC,
             )
         }
     }
@@ -768,6 +776,10 @@ private fun SshTab(
     onDisconnect: () -> Unit,
     onRun: (String) -> Unit,
     onClear: () -> Unit,
+    onOpenShell: () -> Unit,
+    onCloseShell: () -> Unit,
+    onShellSend: (String) -> Unit,
+    onShellCtrlC: () -> Unit,
 ) {
     if (!running) {
         EmptyState(
@@ -884,6 +896,67 @@ private fun SshTab(
         }
 
         item {
+            SectionCard(title = "交互终端（PTY）", subtitle = "sudo 提示、需要真实终端的命令") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (state.sshShellOpen) {
+                            OutlinedButton(onClick = onCloseShell, enabled = !state.sshRunning) {
+                                Text("关闭终端")
+                            }
+                            OutlinedButton(onClick = onShellCtrlC, enabled = !state.sshRunning) {
+                                Text("^C")
+                            }
+                        } else {
+                            Button(onClick = onOpenShell, enabled = connected && !state.sshRunning) {
+                                Text("打开交互终端")
+                            }
+                        }
+                        Text(
+                            if (state.sshShellOpen) {
+                                "已打开：输入发给这个 shell，输出与命令模式共用下方「输出」"
+                            } else {
+                                "未打开；命令模式下用下方 exec 通道"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (state.sshShellOpen) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            OutlinedTextField(
+                                value = form.shellLine,
+                                onValueChange = { form.shellLine = it },
+                                label = { Text("输入 / 密码") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Button(
+                                onClick = {
+                                    onShellSend(form.shellLine)
+                                    form.shellLine = ""
+                                },
+                                enabled = form.shellLine.isNotEmpty(),
+                            ) {
+                                Text("发送")
+                            }
+                        }
+                        Text(
+                            "sudo 的密码提示也在这里输入；密码不会被回显到输出里。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
             SectionCard(title = "执行命令", subtitle = "每条命令单独开一个 exec 通道") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
@@ -956,4 +1029,5 @@ private class SshFormState(initialPort: Int) {
     var user by mutableStateOf("")
     var password by mutableStateOf("")
     var command by mutableStateOf("")
+    var shellLine by mutableStateOf("")
 }

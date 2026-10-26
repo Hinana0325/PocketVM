@@ -1,6 +1,7 @@
 package dev.pocketvm.runtime
 
 import com.jcraft.jsch.ChannelExec
+import com.jcraft.jsch.ChannelShell
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import dev.pocketvm.core.model.PortForward
@@ -50,6 +51,9 @@ class SshConsole {
     val state: StateFlow<SshState> = _state.asStateFlow()
 
     private var session: Session? = null
+
+    private var shell: ChannelShell? = null
+    private var shellInput: OutputStream? = null
 
     /** 阻塞调用，放在 IO 线程上。@return 中文错误；null 表示已连上。 */
     fun connect(host: String, port: Int, user: String, password: String): String? {
@@ -111,10 +115,83 @@ class SshConsole {
     }
 
     fun disconnect() {
+        closeShell()
         runCatching { session?.disconnect() }
         session = null
         if (_state.value !is SshState.Disconnected) _state.value = SshState.Disconnected
     }
+
+    /**
+     * 打开一个 PTY 交互 shell（xterm-256color）。
+     *
+     * 输出在后台线程里逐块回调（调用方自行剥 ANSI、追加到控制台）；远端或本地
+     * 任何一方关闭通道时回调 [onClosed]。sudo 的密码提示、vim 之外的普通交互
+     * 命令都能用，但不做完整终端仿真。
+     */
+    fun openShell(onOutput: (String) -> Unit, onClosed: () -> Unit): String? {
+        val s = session ?: return "先连接 SSH"
+        closeShell()
+        return try {
+            val channel = s.openChannel("shell") as ChannelShell
+            channel.setPtyType("xterm-256color")
+            channel.setPtySize(160, 40, 0, 0)
+            val input = channel.inputStream
+            val output = channel.outputStream
+            channel.connect(10_000)
+            shell = channel
+            shellInput = output
+            val reader = Thread({
+                val buf = ByteArray(4096)
+                try {
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        if (n > 0) onOutput(String(buf, 0, n, Charsets.UTF_8))
+                    }
+                } catch (_: Throwable) {
+                    // 本地关通道会让 read 抛异常，属于正常退出路径。
+                } finally {
+                    if (shell === channel) {
+                        shell = null
+                        shellInput = null
+                    }
+                    onClosed()
+                }
+            }, "pvm-ssh-shell")
+            reader.isDaemon = true
+            reader.start()
+            null
+        } catch (t: Throwable) {
+            closeShell()
+            describe(t)
+        }
+    }
+
+    fun sendShellLine(line: String): Boolean {
+        val out = shellInput ?: return false
+        return runCatching {
+            out.write((line + "\n").toByteArray(Charsets.UTF_8))
+            out.flush()
+            true
+        }.getOrDefault(false)
+    }
+
+    fun sendShellCtrlC(): Boolean {
+        val out = shellInput ?: return false
+        return runCatching {
+            out.write(3)
+            out.flush()
+            true
+        }.getOrDefault(false)
+    }
+
+    fun closeShell() {
+        runCatching { shell?.disconnect() }
+        shell = null
+        shellInput = null
+    }
+
+    fun isShellOpen(): Boolean = shell != null
 
     private fun describe(t: Throwable): String {
         val msg = t.message ?: t.toString()

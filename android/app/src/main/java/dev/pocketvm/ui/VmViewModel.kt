@@ -15,6 +15,7 @@ import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmRuntimeState
+import dev.pocketvm.runtime.AnsiText
 import dev.pocketvm.runtime.LaunchOutcome
 import dev.pocketvm.runtime.SshConsole
 import dev.pocketvm.runtime.SshDefaults
@@ -117,6 +118,8 @@ data class UiState(
     val sshOutput: String = "",
     /** 正在建连或执行命令。 */
     val sshRunning: Boolean = false,
+    /** PTY 交互 shell 是否打开。 */
+    val sshShellOpen: Boolean = false,
 ) {
     val hasUnsavedChanges: Boolean get() = draft != null && draft != baseline
 }
@@ -436,13 +439,76 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { sshConsole.disconnect() }
             _ui.update {
-                it.copy(sshOutput = (it.sshOutput + "\n[SSH] 已断开\n").takeLast(SSH_OUTPUT_LIMIT))
+                it.copy(
+                    sshShellOpen = false,
+                    sshOutput = (it.sshOutput + "\n[SSH] 已断开\n").takeLast(SSH_OUTPUT_LIMIT),
+                )
             }
         }
     }
 
     fun sshClearOutput() {
         _ui.update { it.copy(sshOutput = "") }
+    }
+
+    fun sshOpenShell() {
+        if (sshConsole.state.value !is SshState.Connected) {
+            _ui.update { it.copy(notice = "先连接 SSH") }
+            return
+        }
+        viewModelScope.launch {
+            _ui.update { it.copy(sshRunning = true) }
+            val failure = withContext(Dispatchers.IO) {
+                sshConsole.openShell(
+                    onOutput = { chunk ->
+                        val text = AnsiText.strip(chunk)
+                        if (text.isNotEmpty()) {
+                            _ui.update { s ->
+                                s.copy(sshOutput = (s.sshOutput + text).takeLast(SSH_OUTPUT_LIMIT))
+                            }
+                        }
+                    },
+                    onClosed = {
+                        _ui.update { s -> s.copy(sshShellOpen = false) }
+                    },
+                )
+            }
+            _ui.update {
+                val line = if (failure == null) {
+                    "\n[SSH] 交互终端已打开（「^C」发送 Ctrl+C）\n"
+                } else {
+                    "\n[SSH] $failure\n"
+                }
+                it.copy(
+                    sshRunning = false,
+                    sshShellOpen = failure == null && sshConsole.isShellOpen(),
+                    sshOutput = (it.sshOutput + line).takeLast(SSH_OUTPUT_LIMIT),
+                    notice = failure,
+                )
+            }
+        }
+    }
+
+    fun sshCloseShell() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { sshConsole.closeShell() }
+            _ui.update {
+                it.copy(
+                    sshShellOpen = false,
+                    sshOutput = (it.sshOutput + "\n[SSH] 交互终端已关闭\n").takeLast(SSH_OUTPUT_LIMIT),
+                )
+            }
+        }
+    }
+
+    fun sshShellSend(line: String) {
+        if (line.isBlank()) return
+        // PTY 会把输入回显到输出里，这里不再重复追加。
+        viewModelScope.launch(Dispatchers.IO) { sshConsole.sendShellLine(line) }
+    }
+
+    fun sshShellCtrlC() {
+        viewModelScope.launch(Dispatchers.IO) { sshConsole.sendShellCtrlC() }
     }
 
     fun exportDiagnostics(vmId: String) {
@@ -706,6 +772,9 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     // VM 复用一条已经死掉的会话。
                     if (sshConsole.state.value !is SshState.Disconnected) {
                         viewModelScope.launch(Dispatchers.IO) { sshConsole.disconnect() }
+                    }
+                    if (_ui.value.sshShellOpen) {
+                        _ui.update { it.copy(sshShellOpen = false) }
                     }
                 }
             }

@@ -149,6 +149,10 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                             onSshDisconnect = vm::sshDisconnect,
                             onSshRun = vm::sshRun,
                             onSshClear = vm::sshClearOutput,
+                            onSshOpenShell = vm::sshOpenShell,
+                            onSshCloseShell = vm::sshCloseShell,
+                            onSshShellSend = vm::sshShellSend,
+                            onSshShellCtrlC = vm::sshShellCtrlC,
                             onBack = vm::back,
                         )
                     }
