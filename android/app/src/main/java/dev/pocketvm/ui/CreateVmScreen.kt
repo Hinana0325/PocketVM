@@ -120,6 +120,13 @@ fun CreateVmScreen(
             subtitle = if (state.editing) "修改配置不会影响已安装的系统；运行中请先停止" else null,
             showBack = true,
             onBack = requestBack,
+            actions = {
+                // 表单很长；保存按钮固定在顶栏，不用滚到底。
+                TextButton(
+                    onClick = onSave,
+                    enabled = !state.busy && state.importing == null,
+                ) { Text("保存") }
+            },
         )
 
         Column(

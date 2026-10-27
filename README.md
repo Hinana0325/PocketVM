@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`） |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.24 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.25 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -52,6 +52,8 @@
 | 0.10.21 | **客户机按键面板**：控制台新增方向键 / Enter / Esc / Tab / 空格 / F2 / F10 / Del / Ctrl+Alt+Del 与「键入文本」输入，按键经 QMP 直接注入客户机——手机 VNC 客户端没有方向键也能操作固件启动菜单；串口 watcher 另加「Please select boot device:」自动回车兜底。仍是 perf 构建（非 debuggable，可直接覆盖 0.10.20） |
 | 0.10.22 | **实测与细节修复**：真机上滑动 648 帧 Janky 0.15%、90th 9ms；修浅色主题状态栏/导航栏仍是白图标（看不清）；去掉会换行的「应答引导提示」按钮（按键面板已有 Enter）；同时清理死代码 |
 | 0.10.23 | **大小核调度（TCG 性能）**：启动时按各核 `cpuinfo_max_freq` 识别性能核簇，用 `/system/bin/taskset` 把 QEMU 限制在性能核（本机 cpu2–7），小核留给 UI；同频/读不到频率/ taskset 不可用时自动回退。OOBE 反复 0x3B 的机器把 vCPU 从 8 降到 4。新增 CpuTopologyTest（含 SM8650 掩码 fc 的用例） |
+| 0.10.24 | **主题 redesign**：灰白中性色主题（琥珀品牌色 → Google Stitch 风格，亮/暗两套同步）；局域网模式暂不可用（QEMU 构建缺 DES 后端，校验器以 `VNC_LAN_UNAVAILABLE` 在启动前拦下）；新增 GitHub Actions CI 跑单元测试 |
+| 0.10.25 | **界面/交互优化**：编辑页「保存」固定到顶栏，不用滚到表单底部；点 VM 卡片空白处直接进控制台；客户机按键面板加触感反馈与「上次发送 ✓/✗」状态；修每 vCPU 占用全显示 100% 的 bug——Android 16 上 `/proc/<tid>/stat` 返回线程组聚合值，改用 `/proc/<tid>/schedstat` 的每线程运行纳秒 |
 
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。

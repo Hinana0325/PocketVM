@@ -37,6 +37,12 @@ class VmMetricsTest {
     }
 
     @Test
+    fun `schedstat runtime is the first field`() {
+        assertEquals(123_456_789L, ProcStats.schedRuntimeNs("123456789 42 7"))
+        assertNull(ProcStats.schedRuntimeNs("not-a-number 0 0"))
+    }
+
+    @Test
     fun `starttime and uptime give the process age`() {
         // 1000 s of boot uptime minus a 123.45 s old process.
         assertEquals(876_550L, ProcStats.processAgeMs(stat(0, 0), "1000.00 500.00"))
@@ -98,8 +104,8 @@ class VmMetricsTest {
             "/proc/42/stat" to stat(utime = 100, stime = 50),
             "/proc/42/statm" to "90000 25000 20000 1 0 5000 0",
             "/proc/42/io" to "read_bytes: 1048576\nwrite_bytes: 2097152\n",
-            "/proc/700/stat" to stat(utime = 0, stime = 0),
-            "/proc/701/stat" to stat(utime = 0, stime = 0),
+            "/proc/700/schedstat" to "0 0 0",
+            "/proc/701/schedstat" to "0 0 0",
         )
         val sampler = samplerWith(files)
         sampler.sample(nowMs = 1_000, vcpuTids = listOf(700, 701), uptimeMs = 1_000)
@@ -107,8 +113,8 @@ class VmMetricsTest {
         // One second later: +50 process ticks (0.5 core at 100 Hz = 50%),
         // vCPU0 +30 ticks, vCPU1 +20 ticks, +2 MiB read, no new writes.
         files["/proc/42/stat"] = stat(utime = 150, stime = 50)
-        files["/proc/700/stat"] = stat(utime = 30, stime = 0)
-        files["/proc/701/stat"] = stat(utime = 0, stime = 20)
+        files["/proc/700/schedstat"] = "300000000 0 0"
+        files["/proc/701/schedstat"] = "200000000 0 0"
         files["/proc/42/io"] = "read_bytes: 3145728\nwrite_bytes: 2097152\n"
 
         val second = sampler.sample(nowMs = 2_000, vcpuTids = listOf(700, 701), uptimeMs = 2_000)
@@ -176,7 +182,7 @@ class VmMetricsTest {
     }
 
     @Test
-    fun `an unreadable vcpu stat does not spike the next sample`() {
+    fun `an unreadable vcpu schedstat does not spike the next sample`() {
         val files = mutableMapOf(
             "/proc/42/stat" to stat(0, 0),
             "/proc/42/statm" to "90000 25000 20000 1 0 5000 0",
@@ -187,11 +193,11 @@ class VmMetricsTest {
 
         // Thread stat appears only now: its absolute counter must not be treated
         // as "this core burned 10 ticks in the last second".
-        files["/proc/700/stat"] = stat(utime = 10, stime = 0)
+        files["/proc/700/schedstat"] = "100000000 0 0"
         val second = sampler.sample(nowMs = 2_000, vcpuTids = listOf(700), uptimeMs = 2_000)
         assertEquals(0f, second!!.vcpuPercents[0], 0.001f)
 
-        files["/proc/700/stat"] = stat(utime = 20, stime = 0)
+        files["/proc/700/schedstat"] = "200000000 0 0"
         val third = sampler.sample(nowMs = 3_000, vcpuTids = listOf(700), uptimeMs = 3_000)
         assertEquals(10f, third!!.vcpuPercents[0], 0.001f)
     }

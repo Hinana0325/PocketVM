@@ -103,6 +103,16 @@ object ProcStats {
         return utime + stime
     }
 
+    /**
+     * `/proc/<tid>/schedstat` 第一字段：该线程累计在 CPU 上运行的纳秒数。
+     *
+     * 不能用 `/proc/<tid>/stat` 的 utime/stime 做每 vCPU 占用：这台 Android 16
+     * 设备上线程目录里的 stat 返回的是**线程组聚合值**，8 个 vCPU 会显示成同一个
+     * 数（每行都 100%）。schedstat 是每线程独立的，实测各线程数值不同。
+     */
+    fun schedRuntimeNs(schedstat: String): Long? =
+        schedstat.trim().split(' ').firstOrNull()?.toLongOrNull()
+
     /** `/proc/<pid>/stat` field 22 (starttime), in ticks since boot. */
     fun startTicks(stat: String): Long? {
         val close = stat.lastIndexOf(')')
@@ -158,8 +168,8 @@ class VmMetricsSampler(
         val ioSource: String?,
         val readBytes: Long?,
         val writeBytes: Long?,
-        /** tid -> ticks at sample time; null when that thread's stat is unreadable. */
-        val vcpuTicks: Map<Int, Long?>,
+        /** tid -> 累计运行 ns at sample time; null when schedstat is unreadable. */
+        val vcpuRuntimeNs: Map<Int, Long?>,
     )
 
     private var prev: Snapshot? = null
@@ -204,12 +214,12 @@ class VmMetricsSampler(
             }
         }
 
-        val vcpuTicks = vcpuTids.associateWith { tid ->
-            readFile("/proc/$tid/stat")?.let { ProcStats.cpuTicks(it) }
+        val vcpuRuntimeNs = vcpuTids.associateWith { tid ->
+            readFile("/proc/$tid/schedstat")?.let { ProcStats.schedRuntimeNs(it) }
         }
 
         val before = prev
-        prev = Snapshot(nowMs, cpuTicks, ioSource, readBytes, writeBytes, vcpuTicks)
+        prev = Snapshot(nowMs, cpuTicks, ioSource, readBytes, writeBytes, vcpuRuntimeNs)
 
         val dtMs = before?.let { nowMs - it.epochMs } ?: 0L
         if (before == null || dtMs <= 0) {
@@ -234,13 +244,13 @@ class VmMetricsSampler(
         val cpuPercent = (dCpu.toDouble() / clockTicksPerSecond / seconds * 100).toFloat()
 
         val vcpuPercents = vcpuTids.map { tid ->
-            val now = vcpuTicks[tid]
-            val then = before.vcpuTicks[tid]
+            val now = vcpuRuntimeNs[tid]
+            val then = before.vcpuRuntimeNs[tid]
             // A missing read is "unknown", not zero: reporting 0 and then
             // differencing against it produced a fake 100% spike next sample.
             if (now == null || then == null) return@map 0f
-            val d = (now - then).coerceAtLeast(0L)
-            (d.toDouble() / clockTicksPerSecond / seconds * 100).coerceIn(0.0, 100.0).toFloat()
+            val deltaNs = (now - then).coerceAtLeast(0L)
+            (deltaNs / 1_000_000_000.0 / seconds * 100).coerceIn(0.0, 100.0).toFloat()
         }
 
         // Rates only make sense between two samples of the same source. Android

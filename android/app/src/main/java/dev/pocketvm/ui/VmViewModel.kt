@@ -119,6 +119,9 @@ data class UiState(
     val sshRunning: Boolean = false,
     /** PTY 交互 shell 是否打开。 */
     val sshShellOpen: Boolean = false,
+    /** 最近一次客户机按键的名称与结果，用来给按键面板即时反馈。 */
+    val lastGuestKeyLabel: String? = null,
+    val lastGuestKeyOk: Boolean? = null,
 ) {
     val hasUnsavedChanges: Boolean get() = draft != null && draft != baseline
 }
@@ -562,9 +565,15 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
      * 单个按键（方向键、Esc、F2 等）。手机 VNC 客户端通常没有这些键，
      * 所以这是固件菜单/安装界面唯一可靠的输入途径。静默发送，不弹提示。
      */
-    fun sendGuestKey(vmId: String, qcode: String) {
-        if (container.session.runningVmId() != vmId) return
-        viewModelScope.launch(Dispatchers.IO) { container.session.sendKey(qcode) }
+    fun sendGuestKey(vmId: String, qcode: String, label: String) {
+        if (container.session.runningVmId() != vmId) {
+            _ui.update { it.copy(lastGuestKeyLabel = label, lastGuestKeyOk = false) }
+            return
+        }
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { container.session.sendKey(qcode) }
+            _ui.update { it.copy(lastGuestKeyLabel = label, lastGuestKeyOk = ok) }
+        }
     }
 
     /** 组合键，例如 Ctrl+Alt+Del。 */

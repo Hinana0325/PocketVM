@@ -2,6 +2,7 @@ package dev.pocketvm.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -205,7 +206,8 @@ private fun VmCard(
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
         shape = ShapeCard,
         border = if (isRunning) BorderStroke(1.dp, Success.copy(alpha = 0.35f)) else null,
-        modifier = Modifier.fillMaxWidth(),
+        // 点卡片空白处直接进控制台；内部按钮仍优先处理自己的点击。
+        modifier = Modifier.fillMaxWidth().clickable { onOpen() },
     ) {
         Row {
             Box(

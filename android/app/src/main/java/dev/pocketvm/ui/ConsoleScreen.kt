@@ -57,10 +57,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -71,6 +72,8 @@ import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.runtime.SshDefaults
+import dev.pocketvm.ui.theme.Danger
+import dev.pocketvm.ui.theme.Success
 import dev.pocketvm.runtime.SshState
 import dev.pocketvm.ui.theme.MonoTextStyle
 import kotlinx.coroutines.delay
@@ -89,7 +92,7 @@ fun ConsoleScreen(
     onRefresh: () -> Unit,
     onExport: () -> Unit,
     onEject: () -> Unit,
-    onGuestKey: (String) -> Unit,
+    onGuestKey: (String, String) -> Unit,
     onGuestCombo: (List<String>) -> Unit,
     onGuestText: (String) -> Unit,
     onBootFromShell: () -> Unit,
@@ -443,7 +446,7 @@ private fun OverviewTab(
     onStop: () -> Unit,
     onExport: () -> Unit,
     onEject: () -> Unit,
-    onGuestKey: (String) -> Unit,
+    onGuestKey: (String, String) -> Unit,
     onGuestCombo: (List<String>) -> Unit,
     onGuestText: (String) -> Unit,
     onBootFromShell: () -> Unit,
@@ -451,6 +454,7 @@ private fun OverviewTab(
 ) {
     val usedBytes = state.diskUsage[vm.id] ?: 0L
     var guestText by remember { mutableStateOf("") }
+    val haptic = LocalHapticFeedback.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -562,7 +566,10 @@ private fun OverviewTab(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf("↑" to "up", "↓" to "down", "←" to "left", "→" to "right").forEach { (label, code) ->
                             OutlinedButton(
-                                onClick = { onGuestKey(code) },
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onGuestKey(code, label)
+                                },
                                 enabled = running,
                                 modifier = Modifier.weight(1f),
                                 contentPadding = PaddingValues(vertical = 6.dp),
@@ -572,7 +579,10 @@ private fun OverviewTab(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf("Enter" to "ret", "Esc" to "esc", "Tab" to "tab", "空格" to "spc").forEach { (label, code) ->
                             OutlinedButton(
-                                onClick = { onGuestKey(code) },
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onGuestKey(code, label)
+                                },
                                 enabled = running,
                                 modifier = Modifier.weight(1f),
                                 contentPadding = PaddingValues(vertical = 6.dp),
@@ -582,14 +592,20 @@ private fun OverviewTab(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf("F2" to "f2", "F10" to "f10", "Del" to "delete").forEach { (label, code) ->
                             OutlinedButton(
-                                onClick = { onGuestKey(code) },
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onGuestKey(code, label)
+                                },
                                 enabled = running,
                                 modifier = Modifier.weight(1f),
                                 contentPadding = PaddingValues(vertical = 6.dp),
                             ) { Text(label, style = MaterialTheme.typography.labelSmall) }
                         }
                         OutlinedButton(
-                            onClick = { onGuestCombo(listOf("ctrl", "alt", "delete")) },
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onGuestCombo(listOf("ctrl", "alt", "delete"))
+                            },
                             enabled = running,
                             modifier = Modifier.weight(1f),
                             contentPadding = PaddingValues(vertical = 6.dp),
@@ -621,6 +637,14 @@ private fun OverviewTab(
                             },
                             enabled = running && guestText.isNotEmpty(),
                         ) { Text("输入+⏎") }
+                    }
+                    state.lastGuestKeyLabel?.let { label ->
+                        val ok = state.lastGuestKeyOk == true
+                        Text(
+                            "上次发送：$label " + if (ok) "✓" else "✗（QMP 未连接）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (ok) Success else Danger,
+                        )
                     }
                     Text(
                         "按键经 QMP 直接注入客户机，和 VNC 客户端里的键盘等价；" +
