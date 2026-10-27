@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.VmConfig
+import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.runtime.SshDefaults
@@ -166,7 +167,11 @@ fun ConsoleScreen(
     Column(modifier = modifier.fillMaxSize().padding(contentPadding)) {
         PocketTopBar(
             title = vm.name,
-            subtitle = "${vm.cpuCores} vCPU · ${vm.memoryMb} MB · ${vm.diskSizeGb} GB · TCG",
+            subtitle = if (vm.platform == VmPlatform.APPLE_T8030) {
+                "${vm.cpuCores} vCPU · ${vm.memoryMb} MB · iPhone 11 · TCG"
+            } else {
+                "${vm.cpuCores} vCPU · ${vm.memoryMb} MB · ${vm.diskSizeGb} GB · TCG"
+            },
             showBack = true,
             onBack = onBack,
             actions = {
@@ -557,6 +562,7 @@ private fun OverviewTab(
             }
         }
 
+        if (vm.platform != VmPlatform.APPLE_T8030) {
         item {
             SectionCard(
                 title = "客户机按键",
@@ -654,6 +660,7 @@ private fun OverviewTab(
                     )
                 }
             }
+        }
         }
 
         if (vm.isoPath != null && usedBytes > 4L * 1024 * 1024 * 1024) {

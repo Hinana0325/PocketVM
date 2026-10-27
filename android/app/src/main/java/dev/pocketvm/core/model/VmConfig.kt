@@ -56,6 +56,11 @@ enum class DisplayDevice(val label: String) {
 data class VmConfig(
     val id: String,
     val name: String,
+    /**
+     * 客户机平台。旧版本写下的 config.json 没有这个字段，默认按 UEFI 链路解释，
+     * 因此升级不会改变已有虚拟机的行为。
+     */
+    val platform: VmPlatform = VmPlatform.UEFI_ARM64,
     val cpuCores: Int = 4,
     val memoryMb: Int = 3072,
     val diskSizeGb: Int = 64,

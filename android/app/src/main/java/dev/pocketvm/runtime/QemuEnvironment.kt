@@ -85,6 +85,27 @@ class QemuEnvironment(context: Context) {
         )
     }
 
+    /**
+     * ChefKiss Inferno 的 iOS 执行层（`libqemu-inferno-system-aarch64.so`）。
+     * 与主执行层并存：它只认 `t8030` 机型，Windows/Linux 那条链路继续用原来的
+     * QEMU 11.1.2。找不到时返回 null，由 iOS 机型的启动路径给出明确错误。
+     */
+    fun resolveInferno(layout: VmStorageLayout): QemuBinary? {
+        val nativeLibDir = appContext.applicationInfo?.nativeLibraryDir?.let { File(it) }
+        val candidates = nativeLibDir?.listFiles()
+            ?.filter { it.name.startsWith("libqemu-inferno") }
+            ?.sorted()
+            ?: emptyList()
+        var probed = candidates.filter { it.isFile }
+            .map { probe(it, BinaryOrigin.PACKAGED_NATIVE_LIB, layout) }
+        if (probed.none { it.executable }) {
+            candidates.forEach { it.setExecutable(true, false) }
+            probed = candidates.filter { it.isFile }
+                .map { probe(it, BinaryOrigin.PACKAGED_NATIVE_LIB, layout) }
+        }
+        return probed.firstOrNull { it.executable }
+    }
+
     /** `qemu-img` is optional: without it PocketVM falls back to a raw preallocated disk. */
     fun resolveQemuImg(layout: VmStorageLayout): File? {
         val nativeLibDir = appContext.applicationInfo?.nativeLibraryDir?.let { File(it) }

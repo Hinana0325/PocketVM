@@ -42,6 +42,8 @@ import dev.pocketvm.core.model.PortForward
 import dev.pocketvm.core.model.StorageController
 import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.core.model.VmConfig
+import dev.pocketvm.core.model.VmPlatform
+import dev.pocketvm.storage.AppleAssets
 import java.io.File
 
 @Composable
@@ -53,9 +55,13 @@ fun CreateVmScreen(
     onImportIso: (Uri) -> Unit,
     onImportDriverIso: (Uri) -> Unit,
     onImportFirmware: (Uri) -> Unit,
+    onSetPlatform: (VmPlatform) -> Unit,
+    onImportApple: (Uri) -> Unit,
     contentPadding: androidx.compose.foundation.layout.PaddingValues = androidx.compose.foundation.layout.PaddingValues(0.dp),
 ) {
     val draft = state.draft ?: return
+    val isApple = draft.platform == VmPlatform.APPLE_T8030
+    val appleStatus = state.appleAssets[draft.id]
     var firmwareMenu by remember { mutableStateOf(false) }
     var imageMenu by remember { mutableStateOf(false) }
     var discardDialog by remember { mutableStateOf(false) }
@@ -86,6 +92,9 @@ fun CreateVmScreen(
     }
     val driverIsoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(onImportDriverIso)
+    }
+    val applePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(onImportApple)
     }
 
     // Backing out of the wizard used to throw away every edit without asking.
@@ -140,18 +149,35 @@ fun CreateVmScreen(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                SpecChip(draft.platform.label)
                 SpecChip("${draft.cpuCores} vCPU")
                 SpecChip("${draft.memoryMb} MB")
-                SpecChip("${draft.diskSizeGb} GB")
-                SpecChip(draft.displayDevice.label)
-                SpecChip(
-                    when {
-                        draft.usbDisabled -> "USB 已禁用"
-                        draft.usbInput -> "USB 输入"
-                        else -> "virtio 输入"
-                    },
-                )
-                if (draft.driverIsoPath != null) SpecChip("驱动盘已挂")
+                if (!isApple) {
+                    SpecChip("${draft.diskSizeGb} GB")
+                    SpecChip(draft.displayDevice.label)
+                    SpecChip(
+                        when {
+                            draft.usbDisabled -> "USB 已禁用"
+                            draft.usbInput -> "USB 输入"
+                            else -> "virtio 输入"
+                        },
+                    )
+                    if (draft.driverIsoPath != null) SpecChip("驱动盘已挂")
+                }
+            }
+
+            SectionCard(title = "平台", subtitle = "决定用哪个执行层；两种机型的配置项互不影响") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    VmPlatform.values().forEach { platform ->
+                        if (draft.platform == platform) {
+                            Button(onClick = { }) { Text(platform.label) }
+                        } else {
+                            OutlinedButton(onClick = { onSetPlatform(platform) }) {
+                                Text(platform.label)
+                            }
+                        }
+                    }
+                }
             }
 
             SectionCard(title = "基本配置") {
@@ -179,26 +205,28 @@ fun CreateVmScreen(
                     valueText = "${draft.memoryMb} MB",
                     onChange = { mem -> onUpdate { it.copy(memoryMb = (mem / 512).toInt() * 512) } },
                 )
-                SliderRow(
-                    label = "磁盘容量",
-                    value = draft.diskSizeGb.toFloat(),
-                    valueRange = 32f..256f,
-                    steps = 13,
-                    valueText = "${draft.diskSizeGb} GB",
-                    onChange = { gb -> onUpdate { it.copy(diskSizeGb = (gb / 16).toInt() * 16) } },
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(64, 128, 256).forEach { size ->
-                        OutlinedButton(onClick = { onUpdate { it.copy(diskSizeGb = size) } }) {
-                            Text("$size GB")
+                if (!isApple) {
+                    SliderRow(
+                        label = "磁盘容量",
+                        value = draft.diskSizeGb.toFloat(),
+                        valueRange = 32f..256f,
+                        steps = 13,
+                        valueText = "${draft.diskSizeGb} GB",
+                        onChange = { gb -> onUpdate { it.copy(diskSizeGb = (gb / 16).toInt() * 16) } },
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(64, 128, 256).forEach { size ->
+                            OutlinedButton(onClick = { onUpdate { it.copy(diskSizeGb = size) } }) {
+                                Text("$size GB")
+                            }
                         }
                     }
+                    Text(
+                        "qcow2 精简置备：文件只随实际写入增长，256 GB 的盘初始也只占几百 KB。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Text(
-                    "qcow2 精简置备：文件只随实际写入增长，256 GB 的盘初始也只占几百 KB。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 state.diskUsage[draft.id]?.takeIf { it > 0 }?.let { used ->
                     Text(
                         "当前磁盘实际占用 ${used / (1024 * 1024)} MB",
@@ -213,6 +241,48 @@ fun CreateVmScreen(
                 )
             }
 
+            if (isApple) {
+                SectionCard(
+                    title = "iOS 资源",
+                    subtitle = "还原包里的 kernelcache / SEP / nvme.1；Apple 固件不进 APK，只在本机导入",
+                ) {
+                    val totalMb = (appleStatus?.totalBytes ?: 0L) / (1024 * 1024)
+                    Text(
+                        when {
+                            appleStatus?.present == true ->
+                                "已导入 ${AppleAssets.specs.size} 个文件，共 $totalMb MB" +
+                                    "（系统盘 ${appleStatus.rootDiskBytes / (1024 * 1024 * 1024)} GB）"
+                            appleStatus == null -> "尚未导入"
+                            else -> "缺少 ${appleStatus.missing.size} 个文件：" +
+                                appleStatus.missing.joinToString("、")
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (appleStatus?.present == true) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                    )
+                    state.importing?.let { progress ->
+                        Text(
+                            "正在解压：${progress.copiedBytes / (1024 * 1024)} MB",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { applePicker.launch(arrayOf("*/*")) },
+                        enabled = state.importing == null,
+                    ) { Text("导入还原包 zip") }
+                    Text(
+                        "已知限制：旧 restore 镜像与最新 Inferno 的 chip-id 补丁不兼容时，" +
+                            "iOS 会在 data-protection 启动任务处 panic；需要按官方流程重新 restore。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            if (!isApple) {
             SectionCard(
                 title = "UEFI 固件",
                 subtitle = "aarch64 需要 edk2 pflash 镜像；变量存储会按固件大小自动创建",
@@ -356,6 +426,8 @@ fun CreateVmScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
             }
 
             SectionCard(
@@ -517,6 +589,7 @@ fun CreateVmScreen(
                 )
             }
 
+            if (!isApple) {
             SectionCard(
                 title = "磁盘控制器",
                 subtitle = "Windows 安装程序自带 NVMe 与 USB 驱动；virtio 需要额外注入驱动盘",
@@ -732,6 +805,7 @@ fun CreateVmScreen(
                         onSelect = { value -> onUpdate { it.copy(cpuModel = value) } },
                     )
                 }
+            }
             }
 
             if (state.issues.isNotEmpty()) {

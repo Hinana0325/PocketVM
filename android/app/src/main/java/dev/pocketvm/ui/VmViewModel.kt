@@ -14,7 +14,10 @@ import dev.pocketvm.core.config.ValidationInput
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.RunManifest
+import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
+import dev.pocketvm.core.model.VncAccess
+import dev.pocketvm.storage.AppleAssets
 import dev.pocketvm.runtime.AnsiText
 import dev.pocketvm.runtime.LaunchOutcome
 import dev.pocketvm.runtime.SshConsole
@@ -122,6 +125,8 @@ data class UiState(
     /** 最近一次客户机按键的名称与结果，用来给按键面板即时反馈。 */
     val lastGuestKeyLabel: String? = null,
     val lastGuestKeyOk: Boolean? = null,
+    /** vmId -> iPhone 11 资源（固件 / NVMe 镜像）是否齐全。 */
+    val appleAssets: Map<String, AppleAssets.Status> = emptyMap(),
 ) {
     val hasUnsavedChanges: Boolean get() = draft != null && draft != baseline
 }
@@ -242,6 +247,70 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         val next = transform(current)
         _ui.update { it.copy(draft = next) }
         refreshIssues(next)
+    }
+
+    fun setPlatform(platform: VmPlatform) = updateDraft { draft ->
+        if (draft.platform == platform) return@updateDraft draft
+        val name = if (platform == VmPlatform.APPLE_T8030 &&
+            (draft.name.isBlank() || draft.name == VmConfig.DEFAULT_NAME)
+        ) {
+            "iPhone 11"
+        } else {
+            draft.name
+        }
+        // t8030 在 TCG 下每多一个 vCPU/GB 都是实打实的宿主内存与线程开销；
+        // 现有脚本用 7 vCPU / 6 GB，手机端先按 4 / 3 GB 起步，用户仍可再调。
+        draft.copy(
+            platform = platform,
+            name = name,
+            cpuCores = if (platform == VmPlatform.APPLE_T8030) draft.cpuCores.coerceAtMost(4) else draft.cpuCores,
+            memoryMb = if (platform == VmPlatform.APPLE_T8030) draft.memoryMb.coerceAtMost(3072) else draft.memoryMb,
+        )
+    }
+
+    /**
+     * 导入 iOS 还原包 zip。一个 25 GB 的 nvme.1 解压要几分钟，所以进度按
+     * 「已写字节数」推进；中途离开页面也继续写完，避免留下半个镜像。
+     */
+    fun importAppleBundle(uri: Uri) {
+        val draft = _ui.value.draft ?: return
+        val target = AppleAssets.dir(container.layout, draft.id)
+        viewModelScope.launch {
+            _ui.update { it.copy(importing = ImportProgress(0, null), notice = null) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val input = getApplication<Application>().contentResolver.openInputStream(uri)
+                        ?: error("无法打开所选文件")
+                    input.use { stream ->
+                        AppleAssets.importZip(stream, target) { _, total ->
+                            _ui.update { state ->
+                                state.copy(importing = ImportProgress(total, null))
+                            }
+                        }
+                    }
+                }
+            }
+            result.fold(
+                onSuccess = { names ->
+                    val status = withContext(Dispatchers.IO) {
+                        AppleAssets.status(container.layout, draft.id)
+                    }
+                    _ui.update {
+                        it.copy(
+                            importing = null,
+                            notice = "已导入 ${names.size} 个 iOS 资源文件（共 ${status.totalBytes / (1024 * 1024)} MB）",
+                            appleAssets = it.appleAssets + (draft.id to status),
+                        )
+                    }
+                    refreshIssues(draft)
+                },
+                onFailure = { t ->
+                    _ui.update {
+                        it.copy(importing = null, notice = "iOS 资源导入失败：${t.message}")
+                    }
+                },
+            )
+        }
     }
 
     fun saveDraft() {
@@ -749,6 +818,10 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             val lastRuns = withContext(Dispatchers.IO) {
                 data.first.mapNotNull { vm -> container.manifests.latest(vm.id)?.let { vm.id to it } }.toMap()
             }
+            val appleAssets = withContext(Dispatchers.IO) {
+                data.first.filter { it.platform == VmPlatform.APPLE_T8030 }
+                    .associate { vm -> vm.id to AppleAssets.status(container.layout, vm.id) }
+            }
             _ui.update {
                 it.copy(
                     vms = data.first,
@@ -756,6 +829,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     firmwareOptions = data.third,
                     imageOptions = images,
                     lastRuns = lastRuns,
+                    appleAssets = appleAssets,
                     deviceMemoryMb = deviceMemoryMb(),
                     freeSpaceMb = container.layout.freeSpaceBytes() / (1024 * 1024),
                 )
@@ -764,6 +838,50 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun refreshIssues(config: VmConfig) {
+        // iOS 机型的校验和 UEFI 完全不同：没有固件/ISO/qcow2，只有「资源是否导入」。
+        if (config.platform == VmPlatform.APPLE_T8030) {
+            viewModelScope.launch {
+                val status = withContext(Dispatchers.IO) {
+                    AppleAssets.status(container.layout, config.id)
+                }
+                val issues = buildList {
+                    if (!status.present) {
+                        add(
+                            Issue(
+                                Severity.ERROR,
+                                "APPLE_ASSETS_MISSING",
+                                "iOS 资源不完整：缺少 ${status.missing.joinToString("、")}。" +
+                                    "请在下方导入还原包 zip。",
+                            ),
+                        )
+                    }
+                    if (config.memoryMb < 2048) {
+                        add(
+                            Issue(
+                                Severity.WARNING,
+                                "APPLE_MEMORY_LOW",
+                                "iOS 建议至少 2 GB 内存；4 GB 客户机在部分机型上会因宿主内存不足而失败。",
+                            ),
+                        )
+                    }
+                    if (config.vncAccess == VncAccess.LAN) {
+                        add(
+                            Issue(
+                                Severity.ERROR,
+                                "VNC_LAN_UNAVAILABLE",
+                                "局域网模式暂不可用（缺少 DES 后端），请改回「仅本机」+ adb forward。",
+                            ),
+                        )
+                    }
+                }
+                if (_ui.value.draft == config || _ui.value.draft == null) {
+                    _ui.update {
+                        it.copy(issues = issues, appleAssets = it.appleAssets + (config.id to status))
+                    }
+                }
+            }
+            return
+        }
         // resolve() may trigger the bundled-firmware decompress; keep it off the
         // main thread. Draft edits arrive rapidly, so latest-write-wins via the
         // config identity check after the IO hop.

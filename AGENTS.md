@@ -12,6 +12,15 @@ PocketVM：在未 Root 的 arm64 Android 手机上用 QEMU TCG 跑 Windows ARM64
 - **16 KB 页设备（部分天玑 9xxx / Android 15+）**：执行层所有 PT_LOAD 的 `p_align` 必须 ≥ `0x4000`，否则 linker64 报 `empty/misaligned PT_LOAD` 直接拒绝加载。原 QEMU 构建本来就是 0x4000；`scripts/patch-qemu-pac.py` 新增的段也是 0x4000（16 KB 页），脚本与 Gradle 校验都会检查。`libpvm-probe.so`（静态执行自检）是 4 KB 对齐的 ET_EXEC，在 16 KB 设备上跳过，否则会把对齐问题误报成「静态执行不可用」。
 - 没有要求时不要重建 QEMU：需要 Linux + NDK r27c + meson/ninja/patchelf，5–10 分钟 / 24 核，`scripts/build-qemu-android*.sh` 是 bash 脚本，`.build-qemu/` 有几个 GB（已 gitignore）。脚本头部的注释记录了必须踩过的坑，改参数前先读。
 
+## 两个执行层（0.10.26 起）
+
+- `libqemu-system-aarch64.so`：QEMU 11.1.2 + edk2，跑 Windows / Linux（`VmPlatform.UEFI_ARM64`）。
+- `libqemu-inferno-system-aarch64.so`：ChefKiss Inferno（QEMU 10.0.2 fork）的 `t8030` 机型，跑 iPhone 11（`VmPlatform.APPLE_T8030`）。**不要互相替换**：启动参数、磁盘格式（raw NVMe vs qcow2）与显示链路完全不同。
+- Inferno 的 Android 构建在 WSL Alpine：NDK r27c，依赖 glib 2.80.5 / pixman 0.44.2 / libslirp 4.8.0 / libtasn1 4.19 / nettle 3.10.2 + gmp 6.3.0 / lzfse / libpng16。bionic 的 `sigsetjmp` 会跨线程 SIGILL，Inferno 用源码级替换（`util/pvm-pac-shim.S`，只在 Android 交叉编译时加入）；开机图路径用环境变量 `PVM_BOOTSPLASH` 覆盖（APK 里没有安装前缀）。这两处是源码补丁，重建前先确认还在。
+- iOS 资源（kernelcache / DeviceTree / SEP / trustcache / ticket / nvram / nvme.1–7）**不进仓库、不进 APK**：Apple 版权 + 25.8 GB 系统盘。走编辑页「导入还原包 zip」，落在 `vms/<id>/apple/`。
+- `nvme.7` 必须挂成 `nsid=7,nstype=8`（panic log），写成 7 内核会找不到 panic log；`sep_nvram` 必须是 64 KiB（旧还原包给 2 KiB，导入时补零）。
+- 已知限制：旧 restore 镜像与最新 Inferno 的 chip-id 补丁不兼容时，launchd 的 `data-protection` 启动任务 exit(2)，内核 `userspace panic: boot task failure: data-protection`。官方 FAQ 要求用最新代码重新 restore（companion VM + idevicerestore + 14.0b5 IPSW）并打 InfernoFSPatcher；这不是 Android 移植引入的问题。
+
 ## 常用命令
 
 Gradle 根是 `android/`，不是仓库根。全部命令都要先 `cd android`。

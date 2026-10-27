@@ -70,6 +70,36 @@ object QemuAssets {
     /** ROM that virtio-net-pci hardcodes; also the sentinel for a complete -L tree. */
     private const val ROM_SENTINEL = "efi-virtio.rom"
 
+    // ---- ChefKiss Inferno 的 `-L` 数据与开机画面 ----
+    // iOS 机型的显示管线在初始化时会读一张开机图（缺失就直接 abort），并且 VNC
+    // 需要 keymaps。两者只能放在可写目录里，因为 nativeLibraryDir 是只读的、
+    // 而且 AGP 只会把 lib*.so 解压出来。
+
+    private const val IOS_ROOT = "qemu-ios"
+    private const val IOS_MARKER = ".extracted-ios-v1"
+
+    /** 开机图在 [ensureIosShare] 返回目录下的相对路径。 */
+    const val IOS_SPLASH = "icons/hicolor/512x512/apps/CKQEMUBootSplash@2x.png"
+
+    fun ensureIosShare(context: Context, layout: VmStorageLayout): File? {
+        return try {
+            val target = File(layout.root, "qemu/share-ios")
+            val marker = File(target, IOS_MARKER)
+            if (marker.isFile && File(target, "keymaps/en-us").isFile &&
+                File(target, IOS_SPLASH).isFile
+            ) {
+                return target
+            }
+            if (!hasAssets(context.assets, IOS_ROOT)) return null
+            target.mkdirs()
+            copyTree(context.assets, IOS_ROOT, target)
+            if (File(target, IOS_SPLASH).isFile) marker.writeText("ok")
+            target.takeIf { File(it, IOS_SPLASH).isFile }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
     private fun copyFileAsset(assets: AssetManager, assetPath: String, out: File) {
         out.parentFile?.mkdirs()
         assets.open(assetPath).use { input ->

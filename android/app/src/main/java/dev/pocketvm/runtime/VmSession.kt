@@ -13,6 +13,7 @@ import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmConfig
+import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.diagnostics.AgentFeed
@@ -23,6 +24,7 @@ import dev.pocketvm.diagnostics.ProcStats
 import dev.pocketvm.diagnostics.RunManifestStore
 import dev.pocketvm.diagnostics.VmMetrics
 import dev.pocketvm.diagnostics.VmMetricsSampler
+import dev.pocketvm.storage.AppleAssets
 import dev.pocketvm.storage.CheckOutcome
 import dev.pocketvm.storage.DiskProvisioner
 import dev.pocketvm.storage.DiskResult
@@ -99,6 +101,7 @@ class VmSession(
     private val diagnostics: DiagnosticsExporter,
     private val validator: ConfigValidator = ConfigValidator(),
     private val commandBuilder: QemuCommandBuilder = QemuCommandBuilder(),
+    private val appleCommandBuilder: AppleCommandBuilder = AppleCommandBuilder(),
 ) {
 
     private val appContext = context.applicationContext
@@ -222,6 +225,10 @@ class VmSession(
 
     private suspend fun startLocked(config: VmConfig): LaunchOutcome = mutex.withLock {
         if (isRunning()) return@withLock LaunchOutcome.Failed("已有虚拟机在运行，请先停止。")
+        // iOS 机型是完全不同的一条链路：没有 UEFI / qcow2 / ISO，走 Inferno 的
+        // t8030 机器。分支放在这里而不是拆成两个入口，是为了让「同时只能跑一台」
+        // 与状态机、QMP、监控、停止逻辑全部共用。
+        if (config.platform == VmPlatform.APPLE_T8030) return@withLock startApple(config)
 
         AgentFeed.attach(layout.agentFeedFile())
         AgentFeed.event(
@@ -1223,6 +1230,217 @@ class VmSession(
         }
     }
 
+    /**
+     * iPhone 11（t8030）的启动路径。
+     *
+     * 与 UEFI 链路共用状态机、QMP、监控和停止逻辑，但不做任何存储置备：
+     * kernelcache / SEP / NVMe 镜像全部由用户导入（见 [AppleAssets]），
+     * App 只做校验、拼参数、拉起进程。
+     */
+    private suspend fun startApple(config: VmConfig): LaunchOutcome {
+        AgentFeed.attach(layout.agentFeedFile())
+        AgentFeed.event(
+            "session.start",
+            "vm" to config.id,
+            "name" to config.name,
+            "platform" to "APPLE_T8030",
+            "cpu" to config.cpuCores,
+            "memMb" to config.memoryMb,
+            "vncPort" to config.vncPort,
+        )
+        stopRequested = false
+        preflightNote = null
+        bootStage = BootStage.FIRMWARE
+        val vmDir = layout.vmDir(config.id)
+
+        _state.value = VmRuntimeState.Preparing(config.id, "探测 iOS 执行层")
+        val binary = withContext(Dispatchers.IO) { environment.resolveInferno(layout) }
+            ?: return fail(
+                config.id,
+                "没有找到 iOS 执行层（libqemu-inferno-system-aarch64.so）。",
+                "APK 需要包含 Inferno 二进制；请确认安装包完整。",
+            )
+        AgentFeed.event(
+            "probe.apple",
+            "binary" to binary.file.absolutePath,
+            "version" to binary.version,
+            "executable" to binary.executable,
+        )
+
+        _state.value = VmRuntimeState.Preparing(config.id, "检查 iOS 资源")
+        val assetProblems = withContext(Dispatchers.IO) { AppleAssets.validate(layout, config.id) }
+        if (assetProblems.isNotEmpty()) {
+            return fail(
+                config.id,
+                assetProblems.first(),
+                "在编辑页点「导入 iOS 资源包」，选择包含 nvme.1 / kernelcache 的还原包 zip。",
+            )
+        }
+        val rootDisk = AppleAssets.file(layout, config.id, AppleAssets.ROOT_DISK)
+        val share = withContext(Dispatchers.IO) { QemuAssets.ensureIosShare(appContext, layout) }
+            ?: return fail(
+                config.id,
+                "缺少 iOS 的显示资源（开机图 / keymaps）。",
+                "assets/qemu-ios 未能解压到应用目录，请清除应用数据后重试。",
+            )
+
+        val effectivePort = withContext(Dispatchers.IO) { pickVncPort(config.vncPort, allInterfaces = false) }
+        val socket = layout.qmpSocket(config.id).also { it.delete() }
+        val socketProblem = withContext(Dispatchers.IO) { probeUnixSocket(socket) }
+        if (socketProblem != null) {
+            return fail(config.id, "无法创建 QMP 控制套接字：${socket.absolutePath}", socketProblem)
+        }
+
+        val runId = UUID.randomUUID().toString().take(8)
+        val logFile = layout.logFile(config.id, runId).also { it.parentFile?.mkdirs() }
+        currentLog = logFile
+
+        val argv = appleCommandBuilder.build(
+            AppleLaunchRequest(
+                executable = binary.file.absolutePath,
+                assetDir = AppleAssets.dir(layout, config.id).absolutePath,
+                cpuCores = config.cpuCores,
+                memoryMb = config.memoryMb,
+                vncPort = effectivePort,
+                qmpSocketPath = socket.absolutePath,
+                dataDir = share.absolutePath,
+                vmName = config.name,
+                extraArgs = config.extraArgs,
+            ),
+        )
+        val manifest = RunManifest(
+            runId = runId,
+            vmId = config.id,
+            vmName = config.name,
+            appVersion = appVersion(),
+            startedAtEpochMs = System.currentTimeMillis(),
+            executablePath = binary.file.absolutePath,
+            executableVersion = binary.version,
+            argv = argv,
+            diskPath = rootDisk.absolutePath,
+            diskFormat = "raw",
+            vncPort = effectivePort,
+            vncBindAddress = "127.0.0.1",
+            qmpSocketPath = socket.absolutePath,
+            logPath = logFile.absolutePath,
+            profile = "APPLE_T8030",
+            attempt = 1,
+        )
+        currentManifest = manifest
+        manifests.write(manifest)
+        AgentFeed.event(
+            "attempt.start",
+            "run" to runId,
+            "platform" to "APPLE_T8030",
+            "argv" to argv.joinToString(" "),
+        )
+
+        _state.value = VmRuntimeState.Preparing(config.id, "启动 iOS 虚拟机")
+        val launched = try {
+            ProcessBuilder(argv)
+                .directory(vmDir)
+                .redirectErrorStream(true)
+                .redirectOutput(logFile)
+                .apply {
+                    environment().putAll(environment.childEnvironment(layout))
+                    // 显示管线默认按安装目录找开机图；APK 里没有那个路径，
+                    // 用环境变量指向解压出来的 assets（见 QEMU 的 PVM_BOOTSPLASH 补丁）。
+                    environment()["PVM_BOOTSPLASH"] =
+                        File(share, QemuAssets.IOS_SPLASH).absolutePath
+                }
+                .start()
+        } catch (t: Throwable) {
+            manifests.write(
+                manifest.copy(
+                    finishedAtEpochMs = System.currentTimeMillis(),
+                    outcome = RunManifest.Outcome.LAUNCH_FAILED,
+                    failureHint = t.message,
+                ),
+            )
+            return fail(config.id, "无法启动 iOS 执行层：${t.message}", t.message)
+        }
+        synchronized(stateLock) {
+            qemuProcess = launched
+            activeVmId = config.id
+        }
+
+        val client = QmpClient(socket.absolutePath)
+        val confirmed = withContext(Dispatchers.IO) {
+            client.connect(totalWaitMs = 20_000) { launched.isAlive }
+        }
+        var healthy = confirmed && launched.isAlive
+        if (healthy) {
+            // t8030 的机器初始化（SEP、AIC、NVMe 控制器）比 virt 慢得多，
+            // 握手成功后再等一段时间，避免把「正在初始化」误判成「已启动」。
+            healthy = withContext(Dispatchers.IO) {
+                !launched.waitFor(15_000, TimeUnit.MILLISECONDS) && launched.isAlive
+            }
+        }
+        AgentFeed.event(
+            "attempt.qmp",
+            "run" to runId,
+            "confirmed" to confirmed,
+            "alive" to launched.isAlive,
+            "healthy" to healthy,
+        )
+        if (!healthy) {
+            val code = exitCodeOf(launched)
+            runCatching { launched.destroyForcibly() }
+            client.close()
+            socket.delete()
+            synchronized(stateLock) {
+                qemuProcess = null
+                activeVmId = null
+            }
+            val logText = LogTail.read(logFile, maxBytes = 32 * 1024, maxLines = 400)
+            // iOS 的失败很少是 QEMU 自己报错：内核 panic 在串口上，QEMU 以 0 退出。
+            // 优先把 panic 那一行拿出来，否则用户只会看到 exit=0。
+            val panic = applePanicHint(logText)
+            val detail = panic ?: firstErrorLine(logText)
+            manifests.write(
+                manifest.copy(
+                    finishedAtEpochMs = System.currentTimeMillis(),
+                    exitCode = code,
+                    outcome = RunManifest.Outcome.LAUNCH_FAILED,
+                    failureHint = detail,
+                    logExcerpt = detail,
+                ),
+            )
+            return fail(
+                config.id,
+                "iOS 执行层启动后退出（exit=$code）。" + (panic?.let { "\n$it" } ?: ""),
+                panic ?: detail ?: "查看运行日志；t8030 机型初始化需要 10–30 秒。",
+            )
+        }
+
+        qmp = client
+        manifests.write(manifest.copy(outcome = RunManifest.Outcome.RUNNING))
+        _state.value = VmRuntimeState.Running(
+            vmId = config.id,
+            pid = pidOf(launched),
+            startedAtEpochMs = System.currentTimeMillis(),
+            vncPort = effectivePort,
+            logPath = logFile.absolutePath,
+        )
+        AgentFeed.event(
+            "attempt.running",
+            "run" to runId,
+            "platform" to "APPLE_T8030",
+            "pid" to pidOf(launched),
+            "vncPort" to effectivePort,
+            "log" to logFile.absolutePath,
+        )
+        monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
+        startHealthWatch(launched)
+        startMetricsWatch(launched, client)
+        return LaunchOutcome.Started(
+            LaunchProfile.STANDARD,
+            emptyList(),
+            effectivePort,
+            profileChanged = false,
+        )
+    }
+
     private suspend fun awaitExit(process: Process, manifest: RunManifest, logFile: File) {
         val code = withContext(Dispatchers.IO) { process.waitFor() }
         // Identity check: a quick stop→start cycle may have installed a *new*
@@ -1318,6 +1536,18 @@ class VmSession(
                 line.substring(0, colon).contains("qemu"))
         }
         return (prefixed ?: lines.last()).take(300)
+    }
+
+    /**
+     * iOS 的启动失败通常在串口上：内核 panic 或 launchd 的 boot task failure，
+     * 而 QEMU 自己以 0 退出。没有这一层，UI 只能显示「exit=0」。
+     */
+    private fun applePanicHint(log: String): String? {
+        val lines = log.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        lines.firstOrNull { it.contains("panic(", ignoreCase = true) }?.let { return it.take(300) }
+        lines.firstOrNull { it.contains("Boot task failed", ignoreCase = true) }?.let { return it.take(300) }
+        lines.firstOrNull { it.contains("Missing emulator branding") }?.let { return it.take(300) }
+        return null
     }
 
     /**
