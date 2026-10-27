@@ -74,7 +74,8 @@ data class VmConfig(
     val bootFromCd: Boolean = true,
     /** VNC listen port. QEMU's display number is `vncPort - 5900`. */
     val vncPort: Int = 5900,
-    /** Loopback by default; LAN exposure requires a password. */
+    /** Loopback by default. LAN is currently unavailable (no DES backend in
+     * the QEMU build); the validator rejects it with VNC_LAN_UNAVAILABLE. */
     val vncAccess: VncAccess = VncAccess.LOOPBACK,
     /**
      * VNC password (max 8 chars, RFB truncates). Stored in plain text next to the

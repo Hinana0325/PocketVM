@@ -7,7 +7,7 @@
 
 | 能力 | 状态 |
 | --- | --- |
-| QEMU 9.2.3 aarch64 静态二进制（TCG + VNC + slirp + pixman） | **已编入 APK**（32 MB，零未解析符号） |
+| QEMU 11.1.2 aarch64 静态二进制（TCG + VNC + slirp + pixman） | **已编入 APK**（32 MB，零未解析符号） |
 | QEMU 可执行文件探测（真跑 `--version`，不只看文件存在） | 已实现 |
 | 配置校验 + 可操作的中文错误 | 已实现 |
 | QCOW2 磁盘创建（无 `qemu-img` 时用内置写入器，始终精简置备） | 已实现 |
@@ -17,10 +17,10 @@
 | 每次启动的 manifest（argv/固件/磁盘/退出码） | 已实现 |
 | 日志尾部读取 + 失败归因 + 诊断包 zip | 已实现 |
 | 性能占用仪表（CPU / 每 vCPU / 内存 / I/O，1 Hz 宿主机侧采样） | 已实现，含单测 |
-| VNC 服务（端口 / 仅本机 / 局域网 / 密码） | 已实现，App 不内置渲染器 |
+| VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`） |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.23 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.24 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -101,6 +101,10 @@ No errors were found on the image.
 | --- | --- | --- |
 | 仅本机 | `127.0.0.1` | `adb forward tcp:5900 tcp:5900` 后用桌面客户端连 `127.0.0.1:5900`；设备上其他 App 也可访问 |
 | 局域网 | `0.0.0.0` | PC 直接连 `手机IP:5900`，控制台里会显示当前 Wi-Fi/USB 共享的 IPv4 |
+
+> **局域网模式暂不可用**：当前 QEMU 构建缺少 DES 加密后端，校验器会在启动前以
+> `VNC_LAN_UNAVAILABLE` 拦下局域网配置；请用「仅本机」+ `adb forward`。上表
+> 描述的是 `VncAccess.LAN` 的绑定语义，不是当前可用的路径。
 
 密码不是可选项而是安全前提：局域网模式的 VNC 认证是 RFB 的 DES 方案，密钥只有 8 个字符，
 只能当「防误连」用，不能当安全边界。启动流程是
@@ -231,7 +235,7 @@ APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 3
 
 | 文件 | 作用 |
 | --- | --- |
-| `libqemu-system-aarch64.so` | QEMU 9.2.3 本体（ET_DYN，`PT_INTERP=/system/bin/linker64`） |
+| `libqemu-system-aarch64.so` | QEMU 11.1.2 本体（ET_DYN，`PT_INTERP=/system/bin/linker64`） |
 | `libqemu-img.so` | `qemu-img`，用于创建/检查 qcow2 |
 | `libglib-2.0.so` `libpixman-1.so` `libslirp.so` `libpcre2-8.so` `libintl.so` | 依赖，`RUNPATH=$ORIGIN` |
 | `libpvm-probe.so` | 400 KB 静态探针：诊断本机能否执行静态 bionic 二进制 |
@@ -246,7 +250,7 @@ APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 3
 
 | 项 | 值 |
 | --- | --- |
-| QEMU | 9.2.3 |
+| QEMU | 11.1.2 |
 | 加速器 | TCG（`thread=multi`），无 KVM |
 | 显示 | `-vnc`（RFB 3.8），无 GTK/SDL |
 | 网络 | libslirp user-mode |
@@ -335,7 +339,7 @@ docs/                       架构、排障、打包与推送
 
 | 项 | 结论 |
 | --- | --- |
-| 编译（aarch64 动态 PIE） | 通过，82 个单元测试全绿 |
+| 编译（aarch64 动态 PIE） | 通过，133 个单元测试全绿 |
 | APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
 | 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
 | 安装介质启动 | **通过**：固件从 USB 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。USB 崩溃回退 virtio-scsi 后：无驱动盘时同一 ISO 双挂（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`）；挂驱动盘时只走 virtio-cd（两个 ISO 设备同屏会冻结安装） |

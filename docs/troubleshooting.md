@@ -16,6 +16,7 @@
 | `FIRMWARE_IMPLAUSIBLE` | 文件 < 256 KB | 多半是把 `QEMU_EFI.fd` 的 git-lfs 指针文件下下来了 |
 | `FIRMWARE_VARS_SIZE_MISMATCH` | vars 与 code 不等长 | 删除 `vms/<id>/vars.fd` 让其按 code 大小重建（会丢启动项） |
 | `ISO_NOT_FOUND` | 路径失效（重装/移动） | 重新导入 ISO |
+| `VNC_LAN_UNAVAILABLE` | 选了局域网模式；当前 QEMU 构建缺少 DES 加密后端，VNC 密码认证无法启动 | 改回「仅本机」，用 `adb forward` 查看画面；恢复局域网需重建 QEMU 时编入支持 DES 的加密后端 |
 | `DISK_FREE_LOW`（警告） | 剩余 < 2 GB | qcow2 精简置备但写时增长 |
 
 ## 启动后失败（QEMU 日志归因）
@@ -82,7 +83,7 @@ qcow2 删掉文件即完全回收；guest 内删除文件不会自动缩小镜�
 
 **客户端连不上 VNC**
 先确认 VM 处于「运行中」——VNC 端口只在 QEMU 进程活着时存在。仅本机模式必须
-`adb forward`；局域网模式确认手机与 PC 在同一网段，且密码输入正确（大小写、8 字符上限）。
+`adb forward`。局域网模式暂不可用：选了它会在启动前被校验器以 `VNC_LAN_UNAVAILABLE` 拦下。
 
 **VNC 连上但黑屏**
 固件还没初始化显卡（启动前 10–30 秒正常），或 `virtio-gpu` 未被 edk2 驱动。
@@ -90,7 +91,7 @@ qcow2 删掉文件即完全回收；guest 内删除文件不会自动缩小镜�
 
 **没有画面（App 内预期行为）**
 App 不内置渲染器。`adb forward tcp:5900 tcp:5900` 后用桌面 VNC 客户端连
-`127.0.0.1:5900`，或在虚拟机配置里切到「局域网」直接连手机 IP。
+`127.0.0.1:5900`。局域网模式暂不可用，不要切到「局域网」。
 
 ## 抓诊断
 

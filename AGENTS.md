@@ -26,11 +26,11 @@ cd android
 
 - `scripts/verify.sh` 是**提交前唯一需要手工跑的自检**：检查执行层架构、跑单元测试、检查 APK 的 `extractNativeLibs=true`。它是 bash-only，依赖 `file` 与 `aapt2`，按 `${ANDROID_HOME:-/opt/android-sdk}` 找 SDK。在 Windows 上用 Git Bash / WSL，别在 PowerShell 里跑。
 - 需要 JDK 17+ 与 Android SDK 35；Windows 下用 `gradlew.bat`。
-- 没有 CI、没有 pre-commit 配置。
+- 有 GitHub Actions CI（`.github/workflows/ci.yml`，在 JDK 17 + Android SDK 35 上跑单元测试）；没有 pre-commit 配置。
 
 ## 测试
 
-7 个文件共 82 个用例，全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。
+14 个文件共 133 个用例，全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。
 
 `Qcow2CreatorTest` 里两个用例通过 `assumeTrue` 依赖宿主机的 `/usr/bin/qemu-img`（还有一个要求 `qemu-io`）：宿主机没装就**静默跳过**。所以「测试全绿」不等于 qcow2 格式真的被交叉校验过。
 
@@ -62,7 +62,7 @@ cd android
 - **降级只换光驱、不换输入（2026-10-25 实测）**：`usb-storage` 起步在本机必 SIGILL（exit=132），但把光驱换成 `virtio-scsi-pci` + `ich9-ahci` 后，`usb-kbd`/`usb-tablet` 仍可用——隔离实验里 VNC 方向键把 GRUB 高亮从第一项移到第三项、倒计时停止，Linux 客户机枚举 USB 后 QEMU 存活；同一台机器上 `virtio-keyboard-pci` 则完全收不到键（方向键无反应、倒计时照走）。0.10.9 的降级曾把 `usbInput` 一起改成 false 并写回 config，等于降级一次后键盘永久失效；现已改为只换光驱、输入保持 USB，仅当同一档再次被信号杀死才把输入降为 virtio。
 - **停止路径**：客户机已进内核时正常关机 `exit=0`；若还停在引导器阶段，`quit` 路径可能以 SIGILL（exit=132）退出，`stoppedByUser=true`、`stop.done` 仍会正常到达，不算失败。
 - **「虚拟机自己关闭」的根因（2026-10-26 定位，0.10.10 修复）**：未打补丁的执行层在 50–282 秒内随机以 `exit=132` 消失，UI 只显示 `EXITED_ERROR`、`failureHint=null`（FailureHints 有意不把 132/139 归类）。tombstone 恒为 `signal 4 (SIGILL), code 2 (ILL_ILLOPN)`，PC 在 bionic `longjmp+460`（`autiasp`），`pac_enabled_keys=0xf`，`x0=x1=3`，18 帧栈（libc → QEMU 0x10c03ac → coroutine → `sigsuspend`）在 App 启动与独立 shell 启动的运行里逐帧一致。这是 PAC 跨线程恢复失败，与客户机、用户操作、OOM 无关；客户端串口日志停在中途且无 panic。补丁版用同一套 argv 跑 11 分钟不崩，并首次进到 **Windows 11 安装程序窗口**（800x600，ramfb）。
-- **VNC 密码不可用**：这个 QEMU 构建的加密后端不支持 DES（RFB 3.8 的 VNC 密码就是 DES），所以 `password=on` 会在启动前 exit=1；而 `ConfigValidator` 强制局域网模式必须设密码 ⇒ **局域网模式不可用**，只有「仅本机 + `adb forward`」是通的。要恢复局域网，得在重建执行层时编入支持 DES 的加密后端。
+- **VNC 密码不可用**：这个 QEMU 构建的加密后端不支持 DES（RFB 3.8 的 VNC 密码就是 DES），所以 `password=on` 会在启动前 exit=1；而 `ConfigValidator` 以 `VNC_LAN_UNAVAILABLE` 在启动前拦下局域网配置 ⇒ **局域网模式不可用**，只有「仅本机 + `adb forward`」是通的。要恢复局域网，得在重建执行层时编入支持 DES 的加密后端。
 - **两个很省事的工具链事实**：① shell 能直接执行 APK 里的 `libqemu-system-aarch64.so`（`/data/app/**/lib/arm64/` 是只读+可执行路径，`LD_LIBRARY_PATH` 指过去即可），不用过 App 就能验 QEMU 参数；② 每次重装 APK 都会换掉 `/data/app/~~<hash>/<pkg>-<hash>` 里的哈希，写死的路径立刻过期。
 
 **最大的未决问题：主循环停摆（可复现）**。客户机跑几分钟后，主线程睡眠、TCG 的 vCPU 线程仍在满核转，而 VNC/QMP 不再响应（监听套接字的 `Recv-Q` 堆着没人 accept 的连接）。判读工具上有个坑：**跨 UID 读 `/proc/<pid>/stat` 的 utime/stime 不可靠**（Android 对别的 UID 的聚合值会冻结或为零），要读就逐个读 `/proc/<pid>/task/<tid>/stat`。`wchan` 全是 0、`/proc/<pid>/io`、`/proc/<pid>/stack`、`debuggerd -b` 都被 SELinux/权限拒绝，所以卡死点只能靠 App 内部采。
@@ -70,7 +70,7 @@ cd android
 ## 源码比 prose 新（别被过时说明带跑）
 
 - `docs/architecture.md` 的分层图和 ADR-004、以及 `QemuEnvironment.resolveQemuImg()` 的注释都写着「qcow2 失败回退 raw」。**没有 raw 回退**：`DiskProvisioner` 只产出 qcow2，raw 落在 FUSE 上可能真的吃掉全部虚拟容量。以代码为准。
-- README 的「已知限制」说 VNC 只监听 `127.0.0.1`，实际存在 `VncAccess.LAN`（校验器要求局域网模式必须设密码）。
+- README 的「已知限制」说 VNC 只监听 `127.0.0.1`，实际存在 `VncAccess.LAN`，但校验器以 `VNC_LAN_UNAVAILABLE` 拦下它（缺少 DES 后端），所以只有「仅本机」是通的。
 - README 写「37 个单元测试」，实际 67 个。
 - README 的「验证状态」写明真机启动与 Windows 安装全流程**均未验证**——这是有意的未知项，不要把沙箱里的结论当成设备上的结论。
 

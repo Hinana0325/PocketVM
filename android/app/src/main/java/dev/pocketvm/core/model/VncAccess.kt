@@ -14,7 +14,12 @@ import kotlinx.serialization.Serializable
  *
  * [LAN] — binds 0.0.0.0 so a PC on the same Wi-Fi can connect directly. Requires
  * a password: an unauthenticated VNC endpoint on a shared network hands anyone
- * the guest's screen and keyboard.
+ * the guest's screen and keyboard. Currently unavailable: the QEMU build has
+ * no DES crypto backend, so a password-protected VNC server cannot start;
+ * [dev.pocketvm.core.config.ConfigValidator] rejects LAN configs with
+ * `VNC_LAN_UNAVAILABLE`. The value is kept so previously saved configs still
+ * deserialize; do not offer it as a working option until the QEMU build
+ * includes a DES-capable backend.
  */
 @Serializable
 enum class VncAccess { LOOPBACK, LAN }

@@ -164,12 +164,19 @@ class ConfigValidator {
                 issues += Issue(Severity.WARNING, "VNC_PORT_RANGE", "VNC 端口超出 5900-5999，可能与系统服务冲突。")
         }
 
-        // LAN without a password is an unauthenticated desktop on the network.
-        if (config.vncAccess == dev.pocketvm.core.model.VncAccess.LAN && config.vncPassword.isNullOrBlank()) {
+        // LAN mode is unavailable in the current QEMU build: its crypto
+        // backend has no DES support, so a password-protected VNC server
+        // refuses to start (exit=1) before machine init. Reject it here,
+        // at validation time, instead of letting QEMU fail at launch.
+        // Even with a password, LAN cannot start in this build, so the
+        // password check it used to have is subsumed by this error.
+        if (config.vncAccess == dev.pocketvm.core.model.VncAccess.LAN) {
             issues += Issue(
                 Severity.ERROR,
-                "VNC_LAN_NO_PASSWORD",
-                "局域网访问必须设置 VNC 密码，否则网络上的任何人都能直接控制这台虚拟机。",
+                "VNC_LAN_UNAVAILABLE",
+                "局域网模式暂不可用：当前 QEMU 构建缺少 DES 加密后端，VNC 密码认证无法启动，" +
+                    "设置密码也会启动失败。请改用「仅本机」访问，用 adb forward " +
+                    "tcp:<端口> tcp:<端口> 后连 127.0.0.1:<端口>；恢复局域网需重建 QEMU 时编入支持 DES 的加密后端。",
             )
         }
 

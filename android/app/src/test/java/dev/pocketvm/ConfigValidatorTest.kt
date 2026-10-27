@@ -172,15 +172,15 @@ class ConfigValidatorTest {
         val report = validator.validate(
             input(config = config(vncAccess = dev.pocketvm.core.model.VncAccess.LAN, vncPassword = null)),
         )
-        assertTrue(report.errors.any { it.code == "VNC_LAN_NO_PASSWORD" })
+        assertTrue(report.errors.any { it.code == "VNC_LAN_UNAVAILABLE" })
     }
 
     @Test
-    fun `lan access with a password passes`() {
+    fun `lan access with a password is still unavailable in this qemu build`() {
         val report = validator.validate(
             input(config = config(vncAccess = dev.pocketvm.core.model.VncAccess.LAN, vncPassword = "secret12")),
         )
-        assertFalse(report.errors.any { it.code == "VNC_LAN_NO_PASSWORD" })
+        assertTrue(report.errors.any { it.code == "VNC_LAN_UNAVAILABLE" })
     }
 
     @Test

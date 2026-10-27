@@ -19,31 +19,26 @@ import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.unit.sp
 
-// ---- brand palette (amber identity, kept across the redesign) ----
-private val Amber = Color(0xFFFFB74D)
-private val AmberDark = Color(0xFFC8871E)
-private val Ink = Color(0xFF0E0E12)
-private val Surface = Color(0xFF17171D)
-private val SurfaceHigh = Color(0xFF22222B)
-private val SurfaceHighest = Color(0xFF2A2A34)
-private val Muted = Color(0xFF9A9AA6)
+// ---- neutral grey-white palette (Google Stitch redesign, 2026-10-27) ----
+// No warm tones anywhere in the theme. Status colours are muted and used
+// only where they carry meaning.
 
-/** Success green, shared with StatusChip(Tone.Ok) so chips and text agree. */
-val Success = Color(0xFF5DD39E)
-/** Warning amber, for staged/transient states. */
-val Warning = Amber
-/** Destructive red, for failures and delete confirmations. */
-val Danger = Color(0xFFFF6B6B)
+/** Muted running green, shared with StatusChip(Tone.Ok) so chips and text agree. */
+val Success = Color(0xFF4C9A6B)
+/** Warning is a neutral grey, for staged/transient states. */
+val Warning = Color(0xFF8A8A8A)
+/** Muted destructive red, for failures and delete confirmations. */
+val Danger = Color(0xFFC15B5B)
 
 /**
- * The hero gradient: a warm amber sweep that reads as "PocketVM" at a glance
- * while staying dark-mode friendly. Used on the list header and empty states.
+ * The hero gradient: a neutral grey sweep. Used on the list header and empty
+ * states.
  */
 val HeroGradient = Brush.verticalGradient(
     listOf(
-        Color(0xFFFFC163),
-        Color(0xFFE08A1E),
-        Color(0xFF8A530C),
+        Color(0xFF3A3A3A),
+        Color(0xFF262626),
+        Color(0xFF121212),
     ),
 )
 
@@ -53,57 +48,56 @@ val ShapeCard = RoundedCornerShape(16.dp)
 val ShapeChip = RoundedCornerShape(50.dp)
 
 private val DarkScheme = darkColorScheme(
-    primary = Amber,
-    onPrimary = Color(0xFF1A1200),
-    primaryContainer = AmberDark,
-    onPrimaryContainer = Color(0xFF1A1200),
-    secondary = Color(0xFF8FB8FF),
-    onSecondary = Color(0xFF08203F),
-    secondaryContainer = Color(0xFF233A57),
-    onSecondaryContainer = Color(0xFFD9E2FF),
-    background = Ink,
-    onBackground = Color(0xFFECECF1),
-    surface = Surface,
-    onSurface = Color(0xFFECECF1),
-    surfaceVariant = SurfaceHigh,
-    onSurfaceVariant = Muted,
-    surfaceContainer = Surface,
-    surfaceContainerHigh = SurfaceHigh,
-    surfaceContainerHighest = SurfaceHighest,
+    primary = Color(0xFFC9CDD3),
+    onPrimary = Color(0xFF1A1A1A),
+    primaryContainer = Color(0xFF3A3A3A),
+    onPrimaryContainer = Color(0xFFF2F2F2),
+    secondary = Color(0xFF9AA0A6),
+    onSecondary = Color(0xFF1A1A1A),
+    secondaryContainer = Color(0xFF262626),
+    onSecondaryContainer = Color(0xFFF2F2F2),
+    background = Color(0xFF121212),
+    onBackground = Color(0xFFF2F2F2),
+    surface = Color(0xFF1E1E1E),
+    onSurface = Color(0xFFF2F2F2),
+    surfaceVariant = Color(0xFF262626),
+    onSurfaceVariant = Color(0xFF9AA0A6),
+    surfaceContainer = Color(0xFF262626),
+    surfaceContainerHigh = Color(0xFF2E2E2E),
+    surfaceContainerHighest = Color(0xFF383838),
     error = Danger,
-    onError = Color(0xFF2A0505),
-    outline = Color(0xFF3A3A46),
-    outlineVariant = Color(0xFF2B2B35),
+    onError = Color(0xFFFFFFFF),
+    outline = Color(0xFF3A3A3A),
+    outlineVariant = Color(0xFF262626),
     scrim = Color(0xFF000000),
 )
 
 /**
- * 浅色主题用「暖纸」基调：背景比纯白柔和，卡片是更浅的奶油色，
- * 主色改成更深的琥珀以保证文字对比度（#B8730E on #FAF6EE ≈ 4.9:1）。
+ * 浅色主题用中性灰白基调：背景为浅灰，卡片为白色。
+ * Container 色均为中性灰，无暖色。
  */
 private val LightScheme = lightColorScheme(
-    // 深一档的琥珀：在暖纸背景上 4.58:1，按钮白字 4.93:1（WCAG AA）。
-    primary = Color(0xFFA65F00),
+    primary = Color(0xFF3F4756),
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFFFE1B0),
-    onPrimaryContainer = Color(0xFF3A2400),
-    secondary = Color(0xFF3A5FA8),
+    primaryContainer = Color(0xFFE1E1E1),
+    onPrimaryContainer = Color(0xFF1A1A1A),
+    secondary = Color(0xFF6B7280),
     onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFD9E2FF),
-    onSecondaryContainer = Color(0xFF001945),
-    background = Color(0xFFFAF6EE),
-    onBackground = Color(0xFF1C1A16),
-    surface = Color(0xFFFFFDF8),
-    onSurface = Color(0xFF1C1A16),
-    surfaceVariant = Color(0xFFEDE5D8),
-    onSurfaceVariant = Color(0xFF6B6455),
-    surfaceContainer = Color(0xFFF6F0E5),
-    surfaceContainerHigh = Color(0xFFF1EADC),
-    surfaceContainerHighest = Color(0xFFEAE1D2),
-    error = Color(0xFFB3261E),
+    secondaryContainer = Color(0xFFE8E8E8),
+    onSecondaryContainer = Color(0xFF1A1A1A),
+    background = Color(0xFFFAFAFA),
+    onBackground = Color(0xFF1A1A1A),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF1A1A1A),
+    surfaceVariant = Color(0xFFF1F1F1),
+    onSurfaceVariant = Color(0xFF6B7280),
+    surfaceContainer = Color(0xFFF1F1F1),
+    surfaceContainerHigh = Color(0xFFE8E8E8),
+    surfaceContainerHighest = Color(0xFFDEDEDE),
+    error = Danger,
     onError = Color(0xFFFFFFFF),
-    outline = Color(0xFFD5C9B6),
-    outlineVariant = Color(0xFFE5DCCB),
+    outline = Color(0xFFD9D9D9),
+    outlineVariant = Color(0xFFE8E8E8),
     scrim = Color(0xFF000000),
 )
 

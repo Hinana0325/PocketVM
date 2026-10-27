@@ -12,7 +12,7 @@ VmSession (runtime/) ── 唯一的进程所有者：校验 → 置备 → for
     ├─ QemuCommandBuilder 纯函数，argv 可单测
     ├─ QmpClient         Unix socket 上的 QMP，用于优雅关机
     ├─ FirmwareManager   pflash code/vars 的等长约束
-    ├─ DiskProvisioner   qcow2，失败回退 raw
+    ├─ DiskProvisioner   只产出 qcow2，没有 raw 回退
     └─ RunManifestStore  启动前写盘的 argv 快照
 ```
 
@@ -33,7 +33,7 @@ Idle → Preparing(step) → Running(pid, port) → Stopping → Exited(code, hi
 | 1 | `QemuEnvironment.resolve()` 扫描 `nativeLibraryDir`，执行 `--version` | `QEMU_MISSING`，附带每个候选的失败原因 |
 | 2 | `ConfigValidator` 校验内存/固件/ISO/权限 | 阻止 fork，返回结构化错误列表 |
 | 3 | `FirmwareManager.prepare()` 校验 code/vars 等长，缺失则按 code 大小创建 | 不等长 → 明确提示删除 vars 重建 |
-| 4 | `DiskProvisioner.ensure()` qemu-img 或 raw | 置备失败 → 中止，不产生半成品 manifest |
+| 4 | `DiskProvisioner.ensure()` qemu-img 或内置 QCOW2 写入器，只产出 qcow2 | 置备失败 → 中止，不产生半成品 manifest |
 | 5 | 构建 argv | 纯函数，无失败路径 |
 | 6 | **写 manifest**（argv / 固件 / 磁盘 / 日志路径） | 崩溃也留痕 |
 | 7 | `ProcessBuilder` fork，stdout+stderr 重定向到日志 | fork 失败 → `LAUNCH_FAILED` |
@@ -64,9 +64,10 @@ VNC 只绑 `127.0.0.1`，不暴露到局域网。
 共享 vars 会让两台 VM 的启动项互相污染，且并发写会破坏 flash 镜像。
 代价是每台 VM 多占一份固件大小（64 MB）的空间。
 
-**ADR-004 磁盘格式可降级**
+**ADR-004 磁盘格式只用 qcow2，不降级**
 `qemu-img` 是第二个二进制，打包失败或缺少依赖时不应让整个 MVP 不可用。
-检测到没有 `qemu-img` 就退化成 sparse raw，manifest 里如实记录 `diskFormat=raw`。
+检测到没有 `qemu-img` 时由内置写入器直接写 QCOW2 v3 头，始终只产出 qcow2，
+没有 raw 回退：raw 落在 FUSE 上可能真的吃掉全部虚拟容量。
 
 ## 已知技术债
 

@@ -727,8 +727,8 @@ private fun OverviewTab(
                     )
                 }
                 Text(
-                    "协议 RFB 3.8。局域网模式下 VNC 认证是 DES（8 字符密钥），只适合可信网络；" +
-                        "需要更强隔离时用「仅本机」+ 端口转发。",
+                    "协议 RFB 3.8。局域网模式暂不可用：当前 QEMU 构建缺少 DES 加密后端，" +
+                        "VNC 密码认证无法启动（校验器会报 VNC_LAN_UNAVAILABLE）。请用「仅本机」+ adb forward。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -753,7 +753,7 @@ private fun OverviewTab(
                             "只监听 127.0.0.1：电脑上执行 adb forward tcp:<手机端口> tcp:<手机端口> 后，" +
                                 "连接 127.0.0.1:<手机端口>。"
                         } else {
-                            "监听 0.0.0.0：同一局域网内直接连 手机IP:<手机端口>。" +
+                            "局域网模式暂不可用（VNC_LAN_UNAVAILABLE），请改回「仅本机」并用 adb forward。" +
                                 "转发的服务仍需各自的认证（RDP/SSH 密码等）。"
                         },
                         style = MaterialTheme.typography.bodySmall,

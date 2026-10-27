@@ -155,8 +155,8 @@ fun StatusChip(
     val dark = onDarkSurface || isSystemInDarkTheme()
     // 浅色主题下用加深的语义色，16% 透明底上的 11sp 文本也能过 AA（≥4.5:1）。
     val color = when (tone) {
-        Tone.Idle -> if (dark) Color(0xFF8A8A96) else Color(0xFF5F594B)
-        Tone.Busy -> if (dark) Color(0xFFFFB74D) else Color(0xFF7A4E00)
+        Tone.Idle -> if (dark) Color(0xFF8A8A8A) else Color(0xFF6B7280)
+        Tone.Busy -> if (dark) Color(0xFFC9CDD3) else Color(0xFF3F4756)
         Tone.Ok -> if (dark) Success else Color(0xFF24614A)
         Tone.Error -> if (dark) Danger else Color(0xFFA02020)
     }
@@ -320,7 +320,7 @@ fun PocketNavBar(current: Screen, onSelect: (Screen) -> Unit) {
 }
 
 /**
- * 品牌头图：深色玻璃 + 琥珀光晕 + 渐变字。比纯色渐变更有层次，
+ * 品牌头图：深色灰面 + 灰色光晕 + 渐变字。比纯色渐变更有层次，
  * 也顺手把「运行中」等实时信息收进头图，首页不再是一排孤立的小卡片。
  */
 @Composable
@@ -335,28 +335,28 @@ fun HeroHeader(
         modifier = modifier
             .fillMaxWidth()
             .clip(ShapeHero)
-            .background(Brush.linearGradient(listOf(Color(0xFF23232E), Color(0xFF101015))))
+            .background(Brush.linearGradient(listOf(Color(0xFF262626), Color(0xFF121212))))
             .drawWithCache {
-                val amberCenter = Offset(size.width * 0.92f, size.height * 0.02f)
-                val amberRadius = size.width * 0.85f
-                val amberBrush = Brush.radialGradient(
-                    listOf(Color(0xFFFFB74D).copy(alpha = 0.34f), Color.Transparent),
-                    center = amberCenter,
-                    radius = amberRadius,
+                val glowCenter = Offset(size.width * 0.92f, size.height * 0.02f)
+                val glowRadius = size.width * 0.85f
+                val glowBrush = Brush.radialGradient(
+                    listOf(Color(0xFFC9CDD3).copy(alpha = 0.22f), Color.Transparent),
+                    center = glowCenter,
+                    radius = glowRadius,
                 )
-                val blueCenter = Offset(size.width * 0.02f, size.height * 1.02f)
-                val blueRadius = size.width * 0.7f
-                val blueBrush = Brush.radialGradient(
-                    listOf(Color(0xFF4C7DFF).copy(alpha = 0.16f), Color.Transparent),
-                    center = blueCenter,
-                    radius = blueRadius,
+                val greyCenter = Offset(size.width * 0.02f, size.height * 1.02f)
+                val greyRadius = size.width * 0.7f
+                val greyBrush = Brush.radialGradient(
+                    listOf(Color(0xFF9AA0A6).copy(alpha = 0.14f), Color.Transparent),
+                    center = greyCenter,
+                    radius = greyRadius,
                 )
                 onDrawBehind {
-                    drawCircle(brush = amberBrush, radius = amberRadius, center = amberCenter)
-                    drawCircle(brush = blueBrush, radius = blueRadius, center = blueCenter)
+                    drawCircle(brush = glowBrush, radius = glowRadius, center = glowCenter)
+                    drawCircle(brush = greyBrush, radius = greyRadius, center = greyCenter)
                 }
             }
-            .border(1.dp, Color(0xFFFFB74D).copy(alpha = 0.24f), ShapeHero)
+            .border(1.dp, Color(0xFFC9CDD3).copy(alpha = 0.24f), ShapeHero)
             .padding(20.dp),
     ) {
         Text(
@@ -373,7 +373,7 @@ fun HeroHeader(
             Text(
                 title,
                 style = MaterialTheme.typography.displaySmall.copy(
-                    brush = Brush.linearGradient(listOf(Color(0xFFFFD98E), Color(0xFFFFA726))),
+                    brush = Brush.linearGradient(listOf(Color(0xFFF2F2F2), Color(0xFFC9CDD3))),
                     letterSpacing = 0.4.sp,
                 ),
             )

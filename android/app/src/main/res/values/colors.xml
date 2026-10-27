@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="brand_amber">#FFB74D</color>
-    <color name="brand_ink">#0E0E12</color>
-    <!-- 窗口背景底色：浅色主题用暖纸色；values-night 覆盖成墨色。 -->
-    <color name="app_bg_base">#FAF6EE</color>
+    <color name="brand_grey">#C9CDD3</color>
+    <color name="brand_ink">#121212</color>
+    <!-- 窗口背景底色：浅色主题用浅灰；values-night 覆盖成深灰。 -->
+    <color name="app_bg_base">#FAFAFA</color>
 </resources>

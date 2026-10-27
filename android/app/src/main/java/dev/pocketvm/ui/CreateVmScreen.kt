@@ -389,6 +389,15 @@ fun CreateVmScreen(
                     }
                 }
 
+                if (draft.vncAccess == VncAccess.LAN) {
+                    Text(
+                        "局域网模式暂不可用：当前 QEMU 构建缺少 DES 加密后端，VNC 密码认证无法启动，" +
+                            "保存后启动会被校验器拦下。请改回「仅本机」，用 adb forward 查看画面。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
                 OutlinedTextField(
                     value = draft.vncPassword.orEmpty(),
                     onValueChange = { value -> onUpdate { it.copy(vncPassword = value.take(8).ifBlank { null }) } },
@@ -399,8 +408,8 @@ fun CreateVmScreen(
 
                 Text(
                     if (draft.vncAccess == VncAccess.LAN) {
-                        val ip = state.localIp ?: "设备局域网 IP"
-                        "外部客户端直接连 $ip:${draft.vncPort}。密码为空时任何同网设备都能接管画面与键盘。"
+                        "局域网模式暂不可用，启动会被校验器拦下（VNC_LAN_UNAVAILABLE）。" +
+                            "请改回「仅本机」，用 adb forward 查看画面。"
                     } else {
                         "只监听 127.0.0.1。外部查看先执行 adb forward tcp:${draft.vncPort} tcp:${draft.vncPort}，" +
                             "再连 127.0.0.1:${draft.vncPort}。"
@@ -488,13 +497,12 @@ fun CreateVmScreen(
 
                 Text(
                     if (draft.vncAccess == VncAccess.LAN) {
-                        "「仅本机」模式下转发只监听 127.0.0.1：以远程桌面预设为例，" +
-                            "电脑上先 adb forward tcp:5389 tcp:5389，再连 127.0.0.1:5389。" +
-                            "「局域网」模式下直接连 手机IP:手机端口（与 VNC 同一敞口策略，服务自身的认证仍是第一道门）。" +
+                        "局域网模式暂不可用（VNC_LAN_UNAVAILABLE），转发也不会随它生效。" +
+                            "请改回「仅本机」：电脑上先 adb forward tcp:5389 tcp:5389，再连 127.0.0.1:5389。" +
                             "Android 应用无法绑定 1024 以下端口，故手机侧从 1024 起。"
                     } else {
                         "转发只监听 127.0.0.1：以远程桌面预设为例，电脑上先 adb forward tcp:5389 tcp:5389，" +
-                            "再连 127.0.0.1:5389。需要真正局域网可达时，把上方访问方式切到「局域网」。" +
+                            "再连 127.0.0.1:5389。局域网模式暂不可用，无法直接连手机 IP。" +
                             "Android 应用无法绑定 1024 以下端口，故手机侧从 1024 起。"
                     },
                     style = MaterialTheme.typography.bodySmall,
