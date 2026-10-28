@@ -27,6 +27,16 @@ PocketVM：在未 Root 的 arm64 Android 手机上用 QEMU TCG 跑 Windows ARM64
 - 平台切换时强制 `displayDevice = VIRTIO_GPU`、`bootFromCd = false`、内存 ≥ 4 GB；编辑页隐藏 ISO/驱动盘/磁盘控制器（Android 镜像自带引导）。
 - GSI 组件拼装尚未落地：实测把 SDK 的 `android-36;google_apis;arm64-v8a`（kernel-ranchu + ramdisk.img + system.img/vendor.img）放到 QEMU `virt` 上，内核与 init first stage 能跑、virtio-blk 能识别，但 Android 13+ 的 first-stage 从设备树读 fstab；补 `firmware/android/fstab` 后已能找到 metadata 分区，仍在 first-stage 静默 `reboot('bootloader')`，未定位到具体失败点。不要把这个当成「Android 已经能启动」。
 
+## 手表系统（Wear OS）研究结论（2026-10-28）
+
+- **watchOS 不可行**：Inferno 只模拟 iPhone 11（A13 / t8030），Apple Watch 的 S 系列 SoC 与外设没有开源模拟方案。
+- **Wear OS 3（`system-images;android-30;android-wear;arm64-v8a`）在 QEMU `virt` 上的实测**：
+  - 内核 5.4.86 **只支持 GICv2**；`gic-version=3` 时无任何串口输出，必须 `-M virt -cpu cortex-a57`。
+  - 磁盘顺序：`vda` = metadata（GPT 分区 `metadata`）、`vdb` = system.img（GPT `vbmeta` + `super`）、`vdc` = userdata。
+  - 能进 Android second stage：ueventd、SELinux、`/system` 与 `/vendor` 挂载、apexd、surfaceflinger 启动，virtio-gpu 的 DRM 驱动初始化成功。
+  - **卡在 vendor 图形 HAL**：`hwcomposer.ranchu.so` / `android.hardware.graphics.mapper@3.0-impl-ranchu.so` 依赖 goldfish_pipe/sync；vendor EGL 只有 `libEGL_emulation`（host 编码器），镜像里没有 drm_hwcomposer / minigbm / 软件合成器，SurfaceFlinger 与 zygote 崩溃循环。
+  - 要真正显示，需要移植 Android 图形栈（minigbm + drm_hwcomposer + 软件 GL，或把 goldfish 设备搬进 QEMU），属于多天的平台级工程，不是 App 侧能解决的。
+
 ## 常用命令
 
 Gradle 根是 `android/`，不是仓库根。全部命令都要先 `cd android`。

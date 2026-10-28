@@ -68,6 +68,8 @@
 - Android 首次启动会格式化 userdata，耗时比 Linux 长；建议先用小分辨率、4 GB 内存试。
 - 没有导入镜像时启动会被拦下，不会创建空盘。
 
+Wear OS 方面：Wear OS 3（arm64）实测能进 Android second stage（/system、/vendor 挂载、apexd、SurfaceFlinger 启动），但 vendor 图形 HAL 只有 goldfish/ranchu 实现，缺少 drm_hwcomposer / minigbm，SurfaceFlinger 会崩溃循环，所以暂未提供手表机型。watchOS 没有可用的开源模拟方案。
+
 ## 为什么 QEMU 必须叫 `libqemu-system-aarch64.so`
 
 Android 10 起 W^X 生效：`filesDir` 里的文件即使 `chmod +x` 也会 `EACCES`。
