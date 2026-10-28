@@ -57,10 +57,12 @@ fun CreateVmScreen(
     onImportFirmware: (Uri) -> Unit,
     onSetPlatform: (VmPlatform) -> Unit,
     onImportApple: (Uri) -> Unit,
+    onImportAndroidDisk: (Uri) -> Unit,
     contentPadding: androidx.compose.foundation.layout.PaddingValues = androidx.compose.foundation.layout.PaddingValues(0.dp),
 ) {
     val draft = state.draft ?: return
     val isApple = draft.platform == VmPlatform.APPLE_T8030
+    val isAndroid = draft.platform == VmPlatform.ANDROID_ARM64
     val appleStatus = state.appleAssets[draft.id]
     var firmwareMenu by remember { mutableStateOf(false) }
     var imageMenu by remember { mutableStateOf(false) }
@@ -95,6 +97,9 @@ fun CreateVmScreen(
     }
     val applePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(onImportApple)
+    }
+    val androidDiskPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(onImportAndroidDisk)
     }
 
     // Backing out of the wizard used to throw away every edit without asking.
@@ -152,7 +157,7 @@ fun CreateVmScreen(
                 SpecChip(draft.platform.label)
                 SpecChip("${draft.cpuCores} vCPU")
                 SpecChip("${draft.memoryMb} MB")
-                if (!isApple) {
+                if (!isApple && !isAndroid) {
                     SpecChip("${draft.diskSizeGb} GB")
                     SpecChip(draft.displayDevice.label)
                     SpecChip(
@@ -205,7 +210,7 @@ fun CreateVmScreen(
                     valueText = "${draft.memoryMb} MB",
                     onChange = { mem -> onUpdate { it.copy(memoryMb = (mem / 512).toInt() * 512) } },
                 )
-                if (!isApple) {
+                if (!isApple && !isAndroid) {
                     SliderRow(
                         label = "磁盘容量",
                         value = draft.diskSizeGb.toFloat(),
@@ -282,6 +287,36 @@ fun CreateVmScreen(
                 }
             }
 
+            if (isAndroid) {
+                SectionCard(
+                    title = "Android 磁盘镜像",
+                    subtitle = "导入可 UEFI 启动的 arm64 系统盘（.img / .qcow2）",
+                ) {
+                    val sizeMb = (state.androidDisks[draft.id] ?: 0L) / (1024 * 1024)
+                    Text(
+                        if (sizeMb > 0) "已导入：$sizeMb MB" else "尚未导入",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (sizeMb > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    )
+                    state.importing?.let { progress ->
+                        Text(
+                            "正在导入：${progress.copiedBytes / (1024 * 1024)} MB",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { androidDiskPicker.launch(arrayOf("*/*")) },
+                        enabled = state.importing == null,
+                    ) { Text("导入磁盘镜像") }
+                    Text(
+                        "完整磁盘镜像走 UEFI + virtio-gpu；GSI 组件（system.img + vendor.img + kernel/ramdisk）" +
+                            "的拼装还在实验阶段，目前请优先使用可直接启动的完整镜像。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             if (!isApple) {
             SectionCard(
                 title = "UEFI 固件",
@@ -322,7 +357,9 @@ fun CreateVmScreen(
                     Text("从文件管理器导入 QEMU_EFI.fd")
                 }
             }
+            }
 
+            if (!isApple && !isAndroid) {
             SectionCard(title = "安装介质", subtitle = "ISO 会被复制到应用私有目录，QEMU 不支持 content:// 路径") {
                 Text(
                     draft.isoPath?.substringAfterLast('/') ?: "尚未选择",
@@ -589,7 +626,7 @@ fun CreateVmScreen(
                 )
             }
 
-            if (!isApple) {
+            if (!isApple && !isAndroid) {
             SectionCard(
                 title = "磁盘控制器",
                 subtitle = "Windows 安装程序自带 NVMe 与 USB 驱动；virtio 需要额外注入驱动盘",

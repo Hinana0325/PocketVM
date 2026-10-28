@@ -21,6 +21,12 @@ PocketVM：在未 Root 的 arm64 Android 手机上用 QEMU TCG 跑 Windows ARM64
 - `nvme.7` 必须挂成 `nsid=7,nstype=8`（panic log），写成 7 内核会找不到 panic log；`sep_nvram` 必须是 64 KiB（旧还原包给 2 KiB，导入时补零）。
 - 已知限制：旧 restore 镜像与最新 Inferno 的 chip-id 补丁不兼容时，launchd 的 `data-protection` 启动任务 exit(2)，内核 `userspace panic: boot task failure: data-protection`。官方 FAQ 要求用最新代码重新 restore（companion VM + idevicerestore + 14.0b5 IPSW）并打 InfernoFSPatcher；这不是 Android 移植引入的问题。
 
+## Android（ARM64）机型（0.10.27）
+
+- 走现有 UEFI 链路，但磁盘是用户导入的**完整镜像**：落在 `vms/<id>/disk.qcow2`（qcow2 或 raw 均可），`DiskProvisioner.detectFormat()` 按 qcow2 魔数判断；不再创建空盘。
+- 平台切换时强制 `displayDevice = VIRTIO_GPU`、`bootFromCd = false`、内存 ≥ 4 GB；编辑页隐藏 ISO/驱动盘/磁盘控制器（Android 镜像自带引导）。
+- GSI 组件拼装尚未落地：实测把 SDK 的 `android-36;google_apis;arm64-v8a`（kernel-ranchu + ramdisk.img + system.img/vendor.img）放到 QEMU `virt` 上，内核与 init first stage 能跑、virtio-blk 能识别，但 Android 13+ 的 first-stage 从设备树读 fstab；补 `firmware/android/fstab` 后已能找到 metadata 分区，仍在 first-stage 静默 `reboot('bootloader')`，未定位到具体失败点。不要把这个当成「Android 已经能启动」。
+
 ## 常用命令
 
 Gradle 根是 `android/`，不是仓库根。全部命令都要先 `cd android`。

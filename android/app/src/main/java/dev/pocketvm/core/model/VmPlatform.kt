@@ -14,4 +14,5 @@ import kotlinx.serialization.Serializable
 enum class VmPlatform(val label: String) {
     UEFI_ARM64("Windows / Linux（UEFI）"),
     APPLE_T8030("iPhone 11（iOS）"),
+    ANDROID_ARM64("Android（ARM64）"),
 }

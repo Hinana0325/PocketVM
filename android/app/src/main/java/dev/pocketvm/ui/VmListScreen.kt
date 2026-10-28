@@ -134,6 +134,7 @@ fun VmListScreen(
                     vm = vm,
                     usedBytes = state.diskUsage[vm.id] ?: 0L,
                     appleStatus = state.appleAssets[vm.id],
+                    androidDiskBytes = state.androidDisks[vm.id] ?: 0L,
                     runtime = state.runtime,
                     runningId = runningId,
                     metrics = if (runningId == vm.id) state.metrics else null,
@@ -157,6 +158,8 @@ fun VmListScreen(
                 Text(
                     if (vm.platform == VmPlatform.APPLE_T8030) {
                         "已导入的 iOS 资源（含 25 GB 系统盘镜像）与全部日志都会被删除，无法恢复。"
+                    } else if (vm.platform == VmPlatform.ANDROID_ARM64) {
+                        "已导入的 Android 磁盘镜像与全部日志都会被删除，无法恢复。"
                     } else {
                         "虚拟磁盘（已用 ${(state.diskUsage[vm.id] ?: 0L) / (1024 * 1024)} MB）、" +
                             "UEFI 变量存储、已安装的系统与全部日志都会被删除，无法恢复。"
@@ -185,6 +188,7 @@ private fun VmCard(
     vm: VmConfig,
     usedBytes: Long,
     appleStatus: AppleAssets.Status?,
+    androidDiskBytes: Long,
     runtime: VmRuntimeState,
     runningId: String?,
     metrics: dev.pocketvm.diagnostics.VmMetrics?,
@@ -203,6 +207,7 @@ private fun VmCard(
     val exit = (runtime as? VmRuntimeState.Exited)?.takeIf { it.vmId == vm.id }
     val otherRunning = runningId != null && !isRunning
     val isApple = vm.platform == VmPlatform.APPLE_T8030
+    val isAndroid = vm.platform == VmPlatform.ANDROID_ARM64
 
     val accent: Color = when {
         isRunning -> Success
@@ -257,10 +262,10 @@ private fun VmCard(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            if (isApple) {
-                                "iPhone 11（t8030）· iOS"
-                            } else {
-                                vm.isoPath?.substringAfterLast('/') ?: "未挂载安装介质"
+                            when {
+                                isApple -> "iPhone 11（t8030）· iOS"
+                                isAndroid -> "Android（ARM64）· UEFI 磁盘镜像"
+                                else -> vm.isoPath?.substringAfterLast('/') ?: "未挂载安装介质"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -292,13 +297,16 @@ private fun VmCard(
                     if (isApple) {
                         SpecChip("iPhone 11")
                         SpecChip("iOS 14")
+                    } else if (isAndroid) {
+                        SpecChip("Android")
+                        SpecChip("ARM64")
                     } else {
                         SpecChip("${vm.diskSizeGb} GB")
                         SpecChip(vm.storageController.name.lowercase())
                     }
                 }
 
-                if (!isApple) {
+                if (!isApple && !isAndroid) {
                     UsageBar(usedBytes = usedBytes, totalGb = vm.diskSizeGb)
                 }
 
@@ -327,6 +335,8 @@ private fun VmCard(
                                 "iOS 资源：已导入 · 系统盘 ${appleStatus.rootDiskBytes / (1024 * 1024 * 1024)} GB"
                             else -> "iOS 资源缺少 ${appleStatus.missing.size} 项，请在编辑页导入"
                         }
+                    } else if (isAndroid) {
+                        if (androidDiskBytes > 0) "磁盘镜像：已导入 ${androidDiskBytes / (1024 * 1024)} MB" else "磁盘镜像：未导入"
                     } else {
                         "光驱 ${vm.cdTransport.label} · 固件 ${vm.firmwareCodePath?.substringAfterLast('/') ?: "内置"}" +
                             " · ${vm.launchMode.name.lowercase()}"

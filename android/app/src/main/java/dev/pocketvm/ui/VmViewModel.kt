@@ -13,6 +13,7 @@ import dev.pocketvm.core.config.Severity
 import dev.pocketvm.core.config.ValidationInput
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.CdTransport
+import dev.pocketvm.core.model.DisplayDevice
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
@@ -127,6 +128,8 @@ data class UiState(
     val lastGuestKeyOk: Boolean? = null,
     /** vmId -> iPhone 11 资源（固件 / NVMe 镜像）是否齐全。 */
     val appleAssets: Map<String, AppleAssets.Status> = emptyMap(),
+    /** vmId -> 导入的 Android 磁盘镜像字节数（0 = 未导入）。 */
+    val androidDisks: Map<String, Long> = emptyMap(),
 ) {
     val hasUnsavedChanges: Boolean get() = draft != null && draft != baseline
 }
@@ -251,21 +254,90 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setPlatform(platform: VmPlatform) = updateDraft { draft ->
         if (draft.platform == platform) return@updateDraft draft
-        val name = if (platform == VmPlatform.APPLE_T8030 &&
-            (draft.name.isBlank() || draft.name == VmConfig.DEFAULT_NAME)
-        ) {
-            "iPhone 11"
-        } else {
-            draft.name
+        val apple = platform == VmPlatform.APPLE_T8030
+        val android = platform == VmPlatform.ANDROID_ARM64
+        val defaultName = draft.name.isBlank() || draft.name == VmConfig.DEFAULT_NAME
+        val name = when {
+            apple && defaultName -> "iPhone 11"
+            android && defaultName -> "Android"
+            else -> draft.name
         }
         // t8030 在 TCG 下每多一个 vCPU/GB 都是实打实的宿主内存与线程开销；
         // 现有脚本用 7 vCPU / 6 GB，手机端先按 4 / 3 GB 起步，用户仍可再调。
+        // Android 走 virtio-gpu（GKI 自带 DRM 驱动），并且总是从磁盘启动。
         draft.copy(
             platform = platform,
             name = name,
-            cpuCores = if (platform == VmPlatform.APPLE_T8030) draft.cpuCores.coerceAtMost(4) else draft.cpuCores,
-            memoryMb = if (platform == VmPlatform.APPLE_T8030) draft.memoryMb.coerceAtMost(3072) else draft.memoryMb,
+            cpuCores = if (apple) draft.cpuCores.coerceAtMost(4) else draft.cpuCores,
+            memoryMb = when {
+                apple -> draft.memoryMb.coerceAtMost(3072)
+                android -> draft.memoryMb.coerceAtLeast(4096)
+                else -> draft.memoryMb
+            },
+            displayDevice = if (android) DisplayDevice.VIRTIO_GPU else draft.displayDevice,
+            bootFromCd = if (android) false else draft.bootFromCd,
+            isoPath = if (android) null else draft.isoPath,
+            driverIsoPath = if (android) null else draft.driverIsoPath,
         )
+    }
+
+    /**
+     * 导入一份 Android arm64 磁盘镜像（.img / .qcow2），直接放进 VM 的 disk 路径。
+     * qcow2/raw 的格式由 DiskProvisioner 按魔数判断，这里只负责完整落盘。
+     */
+    fun importAndroidDisk(uri: Uri) {
+        val draft = _ui.value.draft ?: return
+        val target = container.layout.diskFile(draft.id)
+        viewModelScope.launch {
+            _ui.update { it.copy(importing = ImportProgress(0, null), notice = null) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val input = getApplication<Application>().contentResolver.openInputStream(uri)
+                        ?: error("无法打开所选文件")
+                    val tmp = java.io.File(target.parentFile, target.name + ".part")
+                    tmp.parentFile?.mkdirs()
+                    input.use { stream ->
+                        tmp.outputStream().buffered(1 shl 20).use { out ->
+                            val buf = ByteArray(1 shl 20)
+                            var copied = 0L
+                            while (true) {
+                                val n = stream.read(buf)
+                                if (n <= 0) break
+                                out.write(buf, 0, n)
+                                copied += n
+                                _ui.update { state ->
+                                    state.copy(importing = ImportProgress(copied, null))
+                                }
+                            }
+                        }
+                    }
+                    if (tmp.length() < 64L * 1024 * 1024) {
+                        tmp.delete()
+                        error("镜像只有 ${tmp.length() / (1024 * 1024)} MB，不像是完整的系统盘")
+                    }
+                    if (target.exists()) target.delete()
+                    if (!tmp.renameTo(target)) error("无法写入目标文件")
+                    target.length()
+                }
+            }
+            result.fold(
+                onSuccess = { size ->
+                    _ui.update {
+                        it.copy(
+                            importing = null,
+                            notice = "已导入 Android 磁盘镜像（${size / (1024 * 1024)} MB）",
+                            androidDisks = it.androidDisks + (draft.id to size),
+                        )
+                    }
+                    refreshIssues(draft)
+                },
+                onFailure = { t ->
+                    _ui.update {
+                        it.copy(importing = null, notice = "Android 镜像导入失败：${t.message}")
+                    }
+                },
+            )
+        }
     }
 
     /**
@@ -822,6 +894,10 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 data.first.filter { it.platform == VmPlatform.APPLE_T8030 }
                     .associate { vm -> vm.id to AppleAssets.status(container.layout, vm.id) }
             }
+            val androidDisks = withContext(Dispatchers.IO) {
+                data.first.filter { it.platform == VmPlatform.ANDROID_ARM64 }
+                    .associate { vm -> vm.id to container.layout.diskFile(vm.id).length() }
+            }
             _ui.update {
                 it.copy(
                     vms = data.first,
@@ -830,6 +906,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     imageOptions = images,
                     lastRuns = lastRuns,
                     appleAssets = appleAssets,
+                    androidDisks = androidDisks,
                     deviceMemoryMb = deviceMemoryMb(),
                     freeSpaceMb = container.layout.freeSpaceBytes() / (1024 * 1024),
                 )
@@ -838,6 +915,48 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun refreshIssues(config: VmConfig) {
+        if (config.platform == VmPlatform.ANDROID_ARM64) {
+            viewModelScope.launch {
+                val size = withContext(Dispatchers.IO) {
+                    container.layout.diskFile(config.id).takeIf { it.isFile }?.length() ?: 0L
+                }
+                val issues = buildList {
+                    if (size == 0L) {
+                        add(
+                            Issue(
+                                Severity.ERROR,
+                                "ANDROID_DISK_MISSING",
+                                "还没有导入 Android 磁盘镜像。请点「导入磁盘镜像」选择 .img/.qcow2；" +
+                                    "镜像需要是可 UEFI 启动的 arm64 系统盘。",
+                            ),
+                        )
+                    } else if (size < 1024L * 1024 * 1024) {
+                        add(
+                            Issue(
+                                Severity.WARNING,
+                                "ANDROID_DISK_SMALL",
+                                "镜像只有 ${size / (1024 * 1024)} MB，可能不是完整的 Android 系统盘。",
+                            ),
+                        )
+                    }
+                    if (config.vncAccess == VncAccess.LAN) {
+                        add(
+                            Issue(
+                                Severity.ERROR,
+                                "VNC_LAN_UNAVAILABLE",
+                                "局域网模式暂不可用（缺少 DES 后端），请改回「仅本机」+ adb forward。",
+                            ),
+                        )
+                    }
+                }
+                if (_ui.value.draft == config || _ui.value.draft == null) {
+                    _ui.update {
+                        it.copy(issues = issues, androidDisks = it.androidDisks + (config.id to size))
+                    }
+                }
+            }
+            return
+        }
         // iOS 机型的校验和 UEFI 完全不同：没有固件/ISO/qcow2，只有「资源是否导入」。
         if (config.platform == VmPlatform.APPLE_T8030) {
             viewModelScope.launch {
