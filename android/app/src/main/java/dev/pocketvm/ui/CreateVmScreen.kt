@@ -293,8 +293,9 @@ fun CreateVmScreen(
                     subtitle = "导入可 UEFI 启动的 arm64 系统盘（.img / .qcow2）",
                 ) {
                     val sizeMb = (state.androidDisks[draft.id] ?: 0L) / (1024 * 1024)
+                    val fmt = state.androidFormats[draft.id] ?: "raw"
                     Text(
-                        if (sizeMb > 0) "已导入：$sizeMb MB" else "尚未导入",
+                        if (sizeMb > 0) "已导入：$fmt · $sizeMb MB" else "尚未导入",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (sizeMb > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                     )

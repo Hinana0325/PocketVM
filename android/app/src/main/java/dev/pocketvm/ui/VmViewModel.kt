@@ -19,6 +19,7 @@ import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.storage.AppleAssets
+import dev.pocketvm.storage.Qcow2Creator
 import dev.pocketvm.runtime.AnsiText
 import dev.pocketvm.runtime.LaunchOutcome
 import dev.pocketvm.runtime.SshConsole
@@ -130,6 +131,8 @@ data class UiState(
     val appleAssets: Map<String, AppleAssets.Status> = emptyMap(),
     /** vmId -> 导入的 Android 磁盘镜像字节数（0 = 未导入）。 */
     val androidDisks: Map<String, Long> = emptyMap(),
+    /** vmId -> 磁盘镜像格式（raw / qcow2）。 */
+    val androidFormats: Map<String, String> = emptyMap(),
 ) {
     val hasUnsavedChanges: Boolean get() = draft != null && draft != baseline
 }
@@ -327,6 +330,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                             importing = null,
                             notice = "已导入 Android 磁盘镜像（${size / (1024 * 1024)} MB）",
                             androidDisks = it.androidDisks + (draft.id to size),
+                            androidFormats = it.androidFormats + (draft.id to if (Qcow2Creator.isQcow2(target)) "qcow2" else "raw"),
                         )
                     }
                     refreshIssues(draft)
@@ -898,6 +902,13 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 data.first.filter { it.platform == VmPlatform.ANDROID_ARM64 }
                     .associate { vm -> vm.id to container.layout.diskFile(vm.id).length() }
             }
+            val androidFormats = withContext(Dispatchers.IO) {
+                data.first.filter { it.platform == VmPlatform.ANDROID_ARM64 }
+                    .associate { vm ->
+                        val file = container.layout.diskFile(vm.id)
+                        vm.id to if (Qcow2Creator.isQcow2(file)) "qcow2" else "raw"
+                    }
+            }
             _ui.update {
                 it.copy(
                     vms = data.first,
@@ -907,6 +918,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     lastRuns = lastRuns,
                     appleAssets = appleAssets,
                     androidDisks = androidDisks,
+                    androidFormats = androidFormats,
                     deviceMemoryMb = deviceMemoryMb(),
                     freeSpaceMb = container.layout.freeSpaceBytes() / (1024 * 1024),
                 )

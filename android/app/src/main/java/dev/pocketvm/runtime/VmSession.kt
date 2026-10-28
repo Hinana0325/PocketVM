@@ -229,6 +229,18 @@ class VmSession(
         // t8030 机器。分支放在这里而不是拆成两个入口，是为了让「同时只能跑一台」
         // 与状态机、QMP、监控、停止逻辑全部共用。
         if (config.platform == VmPlatform.APPLE_T8030) return@withLock startApple(config)
+        // Android 机型的系统盘来自用户导入的完整镜像。没有镜像时不能走磁盘置备
+        // （那会创建一个空的 qcow2，启动后只会停在引导器），在这里提前拦下。
+        if (config.platform == VmPlatform.ANDROID_ARM64) {
+            val disk = layout.diskFile(config.id)
+            if (!disk.isFile || disk.length() == 0L) {
+                return@withLock fail(
+                    config.id,
+                    "还没有导入 Android 磁盘镜像。",
+                    "在编辑页点「导入磁盘镜像」，选择可 UEFI 启动的 .img / .qcow2。",
+                )
+            }
+        }
 
         AgentFeed.attach(layout.agentFeedFile())
         AgentFeed.event(

@@ -135,6 +135,7 @@ fun VmListScreen(
                     usedBytes = state.diskUsage[vm.id] ?: 0L,
                     appleStatus = state.appleAssets[vm.id],
                     androidDiskBytes = state.androidDisks[vm.id] ?: 0L,
+                    androidDiskFormat = state.androidFormats[vm.id] ?: "raw",
                     runtime = state.runtime,
                     runningId = runningId,
                     metrics = if (runningId == vm.id) state.metrics else null,
@@ -189,6 +190,7 @@ private fun VmCard(
     usedBytes: Long,
     appleStatus: AppleAssets.Status?,
     androidDiskBytes: Long,
+    androidDiskFormat: String,
     runtime: VmRuntimeState,
     runningId: String?,
     metrics: dev.pocketvm.diagnostics.VmMetrics?,
@@ -336,7 +338,7 @@ private fun VmCard(
                             else -> "iOS 资源缺少 ${appleStatus.missing.size} 项，请在编辑页导入"
                         }
                     } else if (isAndroid) {
-                        if (androidDiskBytes > 0) "磁盘镜像：已导入 ${androidDiskBytes / (1024 * 1024)} MB" else "磁盘镜像：未导入"
+                        if (androidDiskBytes > 0) "磁盘镜像：已导入 $androidDiskFormat · ${androidDiskBytes / (1024 * 1024)} MB" else "磁盘镜像：未导入"
                     } else {
                         "光驱 ${vm.cdTransport.label} · 固件 ${vm.firmwareCodePath?.substringAfterLast('/') ?: "内置"}" +
                             " · ${vm.launchMode.name.lowercase()}"

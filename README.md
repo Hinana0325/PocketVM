@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`） |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.27 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.28 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -55,8 +55,18 @@
 | 0.10.24 | **主题 redesign**：灰白中性色主题（琥珀品牌色 → Google Stitch 风格，亮/暗两套同步）；局域网模式暂不可用（QEMU 构建缺 DES 后端，校验器以 `VNC_LAN_UNAVAILABLE` 在启动前拦下）；新增 GitHub Actions CI 跑单元测试 |
 | 0.10.25 | **界面/交互优化**：编辑页「保存」固定到顶栏，不用滚到表单底部；点 VM 卡片空白处直接进控制台；客户机按键面板加触感反馈与「上次发送 ✓/✗」状态；修每 vCPU 占用全显示 100% 的 bug——Android 16 上 `/proc/<tid>/stat` 返回线程组聚合值，改用 `/proc/<tid>/schedstat` 的每线程运行纳秒 |
 | 0.10.26 | **iPhone 11（iOS）机型**：接入 ChefKiss Inferno（QEMU 10.0.2 fork）作为第二个执行层 `libqemu-inferno-system-aarch64.so`，新增 `APPLE_T8030` 平台：`-M t8030` 直接加载 kernelcache/DeviceTree，7 个 NVMe namespace，还原包 zip 在 App 内导入（Apple 固件不进 APK）。已知限制：旧 restore 镜像与最新 Inferno 的 chip-id 补丁不兼容时，iOS 停在 `data-protection` 启动任务 panic，需要按官方流程重新 restore |
-| 0.10.27 | **Android（ARM64）机型**：新增平台预设，导入可 UEFI 启动的 arm64 Android 磁盘镜像（.img/.qcow2，自动识别 raw/qcow2），固定 virtio-gpu、关闭光驱、内存 4 GB 起；GSI 组件（system/vendor/kernel）拼装仍在实验阶段 |真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
+| 0.10.27 | **Android（ARM64）机型**：新增平台预设，导入可 UEFI 启动的 arm64 Android 磁盘镜像（.img/.qcow2，自动识别 raw/qcow2），固定 virtio-gpu、关闭光驱、内存 4 GB 起；GSI 组件（system/vendor/kernel）拼装仍在实验阶段 |
+| 0.10.28 | **Android 机型加固**：未导入磁盘镜像时启动前直接拦下（不再创建空盘）；创建页 / 列表显示镜像格式（raw / qcow2）与大小；README 增加 Android 镜像准备说明 |
+真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
+
+## Android（ARM64）镜像
+
+「新建虚拟机 → 平台 → Android（ARM64）」后导入一份**可 UEFI 启动的 arm64 Android 磁盘镜像**（`.img` / `.qcow2`）。应用只是把镜像复制到 `vms/<id>/disk.qcow2`，启动时按 qcow2 魔数判断格式，固定 `virtio-gpu`、关闭光驱、内存 4 GB 起。
+
+- 镜像必须自带引导链（UEFI 或 Android 自己的 boot 分区）；单独一份 GSI `system.img` 不能直接启动，GSI 组件拼装仍在实验阶段。
+- Android 首次启动会格式化 userdata，耗时比 Linux 长；建议先用小分辨率、4 GB 内存试。
+- 没有导入镜像时启动会被拦下，不会创建空盘。
 
 ## 为什么 QEMU 必须叫 `libqemu-system-aarch64.so`
 
