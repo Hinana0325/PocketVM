@@ -65,8 +65,13 @@ class DiagnosticsExporter(
                 ?: emptyList()
             // Serial console captures (run-*.serial.log) come first so a UEFI
             // Shell drop is the first thing a reviewer sees in the zip.
-            logs.filter { it.name.endsWith(".serial.log") }.forEach { addFile("vm/runs", it) }
-            logs.forEach { addFile("vm/runs", it) }
+            val serial = logs.filter { it.name.endsWith(".serial.log") }
+            // 运行看门狗时间线是停摆归因的第一手证据（T4 §6.2：异常窗口必须
+            // 随包发布）。单独点名，避免未来日志过滤/改名把它漏掉。
+            val watchdog = logs.filter { it.name.endsWith(".watchdog.jsonl") }
+            serial.forEach { addFile("vm/runs", it) }
+            watchdog.forEach { addFile("vm/runs", it) }
+            (logs - serial.toSet() - watchdog.toSet()).forEach { addFile("vm/runs", it) }
         }
         out
     }

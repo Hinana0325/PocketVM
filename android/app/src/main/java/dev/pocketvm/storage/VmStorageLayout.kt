@@ -16,6 +16,7 @@ import java.io.File
  *   vms/<vmId>/config.json
  *   vms/<vmId>/logs/run-<id>.log
  *   vms/<vmId>/logs/run-<id>.json
+ *   vms/<vmId>/logs/run-<id>.watchdog.jsonl   运行看门狗时间线（5 秒一拍）
  *   images/<name>.iso            imported installation media
  *   firmware/                UEFI code flash (QEMU_EFI.fd)
  *   qemu/share                   optional -L data dir for a side-loaded QEMU
@@ -78,6 +79,13 @@ class VmStorageLayout(context: Context) {
 
     /** Captured serial console for one launch; shipped in the diagnostics zip. */
     fun serialLogFile(vmId: String, runId: String): File = File(logDir(vmId), "run-$runId.serial.log")
+
+    /**
+     * 运行期看门狗的一拍一行时间线；与 run-*.log 同目录，诊断包会自动收走。
+     * 每次运行独立文件，避免上一次停摆的记录混进下一次的归因。
+     */
+    fun watchdogLogFile(vmId: String, runId: String): File =
+        File(logDir(vmId), "run-$runId.watchdog.jsonl")
 
     /**
      * Debug event stream for external tooling ([dev.pocketvm.diagnostics.AgentFeed]).

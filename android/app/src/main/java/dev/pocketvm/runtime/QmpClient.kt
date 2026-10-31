@@ -192,8 +192,12 @@ class QmpClient(private val socketPath: String) : Closeable {
     /** Immediate exit. Safe only after the guest is down or unresponsive. */
     fun quit(): Boolean = execute("quit")?.has("return") == true
 
-    fun queryStatus(): String? =
-        execute("query-status")?.optJSONObject("return")?.optString("status")
+    /**
+     * @param timeoutMs 看门狗用更短的超时（1.5 s）：停摆时 query-status 不会
+     *   返回，长时间占住 [commandLock] 会把停止路径（system_powerdown）也拖慢。
+     */
+    fun queryStatus(timeoutMs: Int = 3000): String? =
+        execute("query-status", timeoutMs = timeoutMs)?.optJSONObject("return")?.optString("status")
 
     /**
      * Thread id per vCPU (QMP `query-cpus-fast`), ordered by cpu-index.

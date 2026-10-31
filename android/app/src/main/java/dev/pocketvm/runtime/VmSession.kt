@@ -17,13 +17,22 @@ import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.diagnostics.AgentFeed
+import dev.pocketvm.diagnostics.DiagContract
+import dev.pocketvm.diagnostics.DiagEvent
+import dev.pocketvm.diagnostics.DiagSnapshot
 import dev.pocketvm.diagnostics.DiagnosticsExporter
 import dev.pocketvm.diagnostics.LogTail
 import dev.pocketvm.diagnostics.ProcessHealth
 import dev.pocketvm.diagnostics.ProcStats
+import dev.pocketvm.diagnostics.QmpProbe
 import dev.pocketvm.diagnostics.RunManifestStore
+import dev.pocketvm.diagnostics.RuntimeWatchdog
+import dev.pocketvm.diagnostics.RuntimeWatchdogSampler
 import dev.pocketvm.diagnostics.VmMetrics
 import dev.pocketvm.diagnostics.VmMetricsSampler
+import dev.pocketvm.diagnostics.VncBannerProbe
+import dev.pocketvm.diagnostics.WatchdogDetector
+import dev.pocketvm.diagnostics.WatchdogLog
 import dev.pocketvm.storage.AppleAssets
 import dev.pocketvm.storage.CheckOutcome
 import dev.pocketvm.storage.DiskProvisioner
@@ -121,12 +130,24 @@ class VmSession(
     private val _metrics = MutableStateFlow<VmMetrics?>(null)
     val metrics: StateFlow<VmMetrics?> = _metrics.asStateFlow()
 
+    /**
+     * 运行期看门狗的快照（T6 诊断看板契约）。每 5 秒整体替换一次；新一次
+     * start 时清空，进程退出后保留最后一次运行的数据供 Exited 状态展示。
+     */
+    private val _diag = MutableStateFlow<DiagSnapshot?>(null)
+    val diag: StateFlow<DiagSnapshot?> = _diag.asStateFlow()
+
+    /** 最近 20 条判读事件，新→旧；随看门狗采样更新。 */
+    private val _diagEvents = MutableStateFlow<List<DiagEvent>>(emptyList())
+    val diagEvents: StateFlow<List<DiagEvent>> = _diagEvents.asStateFlow()
+
     @Volatile
     private var qemuProcess: Process? = null
     private var monitorJob: Job? = null
     private var serialWatcherJob: Job? = null
     private var healthJob: Job? = null
     private var metricsJob: Job? = null
+    private var watchdogJob: Job? = null
 
     /** Last CPU-tick sample; the only way to tell "running" from "wedged". */
     private var lastHealth: ProcessHealth.Sample? = null
@@ -225,6 +246,9 @@ class VmSession(
 
     private suspend fun startLocked(config: VmConfig): LaunchOutcome = mutex.withLock {
         if (isRunning()) return@withLock LaunchOutcome.Failed("已有虚拟机在运行，请先停止。")
+        // 新一次运行必须丢弃上一次的看门狗快照/事件，避免跨运行混用。
+        _diag.value = null
+        _diagEvents.value = emptyList()
         // iOS 机型是完全不同的一条链路：没有 UEFI / qcow2 / ISO，走 Inferno 的
         // t8030 机器。分支放在这里而不是拆成两个入口，是为了让「同时只能跑一台」
         // 与状态机、QMP、监控、停止逻辑全部共用。
@@ -685,6 +709,7 @@ class VmSession(
                 monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
                 startHealthWatch(launched)
                 startMetricsWatch(launched, client)
+                startRuntimeWatchdog(launched, client, effectivePort, config.id, runId)
                 // Watch the firmware serial console for a UEFI Shell drop and
                 // recover automatically — the backup plan for devices whose edk2
                 // will not auto-boot the CD.
@@ -720,6 +745,7 @@ class VmSession(
             runCatching { serialWatcherJob?.cancel() }
             runCatching { healthJob?.cancel() }
             runCatching { metricsJob?.cancel() }
+            runCatching { watchdogJob?.cancel() }
             qemuProcess = null
             activeVmId = null
             client.close()
@@ -869,6 +895,9 @@ class VmSession(
             }
             AgentFeed.event("stop.requested", "vm" to vmId)
             stopRequested = true
+            // 关机过程中 VNC/QMP 会按预期有序失联，不是停摆；先停看门狗再发
+            // powerdown，避免把用户停止记成一个异常窗口。
+            runCatching { watchdogJob?.cancel() }
             _state.value = VmRuntimeState.Stopping(vmId)
             val client = qmp
             withContext(Dispatchers.IO) {
@@ -1243,6 +1272,108 @@ class VmSession(
     }
 
     /**
+     * 运行期看门狗：每 5 秒采一拍 QMP / VNC / 串口 / 线程 CPU 分布。
+     *
+     * 只观测，不重启、不改状态、不碰 argv。真机上的停摆形态是「进程活着、
+     * 5900 仍在 LISTEN、TCP 能握手，但主循环不再 accept」——[ProcessHealth]
+     * 只看整个进程的 CPU tick，分不清「vCPU 在跑」与「主循环还活着」。这里把
+     * 四条独立信号写成 `run-<runId>.watchdog.jsonl`，随诊断包发布；异常窗口
+     * 另发 AgentFeed 事件，外部工具不需要读 zip 也能看到。
+     */
+    private fun startRuntimeWatchdog(
+        process: Process,
+        client: QmpClient,
+        vncPort: Int,
+        vmId: String,
+        runId: String,
+    ) {
+        watchdogJob?.cancel()
+        val pid = pidOf(process)
+        if (pid <= 0) return
+        watchdogJob = scope.launch(Dispatchers.IO) {
+            try {
+                // vCPU 线程号一次运行内不变，取一次即可；取不到时看门狗退化为
+                // 「只有主线程」的分布，仍然能记录控制面失联。
+                val vcpuTids = runCatching { client.cpuThreadIds() }.getOrDefault(emptyList())
+                val sampler = RuntimeWatchdogSampler(
+                    pid = pid,
+                    vcpuTids = vcpuTids,
+                    serialLog = layout.serialLogFile(vmId, runId),
+                    qmpStatus = {
+                        val started = System.nanoTime()
+                        val status = client.queryStatus(timeoutMs = WATCHDOG_QMP_TIMEOUT_MS)
+                        QmpProbe(
+                            responded = status != null,
+                            rttMs = status?.let { (System.nanoTime() - started) / 1_000_000 },
+                            status = status,
+                            error = if (status == null) {
+                                "query-status timeout after ${WATCHDOG_QMP_TIMEOUT_MS} ms"
+                            } else {
+                                null
+                            },
+                        )
+                    },
+                    vncProbe = { VncBannerProbe.probe(vncPort) },
+                )
+                RuntimeWatchdog(
+                    sampler = sampler,
+                    detector = WatchdogDetector(),
+                    log = WatchdogLog(layout.watchdogLogFile(vmId, runId)),
+                    vmId = vmId,
+                    runId = runId,
+                    pid = pid,
+                ).run(
+                    // 用户点停止后 VNC/QMP 会随关机有序失联，那不是停摆。
+                    isAlive = { process.isAlive && !stopRequested },
+                    onSample = { sample, verdict ->
+                        // 采样期间进程可能刚好退出：快照里的存活状态以此刻为准，
+                        // 避免 awaitExit 把 processAlive 置 false 后又被最后一拍覆盖。
+                        // 进程级 CPU/运行时长复用性能仪表（1 Hz），看门狗不重复采样。
+                        val metrics = _metrics.value
+                        _diag.value = DiagContract.snapshot(
+                            vmId = vmId,
+                            runId = runId,
+                            sample = sample,
+                            verdict = verdict,
+                            processAlive = process.isAlive,
+                            processUptimeMs = metrics?.uptimeMs,
+                            processCpuPercent = metrics?.cpuPercent,
+                        )
+                        val fresh = DiagContract.eventsOnSample(sample, verdict)
+                        if (fresh.isNotEmpty()) {
+                            // 新→旧，最多 20 条：新事件插到队首，旧事件自然淘汰。
+                            _diagEvents.update { (fresh + it).take(DIAG_EVENT_LIMIT) }
+                        }
+                    },
+                    onWindowOpen = { verdict, sample ->
+                        AgentFeed.event(
+                            "watchdog.window_open",
+                            "run" to runId,
+                            "window" to verdict.windowId,
+                            "signals" to verdict.signals,
+                            "qmpRttMs" to sample.qmp.rttMs,
+                            "mainCpu" to sample.threads?.mainCpuPercent,
+                            "vcpuSum" to sample.threads?.vcpuSumPercent,
+                            "stallProfile" to verdict.stallProfile,
+                        )
+                    },
+                    onWindowClose = { verdict, _ ->
+                        AgentFeed.event(
+                            "watchdog.window_close",
+                            "run" to runId,
+                            "window" to verdict.closedWindowId,
+                            "samples" to verdict.closedWindowSamples,
+                        )
+                    },
+                )
+            } catch (t: Throwable) {
+                // 与串口/健康探针同一条规矩：监控失败不能变成 FATAL EXCEPTION。
+                AgentFeed.event("watchdog.error", "pid" to pid, "error" to t.toString())
+            }
+        }
+    }
+
+    /**
      * iPhone 11（t8030）的启动路径。
      *
      * 与 UEFI 链路共用状态机、QMP、监控和停止逻辑，但不做任何存储置备：
@@ -1445,6 +1576,7 @@ class VmSession(
         monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
         startHealthWatch(launched)
         startMetricsWatch(launched, client)
+        startRuntimeWatchdog(launched, client, effectivePort, config.id, runId)
         return LaunchOutcome.Started(
             LaunchProfile.STANDARD,
             emptyList(),
@@ -1466,7 +1598,10 @@ class VmSession(
                 runCatching { serialWatcherJob?.cancel() }
                 runCatching { healthJob?.cancel() }
                 runCatching { metricsJob?.cancel() }
+                runCatching { watchdogJob?.cancel() }
                 _metrics.value = null
+                // 保留最后一次运行的诊断快照供 Exited 展示，但要标明进程已不在。
+                _diag.update { it?.copy(processAlive = false) }
                 qmp = null
                 qemuProcess = null
                 activeVmId = null
@@ -1696,5 +1831,14 @@ class VmSession(
 
         /** Dashboard cadence: one second is responsive without burning a core itself. */
         const val METRICS_INTERVAL_MS = 1_000L
+
+        /**
+         * 看门狗探测 query-status 的超时上限：停摆时请求不会返回，占住
+         * QmpClient 的命令锁太久会把停止路径也拖慢。
+         */
+        const val WATCHDOG_QMP_TIMEOUT_MS = 1_500
+
+        /** 诊断事件在内存里保留的条数（T6 看板默认展开上限）。 */
+        const val DIAG_EVENT_LIMIT = 20
     }
 }

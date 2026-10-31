@@ -93,7 +93,71 @@ qcow2 删掉文件即完全回收；guest 内删除文件不会自动缩小镜�
 App 不内置渲染器。`adb forward tcp:5900 tcp:5900` 后用桌面 VNC 客户端连
 `127.0.0.1:5900`。局域网模式暂不可用，不要切到「局域网」。
 
+## 运行期看门狗（run-*.watchdog.jsonl）
+
+主循环停摆的形态：QEMU 进程活着、VNC 端口仍在 LISTEN、TCP 握手能完成，但主循环
+不再 accept，VNC/QMP 一个字节都不回，vCPU 线程继续满核转。`run-*.log` 这时是空的，
+App 也可能还显示「运行中」。看门狗每 5 秒采一拍，把这一过程写成时间线。
+
+**位置与打包**
+
+- 设备上：`vms/<vmId>/logs/run-<runId>.watchdog.jsonl`（每次运行独立文件；超过 1 MiB
+  轮转一代 `.1`）。
+- 诊断包 zip 内：`vm/runs/run-<runId>.watchdog.jsonl`，总是随包导出（不只在异常时）。
+- App 内不轮询文件：`VmSession.diag`（快照）与 `VmSession.diagEvents`（最近 20 条事件，
+  新→旧）由同一拍数据映射，供「控制台 → 诊断」Tab 使用。
+
+**JSONL 字段（合并门禁以 T4 §6.2 为准）**
+
+| 字段 | 含义 |
+| --- | --- |
+| `ts_utc` | ISO-8601 UTC 时间戳，对齐主机/设备时钟 |
+| `vm_id` / `run_id` / `qemu_pid` | 归属与进程号 |
+| `qmp_rtt_ms` / `qmp_ok` / `qmp_status` | `query-status` 往返耗时与结果；超时为 null/false |
+| `qmp_error` | QMP 探测失败的显式原因（如 `query-status timeout after 1500 ms`） |
+| `vnc_connect_ok` / `vnc_banner` / `vnc_rtt_ms` / `vnc_error` | TCP 是否连上、是否收到 `RFB 003.008` |
+| `serial_total_bytes` / `serial_delta_bytes` | 串口日志字节数与本窗口增量；无串口捕获时为 null |
+| `main_thread_dticks` / `vcpu_dticks[]` | `/proc/<pid>/task/<tid>/stat` 的 utime+stime 增量（100 Hz 下满核≈500 tick/5 s 窗口）；读不到为 null |
+| `main_cpu` / `vcpu_cpu[]` / `vcpu_sum` | 每线程 CPU 占比（单核=100）；优先 schedstat，stat 回退 |
+| `proc_readable` / `proc_error` | 主线程 /proc 是否可读及失败原因 |
+| `window_anomaly` / `window_id` / `window_samples` | 是否处于异常窗口、第几个窗口、窗口内第几拍 |
+| `signals` | 本拍硬信号：`qmp_timeout` / `vnc_no_banner` / `proc_unreadable` / `qmp_status_<状态>` |
+| `stall_profile` | `main_idle_vcpu_busy` 表示主线程空闲而 vCPU 仍繁忙（归因线索，不是单独异常） |
+| `verdict` | `SAMPLING` / `HEALTHY` / `WATCH` / `SUSPECTED_STALL` / `STALLED` / `UNKNOWN` |
+
+**阈值与判定（代码常量：`WatchdogDetector` companion）**
+
+- 采样间隔 `5000 ms`；以下硬信号**连续 2 拍（约 10 秒）**才开窗：
+  `qmp_timeout`、`vnc_no_banner`、`proc_unreadable`、`qmp_status_<非 running>`。
+- 主线程 `< 5%` 且 vCPU 合计 `≥ 25%` 记为 `main_idle_vcpu_busy`；
+  **它单独不是异常**——健康的 QEMU 主线程本来就常驻 `poll()` 睡眠，guest 计算时
+  vCPU 满核是常态。
+- `SUSPECTED_STALL`：窗口内 QMP 或 VNC 失联；`STALLED`：失联且同时出现
+  `main_idle_vcpu_busy`。
+
+**判读方法**
+
+1. 先找 `window_anomaly=true` 的行，看 `window_id` 起止与 `signals`。
+2. 典型停摆：`qmp_timeout` + `vnc_no_banner` + `main_cpu` 接近 0 + `vcpu_sum` 高
+   + `vcpu_dticks` 仍有大数值 —— 控制面已死、vCPU 还在空转。
+3. QMP/VNC 正常、只是 `main_cpu` 低 + `vcpu_sum` 高：**正常** guest 计算。
+4. `serial_delta_bytes` 连续为 0 不等于停摆：UEFI/桌面空闲期串口本来就可能不输出；
+   必须结合 QMP/VNC。
+5. `main_thread_dticks`/`vcpu_dticks` 在部分 Android 16 设备上可能读到线程组聚合值
+   （同一数值）；此时以 `main_cpu`/`vcpu_cpu`（schedstat）为准。
+6. 采样故障一律是显式字段（`qmp_error` / `vnc_error` / `proc_error`）或 null，
+   不会写成 0。
+
+**停摆时点「停止」**
+
+`VmSession.stop()` 为 `NonCancellable`，QMP 调用均有超时（powerdown/quit 各 3 s），
+随后按 25 s 关机等待 → destroy → SIGKILL 逐级降级，最坏约 42 秒，阻塞段全部在
+IO 线程，不占主线程。用户停止前会先取消看门狗，关机过程中的 VNC/QMP 失联不会被
+记成异常窗口。
+
 ## 抓诊断
 
 控制台 → 导出诊断包，得到 zip：`device.txt`、`qemu-probe.txt`、`config.json`、每次运行的
-`run-*.log` 与 `run-*.json`（含完整 argv 与退出码）。这比让用户复述现象可靠得多。
+`run-*.log`、`run-*.serial.log`、`run-*.watchdog.jsonl` 与 `run-*.json`（含完整 argv 与退出码）。
+这比让用户复述现象可靠得多。
+
