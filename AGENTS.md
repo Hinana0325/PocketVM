@@ -12,6 +12,12 @@ PocketVM：在未 Root 的 arm64 Android 手机上用 QEMU TCG 跑 Windows ARM64
 - **16 KB 页设备（部分天玑 9xxx / Android 15+）**：执行层所有 PT_LOAD 的 `p_align` 必须 ≥ `0x4000`，否则 linker64 报 `empty/misaligned PT_LOAD` 直接拒绝加载。原 QEMU 构建本来就是 0x4000；`scripts/patch-qemu-pac.py` 新增的段也是 0x4000（16 KB 页），脚本与 Gradle 校验都会检查。`libpvm-probe.so`（静态执行自检）是 4 KB 对齐的 ET_EXEC，在 16 KB 设备上跳过，否则会把对齐问题误报成「静态执行不可用」。
 - 没有要求时不要重建 QEMU：需要 Linux + NDK r27c + meson/ninja/patchelf，5–10 分钟 / 24 核，`scripts/build-qemu-android*.sh` 是 bash 脚本，`.build-qemu/` 有几个 GB（已 gitignore）。脚本头部的注释记录了必须踩过的坑，改参数前先读。
 
+## P1 决策记录（2026-10-31，人类 owner）
+
+- **D1 = B**：VNC 局域网入口下线/隐藏并文档化，执行层不重建；DES 支持留到未来重建 QEMU 时再做。`ConfigValidator` 的 `VNC_LAN_UNAVAILABLE` 保留为兜底。
+- **D2 = MIT**：PocketVM 自有代码用 MIT（`LICENSE`）；随包 QEMU / Inferno / edk2 与依赖库仍按各自上游许可证分发，见 `THIRD_PARTY_NOTICES.md` 与 `docs/third-party-sources.md`。法律文本以人类最终确认为准。
+- **D4 = 0.11.0 为 P1 里程碑**：P1 验收通过时才升 minor 并打 tag；日常合并只升 patch，分支内不擅自改 `versionName`。阶段↔版本映射见 `docs/roadmap.md`。
+
 ## 两个执行层（0.10.26 起）
 
 - `libqemu-system-aarch64.so`：QEMU 11.1.2 + edk2，跑 Windows / Linux（`VmPlatform.UEFI_ARM64`）。
@@ -55,7 +61,7 @@ cd android
 
 ## 测试
 
-14 个文件共 133 个用例，全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。
+15 个文件共 140 个 `@Test`（静态统计，2026-10-31；数量以 `:app:testDebugUnitTest` 实跑为准），全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。本机无 JDK/SDK 时不要当成已通过。
 
 `Qcow2CreatorTest` 里两个用例通过 `assumeTrue` 依赖宿主机的 `/usr/bin/qemu-img`（还有一个要求 `qemu-io`）：宿主机没装就**静默跳过**。所以「测试全绿」不等于 qcow2 格式真的被交叉校验过。
 
@@ -94,13 +100,13 @@ cd android
 
 ## 源码比 prose 新（别被过时说明带跑）
 
-- `docs/architecture.md` 的分层图和 ADR-004、以及 `QemuEnvironment.resolveQemuImg()` 的注释都写着「qcow2 失败回退 raw」。**没有 raw 回退**：`DiskProvisioner` 只产出 qcow2，raw 落在 FUSE 上可能真的吃掉全部虚拟容量。以代码为准。
+- `docs/architecture.md` 的分层图和 ADR-004 已经改成「只产 qcow2，没有 raw 回退」；`QemuEnvironment.resolveQemuImg()` 的注释仍残留「qcow2 失败回退 raw」的旧说法（仅是注释，实现不产 raw）。以代码为准。
 - README 的「已知限制」说 VNC 只监听 `127.0.0.1`，实际存在 `VncAccess.LAN`，但校验器以 `VNC_LAN_UNAVAILABLE` 拦下它（缺少 DES 后端），所以只有「仅本机」是通的。
-- README 写「37 个单元测试」，实际 67 个。
-- README 的「验证状态」写明真机启动与 Windows 安装全流程**均未验证**——这是有意的未知项，不要把沙箱里的结论当成设备上的结论。
+- 测试数量会随分支变化；文档统一写「以 `:app:testDebugUnitTest` 实跑为准」，不要引用历史记录里的旧数字（37/67、14 文件/133 均已作废）。
+- README 的「验证状态」记录：真机启动 **已通过**（小米 14 Pro / Android 16），Windows 安装全流程 **进行中**。只认有会话证据的结论，不要把沙箱结论当成真机结论，也不要把「进行中」写成通过。
 
 ## 仓库状态与发布
 
-- 这个工作副本**有 `.git`**（remote `https://github.com/Hinana0325/PocketVM.git`，`user.name=Hinana0325`），历史 commit 正常可查。**推送链路（2026-10-25 实测）**：github.com:443 可达，但沙箱默认无凭据（`gh` 未登录、沙箱 credential helper 不吐 github.com 凭据、agent-gateway 的 token 服务报 `Connector "github" is not authorized`）。授权形式有两种：① 用户在 CodeBuddy 设置页「连接器」授权 GitHub；② **用户直接给出 token**（0.10.9 即由用户提供 token 推送成功）。拿到 token 后用一次性 URL 推：`git push https://oauth2:${GITHUB_TOKEN}@github.com/Hinana0325/PocketVM.git main`（不动 origin 配置，无需事后清理；token 只经环境变量传递，绝不写进仓库）。这是对外可见的显式动作，未经用户确认不要跑。
+- 这个工作副本**有 `.git`**（remote `https://github.com/Hinana0325/PocketVM.git`），历史 commit 正常可查（历史作者为 `Hinana0325`）。当前**没有配置** `user.name` / `user.email`，提交时必须显式 `-c user.name="PocketVM-<角色>" -c user.email="<role>@pocketvm.local"`，不要写 git config。**推送链路（2026-10-25 实测）**：github.com:443 可达，但沙箱默认无凭据（`gh` 未登录、沙箱 credential helper 不吐 github.com 凭据、agent-gateway 的 token 服务报 `Connector "github" is not authorized`）。授权形式有两种：① 用户在 CodeBuddy 设置页「连接器」授权 GitHub；② **用户直接给出 token**（0.10.9 即由用户提供 token 推送成功）。拿到 token 后用一次性 URL 推：`git push https://oauth2:${GITHUB_TOKEN}@github.com/Hinana0325/PocketVM.git main`（不动 origin 配置，无需事后清理；token 只经环境变量传递，绝不写进仓库）。这是对外可见的显式动作，未经用户确认不要跑。
 - **历史陷阱（0.10.9 收敛时实测，勿再踩）**：远端 main 曾被 `push_via_api.py` 逐 commit 重建，与本地旧历史**消息一一对应但 SHA 全不同**（本地 `d4b8989` ≡ 远端 `82484327`：140 个文件 blob 全部一致，仅 `scripts/release_0.10.5.py`、`release_0.10.6_and_0.10.8.py` 的可执行位被推成 755 而本地是 644）；且本地历史缺远端 0.10.5 及 7 个中间 commit（内容已含在后续 commit 里，累积树等价，无实质丢失）。**收敛方式：`git rebase --onto <远端main> <本地对应commit>` 后 fast-forward 推送，切勿 force push**。判断内容是否等价：API 递归比 tree/blob（本地 `git ls-tree -r -t` vs `GET /repos/Hinana0325/PocketVM/git/trees/<sha>?recursive=1`，注意比 mode 不只是 blob SHA）；git 协议 fetch 全历史在沙箱会卡死（>4 min），`--depth` 浅 fetch 或纯 API 比对快得多，push 增量则只要 1 秒。
 - `scripts/push_via_api.py` / `gh-sync.py` 是更早的 API 推送方案（读 `GH_TOKEN`、走 api.github.com git data API），为「git-over-HTTPS 不通 + 工作副本无 .git」的时代而写，两个前提现在都不成立；当前同样卡在拿不到 token。别被 gh-sync.py docstring 里「没有 .git」的旧描述误导。

@@ -17,7 +17,7 @@
 | 每次启动的 manifest（argv/固件/磁盘/退出码） | 已实现 |
 | 日志尾部读取 + 失败归因 + 诊断包 zip | 已实现 |
 | 性能占用仪表（CPU / 每 vCPU / 内存 / I/O，1 Hz 宿主机侧采样） | 已实现，含单测 |
-| VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`） |
+| VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`，P1 决策已下线该入口） |
 | GPU / KVM 加速 | 不在范围 |
 
 ## 版本演进（当前 0.10.30 / QEMU 11.1.2 / edk2 2026.08）
@@ -31,8 +31,8 @@
 | 0.10.0 | **升级 QEMU 11.1.2**（Debian `+ds` 源码 + NDK r27c）；适配新版 meson（pixman/`librt`/dtc/pc-bios），RUNPATH 归一 `$ORIGIN` |
 | 0.10.1 | 修正 memfd 垫片：`shm_open` 名字含 `/` 会被 `memfd_create` 拒绝，去掉前导斜杠 |
 | 0.10.2 | 合并远程改动（恢复被覆盖的 QEMU 11 适配 + 保留 glib 镜像/libffi 容错）；新增 `-PpvmSideBySide` 并行安装；纠正版本号回退 |
-| 0.10.4 | **固件升级到 edk2 2026.08**（原为 2024.02，老了两年半）：内置 3 份可选固件（2026.08 普通版 / 2026.08 Secure Boot 版 / 旧 2024.02），默认选最新普通版；同时把**所有引导相关项做成可选**（光驱总线、输入设备、串口自动恢复、网卡、RNG、是否提取引导镜像、CPU 模型） |
 | 0.10.3 | **光驱改走 USB**：edk2 能从 virtio-scsi 光驱引导，但 WinPE 没有 `vioscsi`、读不到 `install.wim`；AHCI 正相反（WinPE 能读，edk2 无驱动引导不了）——**USB 是两边都支持的唯一总线**。新增 `CdTransport`（AUTO/USB/VIRTIO_SCSI），AUTO 先用 USB，若 QEMU 被信号杀死则自动降级 virtio-scsi 重试 |
+| 0.10.4 | **固件升级到 edk2 2026.08**（原为 2024.02，老了两年半）：内置 2 份可选固件（2026.08 普通版 / 旧 2024.02 兜底），默认选 2026.08；Secure Boot 版未随包，需要时在界面「导入固件」覆盖；同时把**所有引导相关项做成可选**（光驱总线、输入设备、串口自动恢复、网卡、RNG、是否提取引导镜像、CPU 模型） |
 | 0.10.5 | **UI 重构 + 最终版固件**：界面从两块平铺卡片升级为带底部导航（虚拟机 / 环境 / 关于）的分层界面——列表页渐变 Hero + 聚合统计 + 可展开环境就绪条 + 重做虚拟机卡片（状态色条/规格 chips/磁盘进度条）；控制台页概览/日志双 Tab；新增环境页与关于页。固件定版为 **edk2 2026.08**（原版 2024.02 兜底并列打包，运行时按文件名排序自动优先 2026.08）；修复提取标记升 v6 避免升级短路、移除误删 `QEMU_EFI-*` 的清理逻辑 |
 | 0.10.6 | **Windows 安装配方（全网调研落地）**：显示设备可配 ramfb / virtio-gpu——ramfb 是社区三份独立教程一致的安装期显示（virtio-gpu 的驱动交接会清空 scanout，安装途中出现「Display output is not active.」占位画面）；挂 VirtIO 驱动盘时安装 ISO 只走 virtio-scsi（**Windows 无法同时配置两个 ISO 设备，同挂必冻结**，richliu 实测）；占位画面排查补 Ctrl+Alt+F1 / `console=tty0`（社区确认这是引导器→登录界面间的正常过渡）；关于页/控制台补完整 Win11 ARM64 安装配方（22589 可用 25226 必坏、`vioscsi → w11 → ARM64`、TESTSIGNING、NetKVM/viogpudo） |
 | 0.10.7 | **性能占用仪表**：控制台新增「性能」Tab，1 Hz 采样 QEMU 进程的 CPU（多线程 TCG 下可超 100%）、每 vCPU 占用、RSS 内存（占手机物理内存比例）、磁盘 I/O（MB/s）与运行时长，附 60 秒 CPU 迷你图。全部宿主机侧采集（`/proc/<pid>/{stat,statm,io}` + QMP `query-cpus-fast`），客户机无需装 agent，Windows 安装过程中也能看 |
@@ -273,7 +273,7 @@ APK 里带的是**动态链接（PIE）**的 `libqemu-system-aarch64.so`（约 3
 | 链接 | 动态 PIE（glib 2.80.5 / pixman 0.44.2 / libslirp 4.8.0 / 内置 libfdt / pcre2 / libffi） |
 | 段对齐 | 0x4000（兼容 16 KB page size 设备） |
 | 运行时数据 | `assets/qemu/keymaps/*`，首次启动解压到 `files/qemu/share`，作为 `-L` |
-| UEFI 固件 | `assets/firmware/QEMU_EFI.fd.gz`（Ubuntu `qemu-efi-aarch64`，edk2 2024.02，64 MiB pflash），打包时由 AGP 自动解压，首次启动释放到 `files/firmware/`，变量存储按同尺寸生成 |
+| UEFI 固件 | `assets/firmware/QEMU_EFI-2026.08.fd.gz`（默认，edk2 2026.08，AAVMF 普通版）与 `assets/firmware/QEMU_EFI.fd.gz`（edk2 2024.02 兜底），均为 64 MiB pflash；打包时由 AGP 自动解压，首次启动释放到 `files/firmware/`，按文件名排序 2026.08 优先；变量存储按同尺寸生成 |
 
 固件与光驱：ARM virt 平台的 edk2 构建**不含 AHCI 驱动** —— 这一点 Ubuntu 版和 QEMU 官方版
 （edk2-stable202408）完全一样，两者都看不到挂在 `ich9-ahci` 上的光驱（`map` 查询无 FS、
@@ -287,7 +287,7 @@ ARM64（社区验证路径）」。
 > 光驱里的 x86 引导程序"，其实它来自 virtio-net 的 x86 option ROM（`efi-virtio.rom`）——
 > 加 `-nic none` 后该报错立即消失。别再拿它当光驱可见性的证据。
 
-固件自愈：解压标记（`.extracted-v4`）只在目录里存在 ≥32 MB 的 `.fd` 时才被采信；旧版残留的
+固件自愈：解压标记（`.extracted-v6`）只在目录里存在 ≥32 MB 的 `.fd` 时才被采信；旧版残留的
 2 MiB `-bios` 镜像会先被删除再重新释放。**标记版本一变就无条件重新释放随包固件**，否则
 磁盘上那份旧的会永远压过新包，用户还得手动清数据。变量存储与固件尺寸不一致时自动重建。
 
@@ -340,7 +340,7 @@ android/                    Gradle 根（AGP 8.7 / Kotlin 2.1 / Compose）
     ui/                     Compose 界面（列表 / 向导 / 控制台）
   app/src/test/             纯 JVM 单元测试
 scripts/                    原生层构建与安装、无线开发环、GitHub 增量同步
-docs/                       架构、排障、打包与推送
+docs/                       架构、排障、打包与推送、第三方许可与源码
 ```
 
 ## 设计约束（不从计划里删的部分）
@@ -355,7 +355,7 @@ docs/                       架构、排障、打包与推送
 
 | 项 | 结论 |
 | --- | --- |
-| 编译（aarch64 动态 PIE） | 通过，133 个单元测试全绿 |
+| 编译（aarch64 动态 PIE） | 通过（0.10.28 基线）；当前测试 15 个文件 / 140 个 `@Test`（静态统计，实际以 `:app:testDebugUnitTest` 实跑为准） |
 | APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
 | 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
 | 安装介质启动 | **通过**：固件从 USB 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。USB 崩溃回退 virtio-scsi 后：无驱动盘时同一 ISO 双挂（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`）；挂驱动盘时只走 virtio-cd（两个 ISO 设备同屏会冻结安装） |
@@ -370,7 +370,19 @@ docs/                       架构、排障、打包与推送
   **局域网模式（`0.0.0.0`）不可用**：这个 QEMU 构建的加密后端不支持 DES，而 VNC
   的密码认证就是 DES——设了密码 QEMU 会拒绝启动（exit=1）。要恢复局域网，得在重建
   执行层时编入支持 DES 的加密后端（nettle/gnutls）。
+  **P1 决策（2026-10-31，D1=B）**：局域网 VNC 入口已下线并文档化，执行层不重建；
+  DES 支持留到未来重建 QEMU 时再做。校验器的 `VNC_LAN_UNAVAILABLE` 保留为兜底。
 - ISO 会被完整复制一份（`content://` 无法跨进程传给 QEMU），请预留 5–6 GB。
 - 一台设备同一时间只跑一个 VM（`VmSession` 是单例）。
 - minSdk 30：执行层以 API 30 为目标编译（`memfd_create` 的下限）。
 - 未做快照/回滚；改配置前请自行备份 `disk.qcow2`。
+
+## 许可证
+
+- PocketVM 自有代码采用 **MIT**，见 [LICENSE](LICENSE)。
+- 随 APK 分发的第三方二进制（QEMU 11.1.2、ChefKiss Inferno、edk2/AAVMF 固件及依赖库）
+  **不属于 MIT 范围**，各自遵循上游许可证；完整清单、修改说明与源码获取方式见
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与
+  [docs/third-party-sources.md](docs/third-party-sources.md)。
+- QEMU 以 GPLv2 分发，随包二进制受 GPL 约束；分发 APK 时须能提供对应源码。
+  法律文本以人类 owner 最终确认为准。
