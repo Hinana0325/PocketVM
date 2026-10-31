@@ -956,7 +956,8 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                             Issue(
                                 Severity.ERROR,
                                 "VNC_LAN_UNAVAILABLE",
-                                "局域网模式暂不可用（缺少 DES 后端），请改回「仅本机」+ adb forward。",
+                                "P1 不支持局域网 VNC，已下线，请用仅本机 + adb forward。" +
+                                    "这台虚拟机保存的是旧版「局域网」配置，请改回「仅本机」后再启动。",
                             ),
                         )
                     }
@@ -1000,7 +1001,8 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                             Issue(
                                 Severity.ERROR,
                                 "VNC_LAN_UNAVAILABLE",
-                                "局域网模式暂不可用（缺少 DES 后端），请改回「仅本机」+ adb forward。",
+                                "P1 不支持局域网 VNC，已下线，请用仅本机 + adb forward。" +
+                                    "这台虚拟机保存的是旧版「局域网」配置，请改回「仅本机」后再启动。",
                             ),
                         )
                     }
