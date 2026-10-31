@@ -4,6 +4,7 @@ import dev.pocketvm.ui.MediaHintTone
 import dev.pocketvm.ui.MediaHints
 import dev.pocketvm.ui.MediaVersionTag
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -26,7 +27,7 @@ class MediaHintsTest {
         assertEquals(MediaVersionTag.KNOWN_BAD, info.tag)
         assertEquals(MediaHintTone.WARNING, info.tone)
         assertTrue(info.label.contains("25226"))
-        assertTrue(info.detail.contains("不会阻止"))
+        assertTrue(info.detail.contains("不会硬阻断"))
     }
 
     @Test
@@ -105,5 +106,18 @@ class MediaHintsTest {
     @Test
     fun `missing iso gives no driver advice`() {
         assertNull(MediaHints.driverAdvice(null, null, "Windows 11 ARM64"))
+    }
+
+    @Test
+    fun `new 25226 selection requires one confirmation`() {
+        assertTrue(MediaHints.requiresKnownBadConfirmation("/iso/Win11_25226.iso", null))
+        assertTrue(MediaHints.requiresKnownBadConfirmation("/iso/Win11_25226.iso", "/iso/Win11_22589.iso"))
+    }
+
+    @Test
+    fun `same or non-bad path does not re-confirm`() {
+        assertFalse(MediaHints.requiresKnownBadConfirmation("/iso/Win11_25226.iso", "/iso/Win11_25226.iso"))
+        assertFalse(MediaHints.requiresKnownBadConfirmation("/iso/Win11_22589.iso", null))
+        assertFalse(MediaHints.requiresKnownBadConfirmation(null, "/iso/Win11_25226.iso"))
     }
 }

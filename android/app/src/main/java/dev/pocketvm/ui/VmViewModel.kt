@@ -140,6 +140,8 @@ data class UiState(
     /** 最近一次客户机按键的名称与结果，用来给按键面板即时反馈。 */
     val lastGuestKeyLabel: String? = null,
     val lastGuestKeyOk: Boolean? = null,
+    /** 最近一次按键完成的设备时间；UI 用它区分“本次点按”的反馈与旧状态。 */
+    val lastGuestKeyAtEpochMs: Long = 0L,
     /** vmId -> iPhone 11 资源（固件 / NVMe 镜像）是否齐全。 */
     val appleAssets: Map<String, AppleAssets.Status> = emptyMap(),
     /** vmId -> 导入的 Android 磁盘镜像字节数（0 = 未导入）。 */
@@ -728,12 +730,24 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun sendGuestKey(vmId: String, qcode: String, label: String) {
         if (container.session.runningVmId() != vmId) {
-            _ui.update { it.copy(lastGuestKeyLabel = label, lastGuestKeyOk = false) }
+            _ui.update {
+                it.copy(
+                    lastGuestKeyLabel = label,
+                    lastGuestKeyOk = false,
+                    lastGuestKeyAtEpochMs = System.currentTimeMillis(),
+                )
+            }
             return
         }
         viewModelScope.launch {
             val ok = withContext(Dispatchers.IO) { container.session.sendKey(qcode) }
-            _ui.update { it.copy(lastGuestKeyLabel = label, lastGuestKeyOk = ok) }
+            _ui.update {
+                it.copy(
+                    lastGuestKeyLabel = label,
+                    lastGuestKeyOk = ok,
+                    lastGuestKeyAtEpochMs = System.currentTimeMillis(),
+                )
+            }
         }
     }
 

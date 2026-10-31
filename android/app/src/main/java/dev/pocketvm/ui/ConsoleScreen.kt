@@ -72,7 +72,6 @@ import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
-import dev.pocketvm.core.model.BootStage
 import dev.pocketvm.runtime.SshDefaults
 import dev.pocketvm.ui.theme.Danger
 import dev.pocketvm.ui.theme.Success
@@ -481,11 +480,39 @@ private fun OverviewTab(
     val usedBytes = state.diskUsage[vm.id] ?: 0L
     var guestText by remember { mutableStateOf("") }
     val haptic = LocalHapticFeedback.current
-    // A3a：只在一键应答真正有用的窗口出现——运行中 + 固件阶段 + 从 CD 启动。
-    // 不做 runtime 自动应答；5 秒窗口只能由用户看到画面后点按。
-    val showCdPrompt = running &&
-        (runtime as? VmRuntimeState.Running)?.stage == BootStage.FIRMWARE &&
-        vm.bootFromCd
+    val liveRuntime = runtime as? VmRuntimeState.Running
+    val cdRunStart = liveRuntime?.startedAtEpochMs ?: 0L
+    // A3a 修复：卡片覆盖 FIRMWARE/LOADING/BOOT_PROMPT，阶段前进不自动消失；
+    // 只有发送成功（短暂显示 ✓）、手动关闭或 3 分钟安全窗口到期才收起。
+    var cdDismissed by remember(vm.id, cdRunStart) { mutableStateOf(false) }
+    var cdTappedAt by remember(vm.id, cdRunStart) { mutableStateOf(0L) }
+    var cdSuccessSeen by remember(vm.id, cdRunStart) { mutableStateOf(false) }
+    var cdNow by remember(vm.id, cdRunStart) { mutableStateOf(System.currentTimeMillis()) }
+    val cdFeedbackFresh = cdTappedAt > 0L &&
+        state.lastGuestKeyAtEpochMs >= cdTappedAt &&
+        state.lastGuestKeyLabel == "Enter"
+    LaunchedEffect(running, cdRunStart) {
+        if (!running) return@LaunchedEffect
+        while (true) {
+            delay(5_000)
+            cdNow = System.currentTimeMillis()
+        }
+    }
+    LaunchedEffect(cdFeedbackFresh, state.lastGuestKeyOk) {
+        if (cdFeedbackFresh && state.lastGuestKeyOk == true && !cdSuccessSeen) {
+            cdSuccessSeen = true
+            delay(1_500)
+            cdDismissed = true
+        }
+    }
+    val showCdPrompt = CdPrompt.shouldShow(
+        running = running,
+        bootFromCd = vm.bootFromCd,
+        stage = liveRuntime?.stage,
+        startedAtEpochMs = cdRunStart,
+        nowMs = cdNow,
+        dismissed = cdDismissed,
+    )
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -493,29 +520,30 @@ private fun OverviewTab(
     ) {
         if (showCdPrompt) {
             item {
-                // 卡片的反馈只认本次运行里从这张卡发出的 Enter，避免沿用上一次运行的旧状态。
-                val runStart = (runtime as? VmRuntimeState.Running)?.startedAtEpochMs ?: 0L
-                var cdPromptTapped by remember(vm.id, runStart) { mutableStateOf(false) }
                 SectionCard(
                     title = "安装介质提示",
                     subtitle = "CD 启动提示只在 VNC 画面出现",
+                    headerEnd = {
+                        TextButton(onClick = { cdDismissed = true }) { Text("关闭") }
+                    },
                 ) {
                     Text(
                         "VNC 画面出现「Press any key to boot from CD or DVD…」时，" +
-                            "请在 5 秒内点下面的按钮发送 Enter；错过会回落到「No bootable option」。",
+                            "请在 5 秒内点下面的按钮发送 Enter。卡片会保留到发送成功、" +
+                            "手动关闭或 3 分钟后自动收起。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Button(
                         onClick = {
-                            cdPromptTapped = true
+                            cdTappedAt = System.currentTimeMillis()
                             onGuestKey("ret", "Enter")
                         },
                         modifier = Modifier.fillMaxWidth().height(56.dp),
                     ) {
                         Text("发送 Enter", style = MaterialTheme.typography.titleSmall)
                     }
-                    if (cdPromptTapped && state.lastGuestKeyLabel == "Enter") {
+                    if (cdFeedbackFresh) {
                         state.lastGuestKeyOk?.let { ok ->
                             Text(
                                 if (ok) "已发送 Enter ✓" else "发送失败 ✗（QMP 通道不可用）",

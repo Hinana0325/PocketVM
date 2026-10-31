@@ -36,7 +36,7 @@ object MediaHints {
             "25226" -> MediaVersionInfo(
                 tag = MediaVersionTag.KNOWN_BAD,
                 label = "25226 · 已知必坏",
-                detail = "25226 启动即异常，建议改用 22589；仅提示，不会阻止保存或启动。",
+                detail = "25226 启动即异常，建议改用 22589；仅在新选择时确认一次，不会硬阻断。",
                 tone = MediaHintTone.WARNING,
             )
             "26300" -> MediaVersionInfo(
@@ -77,4 +77,13 @@ object MediaHints {
         val name = vmName?.lowercase().orEmpty()
         return "win" in iso || "win" in name
     }
+
+    /**
+     * 本次「新选择」是否为已知必坏的 25226，需要一次二次确认。
+     * 同一个已选路径不重复弹；从 25226 改到别的路径也不弹。
+     */
+    fun requiresKnownBadConfirmation(newPath: String?, previousPath: String?): Boolean =
+        newPath != null &&
+            newPath != previousPath &&
+            classifyIso(newPath)?.tag == MediaVersionTag.KNOWN_BAD
 }

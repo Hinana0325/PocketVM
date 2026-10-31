@@ -71,6 +71,9 @@ fun CreateVmScreen(
     var imageMenu by remember { mutableStateOf(false) }
     var discardDialog by remember { mutableStateOf(false) }
     var importingLeaveDialog by remember { mutableStateOf(false) }
+    // 25226 二次确认：记录触发前的完整草稿，取消时恢复。
+    var knownBadRestore by remember(draft.id) { mutableStateOf<VmConfig?>(null) }
+    var previousDraft by remember(draft.id) { mutableStateOf(draft) }
     // The boot knobs are a fallback surface, not something to wade through on
     // every edit, so they stay folded until something actually goes wrong.
     var advanced by remember { mutableStateOf(false) }
@@ -123,7 +126,37 @@ fun CreateVmScreen(
         if (state.importing == null) importingLeaveDialog = false
     }
 
+    // 25226 二次确认（D-UX-9 B）：只在新选择时弹一次；不硬阻断。
+    LaunchedEffect(draft) {
+        if (draft.isoPath != previousDraft.isoPath &&
+            MediaHints.requiresKnownBadConfirmation(draft.isoPath, previousDraft.isoPath)
+        ) {
+            knownBadRestore = previousDraft
+        }
+        previousDraft = draft
+    }
+
     BackHandler(onBack = requestBack)
+
+    knownBadRestore?.let { previous ->
+        val restore: () -> Unit = {
+            onUpdate { _ -> previous }
+            knownBadRestore = null
+        }
+        AlertDialog(
+            onDismissRequest = restore,
+            title = { Text("25226 已知必坏") },
+            text = {
+                Text("25226 启动即异常，建议改用 22589。仍要使用这份 ISO 吗？取消会恢复之前的选择。")
+            },
+            confirmButton = {
+                TextButton(onClick = { knownBadRestore = null }) { Text("仍要使用") }
+            },
+            dismissButton = {
+                TextButton(onClick = restore) { Text("取消") }
+            },
+        )
+    }
 
     if (importingLeaveDialog) {
         val progress = state.importing
