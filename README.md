@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`） |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.28 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.29 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -57,6 +57,7 @@
 | 0.10.26 | **iPhone 11（iOS）机型**：接入 ChefKiss Inferno（QEMU 10.0.2 fork）作为第二个执行层 `libqemu-inferno-system-aarch64.so`，新增 `APPLE_T8030` 平台：`-M t8030` 直接加载 kernelcache/DeviceTree，7 个 NVMe namespace，还原包 zip 在 App 内导入（Apple 固件不进 APK）。已知限制：旧 restore 镜像与最新 Inferno 的 chip-id 补丁不兼容时，iOS 停在 `data-protection` 启动任务 panic，需要按官方流程重新 restore |
 | 0.10.27 | **Android（ARM64）机型**：新增平台预设，导入可 UEFI 启动的 arm64 Android 磁盘镜像（.img/.qcow2，自动识别 raw/qcow2），固定 virtio-gpu、关闭光驱、内存 4 GB 起；GSI 组件（system/vendor/kernel）拼装仍在实验阶段 |
 | 0.10.28 | **Android 机型加固**：未导入磁盘镜像时启动前直接拦下（不再创建空盘）；创建页 / 列表显示镜像格式（raw / qcow2）与大小；README 增加 Android 镜像准备说明 |
+| 0.10.29 | **运行期看门狗（主循环停摆可观测）**：每 5 秒采样 QMP `query-status` 往返、VNC RFB banner、串口字节增量与主线程 / vCPU 分线程 tick，异常窗口写入 `run-<id>.watchdog.jsonl` 并纳入诊断包；`VmSession` 暴露 `diag` / `diagEvents` 供控制台消费；判据阈值与判读方法见 `docs/troubleshooting.md`；新增 21 个单测 |
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
 
