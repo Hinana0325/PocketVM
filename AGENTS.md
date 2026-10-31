@@ -61,7 +61,7 @@ cd android
 
 ## 测试
 
-19 个文件共 198 个用例（2026-10-31 合并 P0-A 批次 1 后实跑：failures=0 / errors=0 / skipped=0），全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。本机无 JDK/SDK 时不要当成已通过。
+20 个文件共 205 个用例（2026-10-31 合并 A3a 修复后实跑：failures=0 / errors=0 / skipped=0），全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。本机无 JDK/SDK 时不要当成已通过。
 
 `Qcow2CreatorTest` 里两个用例通过 `assumeTrue` 依赖宿主机的 `/usr/bin/qemu-img`（还有一个要求 `qemu-io`）：宿主机没装就**静默跳过**。所以「测试全绿」不等于 qcow2 格式真的被交叉校验过。
 

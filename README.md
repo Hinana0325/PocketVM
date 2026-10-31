@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`，P1 决策已下线该入口） |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.33 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.34 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -62,6 +62,7 @@
 | 0.10.31 | **控制台诊断 Tab（T11）**：控制台新增第 5 个 Tab「诊断」，直接消费看门狗的 `diag` / `diagEvents`——展示 7 种判定、QMP / VNC / 串口 / 主线程四信号、线程分布、停摆事件时间线、判读摘要与原始快照；停摆时可一键导出诊断包或停止虚拟机；数据只读快照、UI 不重算判定；新增 22 个纯函数单测 |
 | 0.10.32 | **manifest 观测字段（T14）**：新增 sessionId（一次启动跨降级阶梯稳定）、qmpConfirmedAt / runningAt 时间戳，以及 cdTransport / usbInput / serialEnabled 的生效值；旧 manifest 仍可解码；新增 4 个单测。为 P1 报表按 session 聚合启动耗时、阶梯命中与 exit 分布提供数据基础 |
 | 0.10.33 | **P0-A 批次 1（操作体验）**：CD 安装介质提示卡与一键「发送 Enter」、Windows ISO 版本/驱动盘提示（22589 / 25226 / 26300）、ISO 导入离页保护（确认 / 取消 / 保留文件并清 `.part`）、平台选择 320dp 布局；新增 11 个单测 |
+| 0.10.34 | **A3a 修复 + 25226 二次确认**：CD 提示卡覆盖 FIRMWARE / LOADING / BOOT_PROMPT，不再随阶段前进消失，保留手动关闭与 180s 安全窗口；选择 25226 时二次确认（不硬阻断）；新增 7 个单测 |
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
 
@@ -358,7 +359,7 @@ docs/                       架构、排障、打包与推送、第三方许可�
 
 | 项 | 结论 |
 | --- | --- |
-| 编译（aarch64 动态 PIE） | 通过（0.10.33）；19 个测试文件 / 198 个用例实跑全绿（2026-10-31，failures=0 / errors=0 / skipped=0） |
+| 编译（aarch64 动态 PIE） | 通过（0.10.34）；20 个测试文件 / 205 个用例实跑全绿（2026-10-31，failures=0 / errors=0 / skipped=0） |
 | APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
 | 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
 | 安装介质启动 | **通过**：固件从 USB 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。USB 崩溃回退 virtio-scsi 后：无驱动盘时同一 ISO 双挂（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`）；挂驱动盘时只走 virtio-cd（两个 ISO 设备同屏会冻结安装） |
