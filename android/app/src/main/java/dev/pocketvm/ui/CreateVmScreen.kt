@@ -26,12 +26,14 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.pocketvm.core.config.Severity
@@ -58,6 +60,7 @@ fun CreateVmScreen(
     onSetPlatform: (VmPlatform) -> Unit,
     onImportApple: (Uri) -> Unit,
     onImportAndroidDisk: (Uri) -> Unit,
+    onCancelImport: () -> Unit,
     contentPadding: androidx.compose.foundation.layout.PaddingValues = androidx.compose.foundation.layout.PaddingValues(0.dp),
 ) {
     val draft = state.draft ?: return
@@ -67,6 +70,7 @@ fun CreateVmScreen(
     var firmwareMenu by remember { mutableStateOf(false) }
     var imageMenu by remember { mutableStateOf(false) }
     var discardDialog by remember { mutableStateOf(false) }
+    var importingLeaveDialog by remember { mutableStateOf(false) }
     // The boot knobs are a fallback surface, not something to wade through on
     // every edit, so they stay folded until something actually goes wrong.
     var advanced by remember { mutableStateOf(false) }
@@ -103,11 +107,54 @@ fun CreateVmScreen(
     }
 
     // Backing out of the wizard used to throw away every edit without asking.
+    val isoImporting = state.importing?.kind == ImportKind.INSTALL_ISO ||
+        state.importing?.kind == ImportKind.DRIVER_ISO
     val requestBack: () -> Unit = {
-        if (state.hasUnsavedChanges && state.importing == null) discardDialog = true else onBack()
+        when {
+            // A6：ISO 复制中返回必须先确认；取消时清掉 .part，不静默丢弃已完成的文件。
+            isoImporting -> importingLeaveDialog = true
+            state.hasUnsavedChanges && state.importing == null -> discardDialog = true
+            else -> onBack()
+        }
+    }
+
+    // 导入在确认框打开期间完成时，自动收起确认框，避免用户取消一个已完成的导入。
+    LaunchedEffect(state.importing != null) {
+        if (state.importing == null) importingLeaveDialog = false
     }
 
     BackHandler(onBack = requestBack)
+
+    if (importingLeaveDialog) {
+        val progress = state.importing
+        val copiedMb = (progress?.copiedBytes ?: 0L) / (1024 * 1024)
+        val totalMb = progress?.totalBytes?.let { it / (1024 * 1024) }
+        val amount = if (totalMb != null) "$copiedMb MB / $totalMb MB" else "$copiedMb MB"
+        AlertDialog(
+            onDismissRequest = { importingLeaveDialog = false },
+            title = { Text("正在导入${progress?.kind?.label ?: "镜像"}") },
+            text = {
+                Text(
+                    "已复制 $amount。离开会取消导入并删除未完成的临时文件；" +
+                        "若复制已完成，文件会保留在镜像库。未保存的修改也会丢弃。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        importingLeaveDialog = false
+                        onCancelImport()
+                        onBack()
+                    },
+                ) {
+                    Text("取消导入并离开", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { importingLeaveDialog = false }) { Text("继续等待") }
+            },
+        )
+    }
 
     if (discardDialog) {
         AlertDialog(
@@ -172,13 +219,20 @@ fun CreateVmScreen(
             }
 
             SectionCard(title = "平台", subtitle = "决定用哪个执行层；两种机型的配置项互不影响") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // A7：3 个长标签改为整行单选，避免 320dp / 大字号横向裁切。
+                // 仍复用 Button/OutlinedButton，选中态与原有语义一致。
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     VmPlatform.values().forEach { platform ->
                         if (draft.platform == platform) {
-                            Button(onClick = { }) { Text(platform.label) }
+                            Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
+                                Text(platform.label, textAlign = TextAlign.Center)
+                            }
                         } else {
-                            OutlinedButton(onClick = { onSetPlatform(platform) }) {
-                                Text(platform.label)
+                            OutlinedButton(
+                                onClick = { onSetPlatform(platform) },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(platform.label, textAlign = TextAlign.Center)
                             }
                         }
                     }
@@ -407,6 +461,26 @@ fun CreateVmScreen(
                         ) { Text("移除") }
                     }
                 }
+                if (MediaHints.looksLikeWindows(draft.isoPath, draft.name)) {
+                    MediaHints.classifyIso(draft.isoPath)?.let { info ->
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                info.label,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = when (info.tone) {
+                                    MediaHintTone.WARNING -> MaterialTheme.colorScheme.error
+                                    MediaHintTone.OK -> MaterialTheme.colorScheme.primary
+                                    MediaHintTone.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                            Text(
+                                info.detail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
                 Text(
                     "同一份 ISO 可被多台虚拟机共用，无需重复复制。安装完成后移除介质，" +
                         "下次启动就会直接从虚拟磁盘引导。",
@@ -415,6 +489,22 @@ fun CreateVmScreen(
                 )
                 state.importing?.let { progress ->
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "正在复制${progress.kind.label}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (progress.kind == ImportKind.INSTALL_ISO ||
+                                progress.kind == ImportKind.DRIVER_ISO
+                            ) {
+                                TextButton(onClick = onCancelImport) { Text("取消导入") }
+                            }
+                        }
                         val fraction = progress.fraction
                         if (fraction != null) {
                             LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
@@ -457,6 +547,13 @@ fun CreateVmScreen(
                             enabled = state.importing == null,
                         ) { Text("移除") }
                     }
+                }
+                MediaHints.driverAdvice(draft.isoPath, draft.driverIsoPath, draft.name)?.let { advice ->
+                    Text(
+                        advice,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
                 Text(
                     "用 Fedora 的 virtio-win 驱动盘（含 vioscsi、viostor 等）。安装时 Windows 停在「找不到驱动程序」" +

@@ -170,6 +170,7 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                     onSetPlatform = vm::setPlatform,
                     onImportApple = vm::importAppleBundle,
                     onImportAndroidDisk = vm::importAndroidDisk,
+                    onCancelImport = vm::cancelImport,
                     contentPadding = topBarScreenPadding,
                 )
 

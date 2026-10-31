@@ -72,6 +72,7 @@ import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
+import dev.pocketvm.core.model.BootStage
 import dev.pocketvm.runtime.SshDefaults
 import dev.pocketvm.ui.theme.Danger
 import dev.pocketvm.ui.theme.Success
@@ -480,11 +481,53 @@ private fun OverviewTab(
     val usedBytes = state.diskUsage[vm.id] ?: 0L
     var guestText by remember { mutableStateOf("") }
     val haptic = LocalHapticFeedback.current
+    // A3a：只在一键应答真正有用的窗口出现——运行中 + 固件阶段 + 从 CD 启动。
+    // 不做 runtime 自动应答；5 秒窗口只能由用户看到画面后点按。
+    val showCdPrompt = running &&
+        (runtime as? VmRuntimeState.Running)?.stage == BootStage.FIRMWARE &&
+        vm.bootFromCd
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        if (showCdPrompt) {
+            item {
+                // 卡片的反馈只认本次运行里从这张卡发出的 Enter，避免沿用上一次运行的旧状态。
+                val runStart = (runtime as? VmRuntimeState.Running)?.startedAtEpochMs ?: 0L
+                var cdPromptTapped by remember(vm.id, runStart) { mutableStateOf(false) }
+                SectionCard(
+                    title = "安装介质提示",
+                    subtitle = "CD 启动提示只在 VNC 画面出现",
+                ) {
+                    Text(
+                        "VNC 画面出现「Press any key to boot from CD or DVD…」时，" +
+                            "请在 5 秒内点下面的按钮发送 Enter；错过会回落到「No bootable option」。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = {
+                            cdPromptTapped = true
+                            onGuestKey("ret", "Enter")
+                        },
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                    ) {
+                        Text("发送 Enter", style = MaterialTheme.typography.titleSmall)
+                    }
+                    if (cdPromptTapped && state.lastGuestKeyLabel == "Enter") {
+                        state.lastGuestKeyOk?.let { ok ->
+                            Text(
+                                if (ok) "已发送 Enter ✓" else "发送失败 ✗（QMP 通道不可用）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (ok) Success else Danger,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             SectionCard(title = "运行状态") {
                 Row(

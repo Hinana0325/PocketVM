@@ -25,7 +25,9 @@ import dev.pocketvm.runtime.LaunchOutcome
 import dev.pocketvm.runtime.SshConsole
 import dev.pocketvm.runtime.SshDefaults
 import dev.pocketvm.runtime.SshState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,7 +53,15 @@ val Screen.isTopLevel: Boolean
 /** SSH 控制台保留的输出上限：超出后从头截断，防止长命令把 UiState 撑爆。 */
 private const val SSH_OUTPUT_LIMIT = 128 * 1024
 
-data class ImportProgress(val copiedBytes: Long, val totalBytes: Long?) {
+/** 导入任务来源：只有 ISO / 驱动盘导入支持离页取消。 */
+enum class ImportKind(val label: String) {
+    INSTALL_ISO("安装镜像"),
+    DRIVER_ISO("驱动盘镜像"),
+    APPLE_BUNDLE("iOS 资源"),
+    ANDROID_DISK("Android 磁盘镜像"),
+}
+
+data class ImportProgress(val copiedBytes: Long, val totalBytes: Long?, val kind: ImportKind) {
     val fraction: Float?
         get() = totalBytes?.takeIf { it > 0 }?.let { (copiedBytes.toFloat() / it).coerceIn(0f, 1f) }
 }
@@ -146,6 +156,9 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
 
     /** SSH 控制台：一条 VM 会话只挂一条 SSH 连接。 */
     private val sshConsole = SshConsole()
+
+    /** 当前 ISO/驱动盘导入任务；用于离页保护与「取消导入」。 */
+    private var importJob: Job? = null
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
@@ -295,7 +308,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         val draft = _ui.value.draft ?: return
         val target = container.layout.diskFile(draft.id)
         viewModelScope.launch {
-            _ui.update { it.copy(importing = ImportProgress(0, null), notice = null) }
+            _ui.update { it.copy(importing = ImportProgress(0, null, ImportKind.ANDROID_DISK), notice = null) }
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val input = getApplication<Application>().contentResolver.openInputStream(uri)
@@ -312,7 +325,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                                 out.write(buf, 0, n)
                                 copied += n
                                 _ui.update { state ->
-                                    state.copy(importing = ImportProgress(copied, null))
+                                    state.copy(importing = ImportProgress(copied, null, ImportKind.ANDROID_DISK))
                                 }
                             }
                         }
@@ -355,7 +368,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         val draft = _ui.value.draft ?: return
         val target = AppleAssets.dir(container.layout, draft.id)
         viewModelScope.launch {
-            _ui.update { it.copy(importing = ImportProgress(0, null), notice = null) }
+            _ui.update { it.copy(importing = ImportProgress(0, null, ImportKind.APPLE_BUNDLE), notice = null) }
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val input = getApplication<Application>().contentResolver.openInputStream(uri)
@@ -363,7 +376,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     input.use { stream ->
                         AppleAssets.importZip(stream, target) { _, total ->
                             _ui.update { state ->
-                                state.copy(importing = ImportProgress(total, null))
+                                state.copy(importing = ImportProgress(total, null, ImportKind.APPLE_BUNDLE))
                             }
                         }
                     }
@@ -749,77 +762,89 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- media ----------
 
     fun importIso(uri: Uri) {
-        viewModelScope.launch {
-            _ui.update { it.copy(importing = ImportProgress(0, null), notice = null) }
-            val result = withContext(Dispatchers.IO) {
-                container.isoImporter.import(uri) { copied, total ->
-                    _ui.update { it.copy(importing = ImportProgress(copied, total)) }
-                }
-            }
-            result.fold(
-                onSuccess = { file ->
-                    val attached = _ui.value.draft != null
-                    if (!attached) {
-                        // The user left the wizard mid-copy: without this the ISO
-                        // sits in images/ as an orphan nobody can reach.
-                        withContext(Dispatchers.IO) { file.delete() }
-                        _ui.update { it.copy(importing = null, notice = "已离开编辑页，导入的镜像已丢弃") }
-                    } else {
-                        _ui.update { state ->
-                            val draft = state.draft?.let { d ->
-                                val name = if (d.name == VmConfig.DEFAULT_NAME || d.name.isBlank())
-                                    VmConfig.nameFromIso(file.absolutePath) ?: d.name
-                                else d.name
-                                d.copy(isoPath = file.absolutePath, bootFromCd = true, name = name)
-                            }
-                            state.copy(
-                                draft = draft,
-                                importing = null,
-                                imageOptions = (state.imageOptions + file.absolutePath).distinct().sorted(),
-                                notice = "已导入 ${file.name}",
-                            )
-                        }
-                        _ui.value.draft?.let { refreshIssues(it) }
-                    }
-                },
-                onFailure = { error ->
-                    _ui.update { it.copy(importing = null, notice = "导入失败：${error.message}") }
-                },
-            )
-        }
+        launchIsoImport(uri, ImportKind.INSTALL_ISO)
     }
 
     fun importDriverIso(uri: Uri) {
-        viewModelScope.launch {
-            _ui.update { it.copy(importing = ImportProgress(0, null), notice = null) }
-            val result = withContext(Dispatchers.IO) {
-                container.isoImporter.import(uri) { copied, total ->
-                    _ui.update { it.copy(importing = ImportProgress(copied, total)) }
-                }
-            }
-            result.fold(
-                onSuccess = { file ->
-                    val attached = _ui.value.draft != null
-                    if (!attached) {
-                        withContext(Dispatchers.IO) { file.delete() }
-                        _ui.update { it.copy(importing = null, notice = "已离开编辑页，导入的镜像已丢弃") }
-                    } else {
-                        _ui.update { state ->
-                            val draft = state.draft?.copy(driverIsoPath = file.absolutePath)
-                            state.copy(
-                                draft = draft,
-                                importing = null,
-                                imageOptions = (state.imageOptions + file.absolutePath).distinct().sorted(),
-                                notice = "已导入驱动盘 ${file.name}",
-                            )
-                        }
-                    }
-                },
-                onFailure = { error ->
-                    _ui.update { it.copy(importing = null, notice = "驱动盘导入失败：${error.message}") }
-                },
-            )
+        launchIsoImport(uri, ImportKind.DRIVER_ISO)
+    }
+
+    /**
+     * ISO / 驱动盘导入：单任务、可取消。
+     *
+     * 离页确认由 CreateVmScreen 负责；副本先落 `.part`，取消或失败由
+     * IsoImporter 清理。若用户已离开编辑页但复制恰好完成，文件会保留并
+     * 加入镜像库——不再走「复制完成后再删除」的静默丢弃路径。
+     */
+    private fun launchIsoImport(uri: Uri, kind: ImportKind) {
+        if (importJob?.isActive == true) {
+            _ui.update { it.copy(notice = "已有镜像正在导入，请等待完成或取消") }
+            return
         }
+        importJob = viewModelScope.launch {
+            _ui.update { it.copy(importing = ImportProgress(0, null, kind), notice = null) }
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    container.isoImporter.import(uri) { copied, total ->
+                        _ui.update { it.copy(importing = ImportProgress(copied, total, kind)) }
+                    }
+                }
+                result.fold(
+                    onSuccess = { file ->
+                        _ui.update { state ->
+                            val draft = state.draft
+                            val images = (state.imageOptions + file.absolutePath).distinct().sorted()
+                            if (draft == null) {
+                                state.copy(
+                                    importing = null,
+                                    imageOptions = images,
+                                    notice = "${kind.label}已导入，文件已保留在镜像库：${file.name}",
+                                )
+                            } else {
+                                val nextDraft = if (kind == ImportKind.INSTALL_ISO) {
+                                    val name = if (draft.name == VmConfig.DEFAULT_NAME || draft.name.isBlank()) {
+                                        VmConfig.nameFromIso(file.absolutePath) ?: draft.name
+                                    } else {
+                                        draft.name
+                                    }
+                                    draft.copy(isoPath = file.absolutePath, bootFromCd = true, name = name)
+                                } else {
+                                    draft.copy(driverIsoPath = file.absolutePath)
+                                }
+                                state.copy(
+                                    draft = nextDraft,
+                                    importing = null,
+                                    imageOptions = images,
+                                    notice = if (kind == ImportKind.INSTALL_ISO) {
+                                        "已导入 ${file.name}"
+                                    } else {
+                                        "已导入驱动盘 ${file.name}"
+                                    },
+                                )
+                            }
+                        }
+                        if (kind == ImportKind.INSTALL_ISO) {
+                            _ui.value.draft?.let { refreshIssues(it) }
+                        }
+                    },
+                    onFailure = { error ->
+                        _ui.update { it.copy(importing = null, notice = "${kind.label}导入失败：${error.message}") }
+                    },
+                )
+            } catch (c: CancellationException) {
+                _ui.update { it.copy(importing = null, notice = "已取消导入，未完成的临时文件已清理") }
+                // 取消恰好发生在重命名之后时，文件已经在镜像库；刷新一次让用户还能选到。
+                refresh()
+                throw c
+            } finally {
+                importJob = null
+            }
+        }
+    }
+
+    /** 取消当前 ISO / 驱动盘导入；未完成的 `.part` 由 IsoImporter 在取消时删除。 */
+    fun cancelImport() {
+        importJob?.cancel()
     }
 
     fun importFirmware(uri: Uri) {
