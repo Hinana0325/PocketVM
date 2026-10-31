@@ -7,11 +7,13 @@
 ```
 build-qemu-android-dynamic.sh   →  改名成 lib*.so 的执行层闭包
 install-qemu.sh                 →  落进 android/app/src/main/jniLibs/arm64-v8a/
-gradlew :app:assembleDebug      →  app-debug.apk
+gradlew :app:assemblePerf       →  apk/perf/app-perf.apk（日常）或 app-debug.apk（调试）
 scripts/verify.sh               →  提交前自检
 scripts/wireless-dev.sh         →  装到真机并取一手证据
-scripts/gh-sync.py              →  推到 Hinana0325/PocketVM
+git push（需 owner 授权）        →  推送到 origin；日常分支由 PM 合并
 ```
+
+`scripts/gh-sync.py` / `push_via_api.py` 是旧工作流（仓库曾无 `.git`、git-over-HTTPS 不通）的历史方案，**已废弃**，见第 6 节。
 
 ## 1. 执行层（QEMU + 依赖闭包）
 
@@ -37,7 +39,7 @@ cd android                      # Gradle 根是 android/，不是仓库根
 - `jniLibs.useLegacyPackaging = true`：Android 10+ 的 W^X 只允许执行 `nativeLibraryDir` 里的文件，去掉就整条启动链断掉。
 - `minSdk = 30`：`memfd_create` 的下限。
 
-`versionCode` / `versionName` 是给用户判断"手机上是哪一版"用的，格式 `0.10.1-qemu11.1.2-dyn`。**换了执行层必须同时改 versionName 里的 qemu 段**，否则日志和 APK 对不上号。
+`versionCode` / `versionName` 是给用户判断"手机上是哪一版"用的，格式 `<版本>-qemu<QEMU 版本>-edk<edk2 版本>`，当前为 `0.10.28-qemu11.1.2-edk2026.08`。**换了执行层或固件必须同时改对应段**，否则日志和 APK 对不上号；版本号由 PM 在合并时统一升，分支内不要改。
 
 ## 3. 提交前自检
 
@@ -59,22 +61,27 @@ bash scripts/wireless-dev.sh {discover|connect|launch|log|health [N]|vnc [端口
 
 ## 5. 发布 Release（可选）
 
-`scripts/make_release.py` 建 GitHub Release 并把 debug APK 传成资产——用户从这里下载，不是从 git。`TAG` 与 APK 路径是写死的常量，用之前先改成当前版本。
+`scripts/make_release.py` 建 GitHub Release 并把 APK 传成资产——用户从这里下载，不是从 git。注意：脚本里的 `TAG`、`APK`、`ASSET_NAME` 仍是 0.9.2 时代的硬编码常量（T3 审计 H2），直接运行会指向不存在的路径或错版本；使用前必须改成当前版本与产物路径，或等 DevOps 完成参数化。当前 `perf` 构建是日常侧载包（debug 签名、非 debuggable），发布资产用哪个变体要在 Release 说明里写清。发布是对外动作，须 owner 明确授权。
 
 ## 6. 推到 GitHub
 
-`git push` 在这台机器上跑不通：github.com:443 的 git 协议被阻断，而 `api.github.com` 正常。工作副本还**没有 `.git`**（只有 `.gitignore`），所以 `git ls-files` 和依赖它的 `scripts/push_via_api.py` 也用不了。
+当前工作副本**有 `.git`**（remote `https://github.com/Hinana0325/PocketVM.git`），`main` 与 `origin/main` 同步，`git ls-remote` 可读。git-over-HTTPS 的**读**是通的；**写**需要 owner 授权的凭据，默认不推送。
+
+正常开发流：成员只在本地分支/worktree 提交，禁止 push；由项目经理合并后再推送。
+
+需要直接推送时（仅在 owner 明确授权后），用一次性 URL，不改 `origin` 配置，token 只经环境变量传递、绝不写入仓库：
 
 ```bash
-export GH_TOKEN="$(bash scripts/gh-token.sh)"   # 从 GCM 现取，不落盘
-python scripts/gh-sync.py plan                  # 只读：会新增/修改哪些文件
-python scripts/gh-sync.py push -m "提交说明"
+export GITHUB_TOKEN=...   # 由 owner 提供，或经已授权的连接器获取；不要写进 shell 历史
+git push https://oauth2:${GITHUB_TOKEN}@github.com/Hinana0325/PocketVM.git main
 ```
 
-`gh-sync.py` 的做法：本地用 `git hash-object --no-filters` 算原始字节的 blob SHA-1，与远端递归树逐文件比，只上传差异；用 `base_tree` 增量建树，所以**远端独有的文件原样保留，不删任何东西**；每个 blob 都核对服务端返回的 SHA-1，推完再拉一次树复核。默认跳过 `build/`、`.gradle`、`*.apk`、`*.log`、`.qoder/`、`.mimocode/` 等，额外项用 `--skip 路径` 追加。
+历史方案说明：`scripts/gh-sync.py`（`GH_TOKEN` + api.github.com git data API）与 `scripts/push_via_api.py` 是为「仓库无 `.git`、git 协议不通」的旧环境写的，两个前提现在都不成立，**已废弃，仅作历史参考**；`gh-sync.py` docstring 里「没有 .git」的描述也已过期。不要把它们当现行发布路径。
 
 ## 7. 凭据
 
-- 能用的凭据只有 **Git Credential Manager 里那份账号级 OAuth token**（`scripts/gh-token.sh` 就是取它）。
-- `~/.git-credentials` 里那条 `ghp_` 开头的经典 PAT **已被吊销**（API 返 401），别再拿它试。
-- token 本身不进仓库：它是账号级的（除 `repo` 外还带 `delete_repo`、`admin:org`、`workflow`），一旦进了 git 历史，即使仓库是私有的，也会随 fork、协作者、镜像和 GitHub 自身的索引扩散，而且提交过的秘密只能靠改写历史来撤销——而它会随 GCM 刷新轮换，写死的那份迟早是错的。要换机器就重新授权一次 GCM，成本是一条命令。
+- 当前环境默认**没有任何可用推送凭据**：无 `gh`、无 credential helper、无 `~/.git-credentials`、无 `GH_TOKEN`。只读 `git ls-remote` 不受影响。
+- 需要推送时由 owner 选择一种授权方式：① 直接提供 token（环境变量传入）；② 在平台侧授权 GitHub 连接器。除此之外不要自行生成、缓存或复用凭据。
+- `scripts/gh-token.sh` 依赖 Git Credential Manager，且会把 token 打到 stdout——**不要在共享终端或 CI 日志里运行**。当前环境没有 GCM，该脚本取不到 token。
+- `~/.git-credentials` 里那条 `ghp_` 开头的经典 PAT 已吊销（API 返 401），别再试。
+- token 本身不进仓库：它是账号级的（除 `repo` 外还带 `delete_repo`、`admin:org`、`workflow`），一旦进历史只能改写历史撤销，且会随授权轮换而过期。换机器就重新授权一次。
