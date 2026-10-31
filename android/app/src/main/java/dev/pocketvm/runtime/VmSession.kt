@@ -246,13 +246,16 @@ class VmSession(
 
     private suspend fun startLocked(config: VmConfig): LaunchOutcome = mutex.withLock {
         if (isRunning()) return@withLock LaunchOutcome.Failed("已有虚拟机在运行，请先停止。")
+        // 一次用户启动只生成一个 sessionId：降级阶梯内所有 attempt 共用，
+        // 报表靠它把「一次启动」和「单次 attempt（runId）」分开。
+        val sessionId = UUID.randomUUID().toString().take(8)
         // 新一次运行必须丢弃上一次的看门狗快照/事件，避免跨运行混用。
         _diag.value = null
         _diagEvents.value = emptyList()
         // iOS 机型是完全不同的一条链路：没有 UEFI / qcow2 / ISO，走 Inferno 的
         // t8030 机器。分支放在这里而不是拆成两个入口，是为了让「同时只能跑一台」
         // 与状态机、QMP、监控、停止逻辑全部共用。
-        if (config.platform == VmPlatform.APPLE_T8030) return@withLock startApple(config)
+        if (config.platform == VmPlatform.APPLE_T8030) return@withLock startApple(config, sessionId)
         // Android 机型的系统盘来自用户导入的完整镜像。没有镜像时不能走磁盘置备
         // （那会创建一个空的 qcow2，启动后只会停在引导器），在这里提前拦下。
         if (config.platform == VmPlatform.ANDROID_ARM64) {
@@ -269,6 +272,7 @@ class VmSession(
         AgentFeed.attach(layout.agentFeedFile())
         AgentFeed.event(
             "session.start",
+            "session" to sessionId,
             "vm" to config.id,
             "name" to config.name,
             "mode" to config.launchMode,
@@ -601,11 +605,16 @@ class VmSession(
                 logPath = logFile.absolutePath,
                 profile = profile.name,
                 attempt = index + 1,
+                sessionId = sessionId,
+                cdTransport = cdTransport.name,
+                usbInput = usbInput,
+                serialEnabled = attemptSerial != null,
             )
             currentManifest = manifest
             manifests.write(manifest)
             AgentFeed.event(
                 "attempt.start",
+                "session" to sessionId,
                 "run" to runId,
                 "profile" to profile.name,
                 "attempt" to index + 1,
@@ -660,6 +669,8 @@ class VmSession(
             val confirmed = withContext(Dispatchers.IO) {
                 client.connect(totalWaitMs = 20_000) { launched.isAlive }
             }
+            // QMP 握手成功是控制面可用的最早证据；失败 attempt 也要留下这个时刻。
+            val qmpConfirmedAt = if (confirmed) System.currentTimeMillis() else null
             // The QMP greeting is sent while chardevs initialise, *before* machine
             // init finishes. A bad device or pflash image can therefore survive
             // the handshake and die a moment later — requiring a short stability
@@ -690,11 +701,17 @@ class VmSession(
                 }
 
                 qmp = client
-                manifests.write(manifest.copy(outcome = RunManifest.Outcome.RUNNING))
+                val runningAt = System.currentTimeMillis()
+                val runningManifest = manifest.copy(
+                    outcome = RunManifest.Outcome.RUNNING,
+                    qmpConfirmedAtEpochMs = qmpConfirmedAt,
+                    runningAtEpochMs = runningAt,
+                )
+                manifests.write(runningManifest)
                 _state.value = VmRuntimeState.Running(
                     vmId = config.id,
                     pid = pidOf(launched),
-                    startedAtEpochMs = System.currentTimeMillis(),
+                    startedAtEpochMs = runningAt,
                     vncPort = effectivePort,
                     logPath = logFile.absolutePath,
                 )
@@ -706,7 +723,7 @@ class VmSession(
                     "vncPort" to effectivePort,
                     "log" to logFile.absolutePath,
                 )
-                monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
+                monitorJob = scope.launch { awaitExit(launched, runningManifest, logFile) }
                 startHealthWatch(launched)
                 startMetricsWatch(launched, client)
                 startRuntimeWatchdog(launched, client, effectivePort, config.id, runId)
@@ -763,6 +780,7 @@ class VmSession(
                     outcome = RunManifest.Outcome.LAUNCH_FAILED,
                     failureHint = hint,
                     logExcerpt = detail,
+                    qmpConfirmedAtEpochMs = qmpConfirmedAt,
                 ),
             )
             AgentFeed.event(
@@ -1380,10 +1398,11 @@ class VmSession(
      * kernelcache / SEP / NVMe 镜像全部由用户导入（见 [AppleAssets]），
      * App 只做校验、拼参数、拉起进程。
      */
-    private suspend fun startApple(config: VmConfig): LaunchOutcome {
+    private suspend fun startApple(config: VmConfig, sessionId: String): LaunchOutcome {
         AgentFeed.attach(layout.agentFeedFile())
         AgentFeed.event(
             "session.start",
+            "session" to sessionId,
             "vm" to config.id,
             "name" to config.name,
             "platform" to "APPLE_T8030",
@@ -1468,11 +1487,13 @@ class VmSession(
             logPath = logFile.absolutePath,
             profile = "APPLE_T8030",
             attempt = 1,
+            sessionId = sessionId,
         )
         currentManifest = manifest
         manifests.write(manifest)
         AgentFeed.event(
             "attempt.start",
+            "session" to sessionId,
             "run" to runId,
             "platform" to "APPLE_T8030",
             "argv" to argv.joinToString(" "),
@@ -1511,6 +1532,7 @@ class VmSession(
         val confirmed = withContext(Dispatchers.IO) {
             client.connect(totalWaitMs = 20_000) { launched.isAlive }
         }
+        val qmpConfirmedAt = if (confirmed) System.currentTimeMillis() else null
         var healthy = confirmed && launched.isAlive
         if (healthy) {
             // t8030 的机器初始化（SEP、AIC、NVMe 控制器）比 virt 慢得多，
@@ -1547,6 +1569,7 @@ class VmSession(
                     outcome = RunManifest.Outcome.LAUNCH_FAILED,
                     failureHint = detail,
                     logExcerpt = detail,
+                    qmpConfirmedAtEpochMs = qmpConfirmedAt,
                 ),
             )
             return fail(
@@ -1557,11 +1580,17 @@ class VmSession(
         }
 
         qmp = client
-        manifests.write(manifest.copy(outcome = RunManifest.Outcome.RUNNING))
+        val runningAt = System.currentTimeMillis()
+        val runningManifest = manifest.copy(
+            outcome = RunManifest.Outcome.RUNNING,
+            qmpConfirmedAtEpochMs = qmpConfirmedAt,
+            runningAtEpochMs = runningAt,
+        )
+        manifests.write(runningManifest)
         _state.value = VmRuntimeState.Running(
             vmId = config.id,
             pid = pidOf(launched),
-            startedAtEpochMs = System.currentTimeMillis(),
+            startedAtEpochMs = runningAt,
             vncPort = effectivePort,
             logPath = logFile.absolutePath,
         )
@@ -1573,7 +1602,7 @@ class VmSession(
             "vncPort" to effectivePort,
             "log" to logFile.absolutePath,
         )
-        monitorJob = scope.launch { awaitExit(launched, manifest, logFile) }
+        monitorJob = scope.launch { awaitExit(launched, runningManifest, logFile) }
         startHealthWatch(launched)
         startMetricsWatch(launched, client)
         startRuntimeWatchdog(launched, client, effectivePort, config.id, runId)
