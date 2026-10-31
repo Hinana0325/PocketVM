@@ -39,7 +39,7 @@ cd android                      # Gradle 根是 android/，不是仓库根
 - `jniLibs.useLegacyPackaging = true`：Android 10+ 的 W^X 只允许执行 `nativeLibraryDir` 里的文件，去掉就整条启动链断掉。
 - `minSdk = 30`：`memfd_create` 的下限。
 
-`versionCode` / `versionName` 是给用户判断"手机上是哪一版"用的，格式 `<版本>-qemu<QEMU 版本>-edk<edk2 版本>`，当前为 `0.10.30-qemu11.1.2-edk2026.08`。**换了执行层或固件必须同时改对应段**，否则日志和 APK 对不上号；版本号由 PM 在合并时统一升，分支内不要改。
+`versionCode` / `versionName` 是给用户判断"手机上是哪一版"用的，格式 `<版本>-qemu<QEMU 版本>-edk<edk2 版本>`，当前为 `0.10.31-qemu11.1.2-edk2026.08`。**换了执行层或固件必须同时改对应段**，否则日志和 APK 对不上号；版本号由 PM 在合并时统一升，分支内不要改。
 
 ## 3. 提交前自检
 

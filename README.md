@@ -20,7 +20,7 @@
 | VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`，P1 决策已下线该入口） |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.30 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.31 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -59,6 +59,7 @@
 | 0.10.28 | **Android 机型加固**：未导入磁盘镜像时启动前直接拦下（不再创建空盘）；创建页 / 列表显示镜像格式（raw / qcow2）与大小；README 增加 Android 镜像准备说明 |
 | 0.10.29 | **运行期看门狗（主循环停摆可观测）**：每 5 秒采样 QMP `query-status` 往返、VNC RFB banner、串口字节增量与主线程 / vCPU 分线程 tick，异常窗口写入 `run-<id>.watchdog.jsonl` 并纳入诊断包；`VmSession` 暴露 `diag` / `diagEvents` 供控制台消费；判据阈值与判读方法见 `docs/troubleshooting.md`；新增 21 个单测 |
 | 0.10.30 | **下线 VNC 局域网入口（P1 决策 D1=B）**：创建页不再提供「局域网」选项，控制台与端口转发固定展示 127.0.0.1 + adb forward；旧配置仍由校验器以 VNC_LAN_UNAVAILABLE 拦下并给出迁移提示。局域网 VNC 留待未来重建执行层（补 DES/nettle）时恢复 |
+| 0.10.31 | **控制台诊断 Tab（T11）**：控制台新增第 5 个 Tab「诊断」，直接消费看门狗的 `diag` / `diagEvents`——展示 7 种判定、QMP / VNC / 串口 / 主线程四信号、线程分布、停摆事件时间线、判读摘要与原始快照；停摆时可一键导出诊断包或停止虚拟机；数据只读快照、UI 不重算判定；新增 22 个纯函数单测 |
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
 
@@ -355,7 +356,7 @@ docs/                       架构、排障、打包与推送、第三方许可�
 
 | 项 | 结论 |
 | --- | --- |
-| 编译（aarch64 动态 PIE） | 通过（0.10.30）；16 个测试文件 / 161 个用例实跑全绿（2026-10-31，failures=0 / errors=0 / skipped=0） |
+| 编译（aarch64 动态 PIE） | 通过（0.10.31）；17 个测试文件 / 183 个用例实跑全绿（2026-10-31，failures=0 / errors=0 / skipped=0） |
 | APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
 | 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
 | 安装介质启动 | **通过**：固件从 USB 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。USB 崩溃回退 virtio-scsi 后：无驱动盘时同一 ISO 双挂（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`）；挂驱动盘时只走 virtio-cd（两个 ISO 设备同屏会冻结安装） |
