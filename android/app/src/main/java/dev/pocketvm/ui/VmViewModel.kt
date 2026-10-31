@@ -30,6 +30,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -116,6 +117,8 @@ data class UiState(
     val localIp: String? = null,
     /** Latest performance sample of the running VM; null when nothing runs. */
     val metrics: dev.pocketvm.diagnostics.VmMetrics? = null,
+    /** 诊断看板数据：T2 watchdog 的 diag / diagEvents 在这里映射为 UI 契约。 */
+    val diagnostics: WatchdogUiState = WatchdogUiState(),
     /** SSH 控制台连接状态；密码不在 UiState 里。 */
     val sshState: SshState = SshState.Disconnected,
     /** SSH 输出尾部（stdout + stderr），最多保留 [SSH_OUTPUT_LIMIT] 字节。 */
@@ -1066,6 +1069,15 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             container.session.metrics.collect { sample ->
                 _ui.update { it.copy(metrics = sample) }
+            }
+        }
+        // T2 的看门狗快照与事件都已在内存里（每 5 秒整体替换），这里只做
+        // 合流与 UI 契约映射；不解析 jsonl，也不在 UI 侧重算判定。
+        viewModelScope.launch {
+            combine(container.session.diag, container.session.diagEvents) { snapshot, events ->
+                WatchdogUiState(enabled = true, snapshot = snapshot, events = events)
+            }.collect { diag ->
+                _ui.update { it.copy(diagnostics = diag) }
             }
         }
         viewModelScope.launch {

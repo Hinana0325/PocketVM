@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
@@ -216,6 +217,12 @@ fun ConsoleScreen(
                 icon = { Icon(Icons.Filled.Terminal, contentDescription = null, modifier = Modifier.size(18.dp)) },
                 text = { Text("SSH") },
             )
+            Tab(
+                selected = tab == 4,
+                onClick = { tab = 4 },
+                icon = { Icon(Icons.Filled.MonitorHeart, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                text = { Text("诊断") },
+            )
         }
 
         AnimatedContent(
@@ -277,6 +284,21 @@ fun ConsoleScreen(
                 onCloseShell = onSshCloseShell,
                 onShellSend = onSshShellSend,
                 onShellCtrlC = onSshShellCtrlC,
+            )
+            4 -> DiagnosticsTab(
+                vm = vm,
+                runtime = runtime,
+                otherRunning = otherRunning,
+                lastManifest = state.lastRuns[vm.id],
+                diag = state.diagnostics,
+                canStart = !state.busy && otherRunning == null &&
+                    (runtime is VmRuntimeState.Idle ||
+                        runtime is VmRuntimeState.Exited ||
+                        runtime is VmRuntimeState.Failed),
+                onStart = onStart,
+                onStop = onStop,
+                onExport = onExport,
+                onOpenLogs = { tab = 1 },
             )
             }
         }
