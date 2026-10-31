@@ -1,0 +1,970 @@
+package dev.pocketvm.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MonitorHeart
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import dev.pocketvm.core.model.RunManifest
+import dev.pocketvm.core.model.VmConfig
+import dev.pocketvm.core.model.VmRuntimeState
+import dev.pocketvm.diagnostics.DiagEvent
+import dev.pocketvm.diagnostics.DiagSnapshot
+import dev.pocketvm.diagnostics.DiagVerdict
+import dev.pocketvm.diagnostics.DiagVncBanner
+import dev.pocketvm.ui.theme.MonoTextStyle
+import dev.pocketvm.ui.theme.PocketVmTheme
+import kotlinx.coroutines.delay
+
+/**
+ * 控制台第 5 个 Tab：诊断看板（T6）。
+ *
+ * 数据全部来自 [WatchdogUiState]（T2 的 diag / diagEvents 在 ViewModel 里映射），
+ * 停摆判定只读 `snapshot.verdict`；UI 自算的只有样本新鲜度、数字格式与中文映射。
+ * 不直接解析 watchdog.jsonl，也不复制 T2 的阈值。
+ */
+@Composable
+fun DiagnosticsTab(
+    vm: VmConfig,
+    runtime: VmRuntimeState,
+    otherRunning: VmRuntimeState.Running?,
+    lastManifest: RunManifest?,
+    diag: WatchdogUiState,
+    canStart: Boolean,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onExport: () -> Unit,
+    onOpenLogs: () -> Unit,
+) {
+    val snapshot = diag.snapshot?.takeIf { it.vmId == vm.id }
+    val nowMs = rememberNowMs(active = snapshot != null)
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(vm.id) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_500)
+            copied = false
+        }
+    }
+    val copySummary: (String) -> Unit = { text ->
+        clipboard.setText(AnnotatedString(text))
+        copied = true
+    }
+
+    when {
+        !diag.enabled -> WatchdogDisabledPanel(onExport = onExport)
+        runtime is VmRuntimeState.Preparing -> PreparingPanel()
+        runtime is VmRuntimeState.Stopping -> StoppingPanel(diag = diag)
+        runtime is VmRuntimeState.Running && snapshot == null ->
+            WaitingFirstSamplePanel(diag = diag, onExport = onExport)
+        runtime is VmRuntimeState.Running && snapshot != null ->
+            DashboardPanel(
+                vm = vm,
+                diag = diag,
+                snapshot = snapshot,
+                nowMs = nowMs,
+                copied = copied,
+                onCopySummary = copySummary,
+                onExport = onExport,
+                onOpenLogs = onOpenLogs,
+                onStop = onStop,
+            )
+        runtime is VmRuntimeState.Exited || runtime is VmRuntimeState.Failed ->
+            RecentRunPanel(
+                vm = vm,
+                runtime = runtime,
+                manifest = lastManifest,
+                snapshot = snapshot,
+                events = if (snapshot != null) diag.events else emptyList(),
+                copied = copied,
+                onCopySummary = copySummary,
+                onExport = onExport,
+                onOpenLogs = onOpenLogs,
+            )
+        lastManifest != null ->
+            RecentRunPanel(
+                vm = vm,
+                runtime = null,
+                manifest = lastManifest,
+                snapshot = null,
+                events = emptyList(),
+                copied = copied,
+                onCopySummary = copySummary,
+                onExport = onExport,
+                onOpenLogs = onOpenLogs,
+            )
+        otherRunning != null ->
+            EmptyPanel(
+                title = "当前虚拟机未运行",
+                subtitle = "另一台虚拟机正在运行，诊断数据属于那台；切过去查看，或先停止再启动这一台。",
+            )
+        else ->
+            EmptyPanel(
+                title = "还没有可诊断的运行",
+                subtitle = "诊断看板在虚拟机运行后开始每 5 秒采样；进程退出后仍保留最近一次运行的事件与日志。",
+                actionLabel = if (canStart) "启动虚拟机" else null,
+                onAction = if (canStart) onStart else null,
+            )
+    }
+}
+
+// ---- 正常/停摆布局 ----
+
+@Composable
+private fun DashboardPanel(
+    vm: VmConfig,
+    diag: WatchdogUiState,
+    snapshot: DiagSnapshot,
+    nowMs: Long,
+    copied: Boolean,
+    onCopySummary: (String) -> Unit,
+    onExport: () -> Unit,
+    onOpenLogs: () -> Unit,
+    onStop: () -> Unit,
+) {
+    val stale = DiagnosticsFormat.isStale(snapshot, nowMs)
+    val displayed = DiagnosticsFormat.displayVerdict(snapshot, nowMs)
+    val verdict = DiagnosticsFormat.verdictUi(displayed)
+    val conclusion = DiagnosticsFormat.staleNote(snapshot, nowMs) ?: verdict.conclusion
+    var showThreads by remember(vm.id) { mutableStateOf(false) }
+    var showNotes by remember(vm.id) { mutableStateOf(false) }
+    var showRaw by remember(vm.id) { mutableStateOf(false) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            SectionCard(
+                title = "健康判定",
+                subtitle = if (stale) {
+                    "样本已过期"
+                } else {
+                    "每 5 秒采样一次 · 最近 ${DiagnosticsFormat.formatClock(snapshot.sampledAtEpochMs)}"
+                },
+            ) {
+                StatusChip(text = verdict.label, tone = verdict.tone.toTone())
+                Text(conclusion, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    DiagnosticsFormat.signalBasis(snapshot),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                DiagnosticsFormat.badWindowText(snapshot)?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    "最近采样 ${DiagnosticsFormat.formatClock(snapshot.sampledAtEpochMs)}" +
+                        "（${DiagnosticsFormat.relativeAge(nowMs, snapshot.sampledAtEpochMs)}）" +
+                        " · 窗口 ${DiagnosticsFormat.formatWindow(snapshot.windowMs)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                diag.readError?.let {
+                    Text(
+                        "事件读取失败：$it",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
+                        Text("导出诊断包")
+                    }
+                    TextButton(
+                        onClick = {
+                            onCopySummary(
+                                DiagnosticsFormat.summaryText(
+                                    vmName = vm.name,
+                                    vmId = vm.id,
+                                    snapshot = snapshot,
+                                    latestEvent = diag.events.firstOrNull(),
+                                    nowMs = nowMs,
+                                ),
+                            )
+                        },
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    ) { Text(if (copied) "已复制" else "复制判读摘要") }
+                }
+                val showLogs = DiagnosticsFormat.offersLogs(displayed)
+                val showStop = DiagnosticsFormat.offersStop(snapshot)
+                if (showLogs || showStop) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (showLogs) {
+                            TextButton(
+                                onClick = onOpenLogs,
+                                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            ) { Text("查看日志") }
+                        }
+                        if (showStop) {
+                            OutlinedButton(
+                                onClick = onStop,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error,
+                                ),
+                            ) { Text("停止虚拟机") }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            SectionCard(title = "关键信号") {
+                DiagnosticsFormat.signals(snapshot).forEach { signal ->
+                    SignalRowUi(signal, dimmed = stale)
+                }
+            }
+        }
+        item {
+            CollapsibleSection(
+                title = "线程分布",
+                subtitle = "主线程与 vCPU 的 CPU 时间占比",
+                expanded = showThreads,
+                onToggle = { showThreads = !showThreads },
+            ) {
+                NumberRow("主线程", DiagnosticsFormat.formatPercent(snapshot.mainThreadCpuPercent, 1), dimmed = stale)
+                NumberRow("进程 CPU", DiagnosticsFormat.formatPercent(snapshot.processCpuPercent, 0), dimmed = stale)
+                NumberRow("运行时长", DiagnosticsFormat.formatUptimeMs(snapshot.processUptimeMs), dimmed = stale)
+                val vcpus = snapshot.vcpuPercents
+                if (vcpus.isNullOrEmpty()) {
+                    Text(
+                        "每 vCPU 占用：不可用",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    vcpus.forEachIndexed { index, percent ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "vCPU $index",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.width(52.dp),
+                            )
+                            MeterBar(fraction = percent / 100f, modifier = Modifier.weight(1f))
+                            Text(
+                                DiagnosticsFormat.formatPercent(percent),
+                                style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                                textAlign = TextAlign.End,
+                                modifier = Modifier.width(44.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            EventsCard(events = diag.events, emptyText = "本次运行没有记录到异常窗口。")
+        }
+        item {
+            CollapsibleSection(
+                title = "怎么读这张看板",
+                expanded = showNotes,
+                onToggle = { showNotes = !showNotes },
+            ) {
+                Text(
+                    DIAGNOSTICS_NOTES,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        item {
+            CollapsibleSection(
+                title = "原始快照",
+                subtitle = "仅调试用，字段以 RuntimeWatchdog 为准",
+                expanded = showRaw,
+                onToggle = { showRaw = !showRaw },
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 240.dp)
+                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                        .verticalScroll(rememberScrollState())
+                        .padding(8.dp),
+                ) {
+                    Text(
+                        DiagnosticsFormat.rawSnapshotText(snapshot),
+                        style = MonoTextStyle,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ---- 启动 / 停止 / 首窗口 ----
+
+@Composable
+private fun PreparingPanel() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+    ) {
+        SectionCard(title = "健康判定", subtitle = "启动中") {
+            StatusChip(text = "启动中", tone = Tone.Busy)
+            Text(
+                "QMP 握手后开始采样。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StoppingPanel(diag: WatchdogUiState) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            SectionCard(title = "健康判定", subtitle = "停止中") {
+                StatusChip(text = "停止中", tone = Tone.Busy)
+                Text(
+                    "正在关机，诊断信号已停止更新；保留最近事件。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (diag.events.isNotEmpty()) {
+            item { EventsCard(events = diag.events, emptyText = "本次运行没有记录到异常窗口。") }
+        }
+    }
+}
+
+@Composable
+private fun WaitingFirstSamplePanel(diag: WatchdogUiState, onExport: () -> Unit) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            SectionCard(
+                title = "健康判定",
+                subtitle = "每 5 秒采样一次",
+            ) {
+                StatusChip(text = "采样中", tone = Tone.Idle)
+                Text(
+                    "正在等待第一个采样窗口（每 5 秒一拍），暂不下结论。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                diag.readError?.let {
+                    Text(
+                        "事件读取失败：$it",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
+                    Text("导出诊断包")
+                }
+            }
+        }
+        item {
+            SectionCard(title = "关键信号") {
+                listOf("QMP 查询", "VNC 握手", "串口输出", "主线程推进").forEach { label ->
+                    SignalRowUi(SignalUi(label = label, state = "检测中", value = "—", tone = DiagTone.IDLE))
+                }
+            }
+        }
+    }
+}
+
+// ---- 空态 / 历史运行 / 未启用 ----
+
+@Composable
+private fun WatchdogDisabledPanel(onExport: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        EmptyState(
+            icon = Icons.Filled.MonitorHeart,
+            title = "诊断采样未启用",
+            subtitle = "当前构建没有可用的 RuntimeWatchdog。你仍然可以导出诊断包（含历史日志与运行清单）。",
+            actionLabel = "导出诊断包",
+            onAction = onExport,
+        )
+    }
+}
+
+@Composable
+private fun EmptyPanel(
+    title: String,
+    subtitle: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        EmptyState(
+            icon = Icons.Filled.MonitorHeart,
+            title = title,
+            subtitle = subtitle,
+            actionLabel = actionLabel,
+            onAction = onAction,
+        )
+    }
+}
+
+@Composable
+private fun RecentRunPanel(
+    vm: VmConfig,
+    runtime: VmRuntimeState?,
+    manifest: RunManifest?,
+    snapshot: DiagSnapshot?,
+    events: List<DiagEvent>,
+    copied: Boolean,
+    onCopySummary: (String) -> Unit,
+    onExport: () -> Unit,
+    onOpenLogs: () -> Unit,
+) {
+    val result = when (runtime) {
+        is VmRuntimeState.Exited -> "已退出（exit=${runtime.exitCode}）"
+        is VmRuntimeState.Failed -> "启动失败"
+        else -> manifest?.let {
+            DiagnosticsFormat.outcomeLabel(it.outcome) +
+                (it.exitCode?.let { code -> "（exit=$code）" } ?: "")
+        } ?: "—"
+    }
+    val reason = (runtime as? VmRuntimeState.Failed)?.reason
+    val hint = when (runtime) {
+        is VmRuntimeState.Exited -> runtime.hint
+        is VmRuntimeState.Failed -> runtime.hint
+        else -> null
+    } ?: manifest?.failureHint
+    val copyText = when {
+        snapshot != null -> DiagnosticsFormat.summaryText(
+            vmName = vm.name,
+            vmId = vm.id,
+            snapshot = snapshot,
+            latestEvent = events.firstOrNull(),
+            nowMs = System.currentTimeMillis(),
+        )
+        manifest != null -> DiagnosticsFormat.manifestSummaryText(vm.name, vm.id, manifest)
+        runtime is VmRuntimeState.Failed ->
+            DiagnosticsFormat.failureSummaryText(vm.name, vm.id, runtime.reason, runtime.hint)
+        else -> null
+    }
+    val emptyEvents = if (snapshot != null) {
+        "本次运行没有记录到异常窗口。"
+    } else {
+        "未加载到事件：事件仅保留本次 App 进程内最近 20 条，完整时间线见诊断包 watchdog.jsonl。"
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            SectionCard(title = "最近一次运行", subtitle = "最近一次运行摘要") {
+                KeyValueRow("结果", result)
+                reason?.takeIf { it.isNotBlank() }?.let { KeyValueRow("失败原因", it) }
+                hint?.takeIf { it.isNotBlank() }?.let { KeyValueRow("失败归因", it) }
+                manifest?.let {
+                    KeyValueRow("启动档位", "${it.profile ?: "—"}（第 ${it.attempt} 次尝试）")
+                    KeyValueRow("开始时间", DiagnosticsFormat.formatDateTime(it.startedAtEpochMs))
+                    NumberRow("运行时长", DiagnosticsFormat.formatUptimeMs(DiagnosticsFormat.manifestDurationMs(it)))
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
+                        Text("导出诊断包")
+                    }
+                    if (copyText != null) {
+                        TextButton(
+                            onClick = { onCopySummary(copyText) },
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        ) { Text(if (copied) "已复制" else "复制判读摘要") }
+                    }
+                }
+                TextButton(
+                    onClick = onOpenLogs,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text("查看日志") }
+            }
+        }
+        item { EventsCard(events = events, emptyText = emptyEvents) }
+    }
+}
+
+// ---- 共享小件 ----
+
+/** 数字行：tabular numerals + 右对齐（T6 §6.3）。不复用 KeyValueRow 以免改公共组件。 */
+@Composable
+private fun NumberRow(key: String, value: String, dimmed: Boolean = false) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            key,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(0.35f),
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+            color = if (dimmed) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(0.65f),
+        )
+    }
+}
+
+@Composable
+private fun SignalRowUi(signal: SignalUi, dimmed: Boolean = false) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        StatusChip(text = signal.state, tone = signal.tone.toTone())
+        Text(
+            signal.label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            signal.value,
+            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+            color = if (dimmed) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1.2f),
+        )
+    }
+}
+
+@Composable
+private fun EventsCard(events: List<DiagEvent>, emptyText: String) {
+    var showAll by remember { mutableStateOf(false) }
+    var expandedKeys by remember { mutableStateOf(emptySet<String>()) }
+    val visible = DiagnosticsFormat.visibleEvents(events, showAll)
+    SectionCard(title = "停摆事件", subtitle = "来自 watchdog.jsonl 的异常窗口") {
+        if (events.isEmpty()) {
+            Text(
+                emptyText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            visible.forEach { event ->
+                val key = "${event.epochMs}:${event.kind}"
+                val open = key in expandedKeys
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        DiagnosticsFormat.eventHeadline(event),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (event.evidence.isNotBlank()) {
+                        Text(
+                            "证据：${event.evidence}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = if (open) Int.MAX_VALUE else 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (event.evidence.length > 40) {
+                            TextButton(
+                                onClick = {
+                                    expandedKeys = if (open) expandedKeys - key else expandedKeys + key
+                                },
+                                modifier = Modifier.heightIn(min = 48.dp),
+                                contentPadding = PaddingValues(horizontal = 0.dp),
+                            ) { Text(if (open) "收起" else "展开") }
+                        }
+                    }
+                }
+            }
+            if (events.size > DiagnosticsFormat.EVENT_PREVIEW_LIMIT) {
+                TextButton(
+                    onClick = { showAll = !showAll },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text(if (showAll) "收起" else "展开全部 ${events.size} 条")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberNowMs(active: Boolean): Long {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    val inPreview = LocalInspectionMode.current
+    LaunchedEffect(active) {
+        if (!active || inPreview) return@LaunchedEffect
+        // 5 秒级刷新，与 T2 采样节拍一致；不做逐秒重绘（T6 §11）。
+        while (true) {
+            delay(5_000)
+            now = System.currentTimeMillis()
+        }
+    }
+    return now
+}
+
+private fun DiagTone.toTone(): Tone = when (this) {
+    DiagTone.IDLE -> Tone.Idle
+    DiagTone.OK -> Tone.Ok
+    DiagTone.ERROR -> Tone.Error
+}
+
+private val DIAGNOSTICS_NOTES = """
+正常判定要求连续 2 个 5 秒窗口都通过；单次超时不等于停摆。
+
+QMP 和 VNC 的 TCP 握手由内核完成，连接成功不能证明 QEMU 用户态还在跑。
+典型停摆是：端口还能连、banner 或 QMP 不再响应，同时 vCPU 线程仍在满核运行。
+
+主线程 0 tick 是核心证据。只看「进程 CPU 很高」会误判为健康——多线程 TCG 下
+vCPU 空转本来就很耗 CPU。
+
+串口静默通常是正常的：QEMU 与客户机稳定运行时本来就不输出。串口有输出只说明
+客户机在动，不保证主循环健康。
+
+读不到 /proc（部分系统 SELinux 限制）时显示「不可用」，看板不会把缺失数据当成 0。
+""".trimIndent()
+
+// ---- Preview 夹具（T6 §12.3） ----
+
+private const val PREVIEW_VM_ID = "vm-preview"
+private const val PREVIEW_RUN_ID = "run-preview"
+
+private fun previewVm(): VmConfig = VmConfig(id = PREVIEW_VM_ID, name = "Win11 ARM64")
+
+private fun previewSnapshot(
+    verdict: DiagVerdict,
+    badWindows: Int = 0,
+    qmpRttMs: Int? = 42,
+    qmpTimedOut: Boolean? = false,
+    vncBanner: DiagVncBanner? = DiagVncBanner.OK,
+    vncConnectMs: Int? = 18,
+    serialBytesDelta: Long? = 0L,
+    mainThreadCpuPercent: Float? = 0.8f,
+    vcpuPercents: List<Float>? = listOf(96f, 97f, 95f, 96f),
+    processAlive: Boolean? = true,
+    procReadable: Boolean = true,
+    sampledAtEpochMs: Long = System.currentTimeMillis(),
+    unavailableSignals: List<String> = emptyList(),
+): DiagSnapshot = DiagSnapshot(
+    vmId = PREVIEW_VM_ID,
+    runId = PREVIEW_RUN_ID,
+    windowMs = DiagnosticsFormat.DEFAULT_WINDOW_MS,
+    sampledAtEpochMs = sampledAtEpochMs,
+    verdict = verdict,
+    badWindows = badWindows,
+    qmpRttMs = qmpRttMs,
+    qmpTimedOut = qmpTimedOut,
+    vncBanner = vncBanner,
+    vncConnectMs = vncConnectMs,
+    serialBytesDelta = serialBytesDelta,
+    serialBytesTotal = 0L,
+    processAlive = processAlive,
+    processUptimeMs = 761_000L,
+    processCpuPercent = 320f,
+    mainThreadCpuPercent = mainThreadCpuPercent,
+    vcpuPercents = vcpuPercents,
+    procReadable = procReadable,
+    unavailableSignals = unavailableSignals,
+)
+
+private fun previewEvent(
+    kind: String,
+    consecutive: Int,
+    evidence: String,
+    epochMs: Long = System.currentTimeMillis() - 7_000,
+): DiagEvent = DiagEvent(
+    epochMs = epochMs,
+    kind = kind,
+    windowMs = DiagnosticsFormat.DEFAULT_WINDOW_MS,
+    consecutive = consecutive,
+    evidence = evidence,
+)
+
+private fun previewRunning(): VmRuntimeState.Running = VmRuntimeState.Running(
+    vmId = PREVIEW_VM_ID,
+    pid = 4_242,
+    startedAtEpochMs = System.currentTimeMillis() - 600_000,
+    vncPort = 5900,
+    logPath = "/tmp/run-preview.log",
+)
+
+private fun previewManifest(): RunManifest = RunManifest(
+    runId = PREVIEW_RUN_ID,
+    vmId = PREVIEW_VM_ID,
+    vmName = "Win11 ARM64",
+    appVersion = "0.10.30",
+    startedAtEpochMs = System.currentTimeMillis() - 1_800_000,
+    finishedAtEpochMs = System.currentTimeMillis() - 1_700_000,
+    executablePath = "/data/app/lib/arm64/libqemu-system-aarch64.so",
+    outcome = RunManifest.Outcome.EXITED_ERROR,
+    exitCode = 132,
+    failureHint = "执行层被 SIGILL 杀死（exit=132）：检查 PAC 补丁与 USB 存储栈。",
+    profile = "standard",
+    attempt = 1,
+)
+
+@Composable
+private fun PreviewDiagnostics(
+    diag: WatchdogUiState,
+    runtime: VmRuntimeState,
+    lastManifest: RunManifest? = null,
+    canStart: Boolean = false,
+    darkTheme: Boolean = false,
+) {
+    PocketVmTheme(darkTheme = darkTheme) {
+        DiagnosticsTab(
+            vm = previewVm(),
+            runtime = runtime,
+            otherRunning = null,
+            lastManifest = lastManifest,
+            diag = diag,
+            canStart = canStart,
+            onStart = {},
+            onStop = {},
+            onExport = {},
+            onOpenLogs = {},
+        )
+    }
+}
+
+@Preview(name = "健康", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsHealthy() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(snapshot = previewSnapshot(DiagVerdict.HEALTHY)),
+        runtime = previewRunning(),
+    )
+}
+
+@Preview(name = "采样中", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsSampling() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(snapshot = previewSnapshot(DiagVerdict.SAMPLING)),
+        runtime = previewRunning(),
+    )
+}
+
+@Preview(name = "观察中", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsWatch() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(
+            snapshot = previewSnapshot(
+                verdict = DiagVerdict.WATCH,
+                qmpRttMs = null,
+                qmpTimedOut = true,
+            ),
+        ),
+        runtime = previewRunning(),
+    )
+}
+
+@Preview(name = "疑似停摆", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsSuspectedStall() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(
+            snapshot = previewSnapshot(
+                verdict = DiagVerdict.SUSPECTED_STALL,
+                qmpRttMs = null,
+                qmpTimedOut = true,
+                vncBanner = DiagVncBanner.NO_RESPONSE,
+                vncConnectMs = null,
+                mainThreadCpuPercent = 0f,
+            ),
+        ),
+        runtime = previewRunning(),
+    )
+}
+
+@Preview(name = "已停摆", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsStalled() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(
+            snapshot = previewSnapshot(
+                verdict = DiagVerdict.STALLED,
+                badWindows = 2,
+                qmpRttMs = null,
+                qmpTimedOut = true,
+                vncBanner = DiagVncBanner.TIMEOUT,
+                vncConnectMs = null,
+                mainThreadCpuPercent = 0f,
+            ),
+            events = listOf(
+                previewEvent(
+                    kind = "QMP_TIMEOUT",
+                    consecutive = 2,
+                    evidence = "QMP query-status 连续 2 拍无响应；主线程 0 tick；vCPU 合计 97.2%。",
+                ),
+                previewEvent(
+                    kind = "VNC_BANNER_TIMEOUT",
+                    consecutive = 2,
+                    evidence = "VNC 端口可连接但未收到 RFB banner。",
+                    epochMs = System.currentTimeMillis() - 12_000,
+                ),
+            ),
+        ),
+        runtime = previewRunning(),
+    )
+}
+
+@Preview(name = "无法判定", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsUnknown() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(
+            snapshot = previewSnapshot(
+                verdict = DiagVerdict.UNKNOWN,
+                mainThreadCpuPercent = null,
+                vcpuPercents = null,
+                procReadable = false,
+                unavailableSignals = listOf("proc-main-thread"),
+            ),
+        ),
+        runtime = previewRunning(),
+    )
+}
+
+@Preview(name = "空态", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsEmptyIdle() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(),
+        runtime = VmRuntimeState.Idle,
+        canStart = true,
+    )
+}
+
+@Preview(name = "错误退出", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsExitedError() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(
+            snapshot = previewSnapshot(
+                verdict = DiagVerdict.STALLED,
+                badWindows = 1,
+                qmpRttMs = null,
+                qmpTimedOut = true,
+                vncBanner = DiagVncBanner.NO_RESPONSE,
+                vncConnectMs = null,
+                mainThreadCpuPercent = 0f,
+            ),
+            events = listOf(
+                previewEvent(
+                    kind = "QMP_TIMEOUT",
+                    consecutive = 1,
+                    evidence = "QMP query-status 连续 2 拍无响应；主线程 0 tick。",
+                ),
+            ),
+        ),
+        runtime = VmRuntimeState.Exited(
+            vmId = PREVIEW_VM_ID,
+            exitCode = 132,
+            hint = "执行层被 SIGILL 杀死（exit=132）：检查 PAC 补丁与 USB 存储栈。",
+        ),
+        lastManifest = previewManifest(),
+    )
+}
+
+@Preview(name = "未启用", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsDisabled() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(enabled = false),
+        runtime = VmRuntimeState.Idle,
+    )
+}
+
+@Preview(name = "样本过期", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsStale() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(
+            snapshot = previewSnapshot(
+                verdict = DiagVerdict.HEALTHY,
+                sampledAtEpochMs = System.currentTimeMillis() - 20_000,
+            ),
+        ),
+        runtime = previewRunning(),
+    )
+}
+
+@Preview(name = "深色健康", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsHealthyDark() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(snapshot = previewSnapshot(DiagVerdict.HEALTHY)),
+        runtime = previewRunning(),
+        darkTheme = true,
+    )
+}
