@@ -355,7 +355,7 @@ docs/                       架构、排障、打包与推送、第三方许可�
 
 | 项 | 结论 |
 | --- | --- |
-| 编译（aarch64 动态 PIE） | 通过（0.10.28 基线）；当前测试 15 个文件 / 140 个 `@Test`（静态统计，实际以 `:app:testDebugUnitTest` 实跑为准） |
+| 编译（aarch64 动态 PIE） | 通过（0.10.30）；16 个测试文件 / 161 个用例实跑全绿（2026-10-31，failures=0 / errors=0 / skipped=0） |
 | APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
 | 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
 | 安装介质启动 | **通过**：固件从 USB 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。USB 崩溃回退 virtio-scsi 后：无驱动盘时同一 ISO 双挂（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`）；挂驱动盘时只走 virtio-cd（两个 ISO 设备同屏会冻结安装） |
