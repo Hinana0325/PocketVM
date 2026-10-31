@@ -71,7 +71,6 @@ import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
-import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.runtime.SshDefaults
 import dev.pocketvm.ui.theme.Danger
 import dev.pocketvm.ui.theme.Success
@@ -237,8 +236,7 @@ fun ConsoleScreen(
                 copiedError = copiedError,
                 copiedVnc = copied,
                 onCopyVnc = {
-                    val host = if (vm.vncAccess == VncAccess.LAN) (state.localIp ?: "0.0.0.0") else "127.0.0.1"
-                    clipboard.setText(AnnotatedString("$host:${vm.vncPort}"))
+                    clipboard.setText(AnnotatedString("127.0.0.1:${vm.vncPort}"))
                     copied = true
                 },
                 onStart = onStart,
@@ -716,7 +714,7 @@ private fun OverviewTab(
         }
 
         item {
-            val vncHost = if (vm.vncAccess == VncAccess.LAN) (state.localIp ?: "0.0.0.0") else "127.0.0.1"
+            val vncHost = "127.0.0.1"
             SectionCard(
                 title = "VNC 服务",
                 subtitle = "App 不渲染画面，用外部 RFB 客户端连接",
@@ -731,7 +729,7 @@ private fun OverviewTab(
                         tone = if (running) Tone.Ok else Tone.Idle,
                     )
                     Text(
-                        if (vm.vncAccess == VncAccess.LAN) "0.0.0.0" else "127.0.0.1",
+                        "127.0.0.1",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -746,20 +744,17 @@ private fun OverviewTab(
                 }
                 KeyValueRow("Display", ":${vm.vncPort - 5900}")
                 KeyValueRow("密码", vm.vncPassword?.takeIf { it.isNotBlank() } ?: "未设置")
-                if (vm.vncAccess == VncAccess.LOOPBACK) {
-                    Text(
-                        "adb forward tcp:${vm.vncPort} tcp:${vm.vncPort}",
-                        style = MonoTextStyle,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp))
-                            .padding(8.dp),
-                    )
-                }
                 Text(
-                    "协议 RFB 3.8。局域网模式暂不可用：当前 QEMU 构建缺少 DES 加密后端，" +
-                        "VNC 密码认证无法启动（校验器会报 VNC_LAN_UNAVAILABLE）。请用「仅本机」+ adb forward。",
+                    "adb forward tcp:${vm.vncPort} tcp:${vm.vncPort}",
+                    style = MonoTextStyle,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp))
+                        .padding(8.dp),
+                )
+                Text(
+                    "协议 RFB 3.8。P1 不支持局域网 VNC，已下线，请用仅本机 + adb forward：",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -771,22 +766,14 @@ private fun OverviewTab(
                     )
                     vm.portForwards.forEach { forward ->
                         KeyValueRow(
-                            if (vm.vncAccess == VncAccess.LAN) {
-                                "${state.localIp ?: "0.0.0.0"}:${forward.hostPort}"
-                            } else {
-                                "127.0.0.1:${forward.hostPort}"
-                            },
+                            "127.0.0.1:${forward.hostPort}",
                             "→ 客户机 :${forward.guestPort}",
                         )
                     }
                     Text(
-                        if (vm.vncAccess == VncAccess.LOOPBACK) {
-                            "只监听 127.0.0.1：电脑上执行 adb forward tcp:<手机端口> tcp:<手机端口> 后，" +
-                                "连接 127.0.0.1:<手机端口>。"
-                        } else {
-                            "局域网模式暂不可用（VNC_LAN_UNAVAILABLE），请改回「仅本机」并用 adb forward。" +
-                                "转发的服务仍需各自的认证（RDP/SSH 密码等）。"
-                        },
+                        "只监听 127.0.0.1：电脑上执行 adb forward tcp:<手机端口> tcp:<手机端口> 后，" +
+                            "连接 127.0.0.1:<手机端口>。P1 不支持局域网 VNC，已下线，转发无法改绑 0.0.0.0。" +
+                            "转发的服务仍需各自的认证（RDP/SSH 密码等）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

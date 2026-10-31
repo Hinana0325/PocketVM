@@ -494,10 +494,10 @@ fun CreateVmScreen(
                 )
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(
-                        VncAccess.LOOPBACK to "仅本机",
-                        VncAccess.LAN to "局域网",
-                    ).forEach { (mode, label) ->
+                    // P1 已下线局域网入口：执行层缺 DES 后端，密码认证的 VNC 起不来。
+                    // 单选项仍按原交互渲染，旧配置（VncAccess.LAN）会显示为可点击的
+                    // 「仅本机」，点一下即可把草稿迁回唯一可用模式。
+                    listOf(VncAccess.LOOPBACK to "仅本机").forEach { (mode, label) ->
                         if (draft.vncAccess == mode) {
                             Button(onClick = { }) { Text(label) }
                         } else {
@@ -508,8 +508,9 @@ fun CreateVmScreen(
 
                 if (draft.vncAccess == VncAccess.LAN) {
                     Text(
-                        "局域网模式暂不可用：当前 QEMU 构建缺少 DES 加密后端，VNC 密码认证无法启动，" +
-                            "保存后启动会被校验器拦下。请改回「仅本机」，用 adb forward 查看画面。",
+                        "P1 不支持局域网 VNC，已下线，请用仅本机 + adb forward。" +
+                            "这台虚拟机保存的是旧版「局域网」配置，启动会被校验器拦下" +
+                            "（VNC_LAN_UNAVAILABLE）；点上方「仅本机」后保存即可。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -524,13 +525,9 @@ fun CreateVmScreen(
                 )
 
                 Text(
-                    if (draft.vncAccess == VncAccess.LAN) {
-                        "局域网模式暂不可用，启动会被校验器拦下（VNC_LAN_UNAVAILABLE）。" +
-                            "请改回「仅本机」，用 adb forward 查看画面。"
-                    } else {
-                        "只监听 127.0.0.1。外部查看先执行 adb forward tcp:${draft.vncPort} tcp:${draft.vncPort}，" +
-                            "再连 127.0.0.1:${draft.vncPort}。"
-                    },
+                    "只监听 127.0.0.1。P1 不支持局域网 VNC，已下线，请用仅本机 + adb forward：" +
+                        "外部查看先执行 adb forward tcp:${draft.vncPort} tcp:${draft.vncPort}，" +
+                        "再连 127.0.0.1:${draft.vncPort}。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -613,15 +610,9 @@ fun CreateVmScreen(
                 }
 
                 Text(
-                    if (draft.vncAccess == VncAccess.LAN) {
-                        "局域网模式暂不可用（VNC_LAN_UNAVAILABLE），转发也不会随它生效。" +
-                            "请改回「仅本机」：电脑上先 adb forward tcp:5389 tcp:5389，再连 127.0.0.1:5389。" +
-                            "Android 应用无法绑定 1024 以下端口，故手机侧从 1024 起。"
-                    } else {
-                        "转发只监听 127.0.0.1：以远程桌面预设为例，电脑上先 adb forward tcp:5389 tcp:5389，" +
-                            "再连 127.0.0.1:5389。局域网模式暂不可用，无法直接连手机 IP。" +
-                            "Android 应用无法绑定 1024 以下端口，故手机侧从 1024 起。"
-                    },
+                    "转发只监听 127.0.0.1：以远程桌面预设为例，电脑上先 adb forward tcp:5389 tcp:5389，" +
+                        "再连 127.0.0.1:5389。P1 不支持局域网 VNC，已下线，无法直接连手机 IP。" +
+                        "Android 应用无法绑定 1024 以下端口，故手机侧从 1024 起。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
