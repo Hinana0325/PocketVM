@@ -38,6 +38,22 @@ data class RunManifest(
     val failureHint: String? = null,
     /** QEMU's own first error line, verbatim. */
     val logExcerpt: String? = null,
+    /**
+     * 一次用户「启动」操作的稳定标识，降级阶梯里的每个 attempt 共用同一个
+     * sessionId；runId 仍标识单次 attempt。报表按 session 聚合启动耗时、
+     * 阶梯命中与 exit 分布时用它切分。
+     */
+    val sessionId: String? = null,
+    /** QMP 握手成功（控制面可用）的时刻；未握手为 null。 */
+    val qmpConfirmedAtEpochMs: Long? = null,
+    /** 该 attempt 进入 RUNNING（UI 宣布运行中）的时刻；启动失败为 null。 */
+    val runningAtEpochMs: Long? = null,
+    /** 该 attempt 实际生效的光驱总线（含 AUTO 解析与降级后）。 */
+    val cdTransport: String? = null,
+    /** 该 attempt 实际生效的 USB 输入开关（含降级后）。 */
+    val usbInput: Boolean? = null,
+    /** 该 attempt 是否启用了串口采集（受启动档与介质影响）。 */
+    val serialEnabled: Boolean? = null,
 ) {
     enum class Outcome {
         STARTING,
