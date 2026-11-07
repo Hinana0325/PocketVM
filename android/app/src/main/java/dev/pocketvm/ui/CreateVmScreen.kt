@@ -4,7 +4,6 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,6 +45,7 @@ import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.storage.AppleAssets
+import dev.pocketvm.ui.theme.MonoTextStyle
 import java.io.File
 
 @Composable
@@ -74,8 +74,7 @@ fun CreateVmScreen(
     // 25226 二次确认：记录触发前的完整草稿，取消时恢复。
     var knownBadRestore by remember(draft.id) { mutableStateOf<VmConfig?>(null) }
     var previousDraft by remember(draft.id) { mutableStateOf(draft) }
-    // The boot knobs are a fallback surface, not something to wade through on
-    // every edit, so they stay folded until something actually goes wrong.
+    // 引导相关是兜底面，出问题才需要展开，平时只看折叠摘要。
     var advanced by remember { mutableStateOf(false) }
 
     // Port validity is needed both by the field and by the save button.
@@ -211,7 +210,7 @@ fun CreateVmScreen(
     Column(modifier = Modifier.fillMaxSize().padding(contentPadding)) {
         PocketTopBar(
             title = if (state.editing) "编辑虚拟机" else "新建虚拟机",
-            subtitle = if (state.editing) "修改配置不会影响已安装的系统；运行中请先停止" else null,
+            subtitle = if (state.editing) "修改配置不会影响已安装的系统；运行中请先停止" else "QEMU 11.1.2 · TCG 软件模拟 · VNC 显示",
             showBack = true,
             onBack = requestBack,
             actions = {
@@ -251,11 +250,62 @@ fun CreateVmScreen(
                 }
             }
 
-            SectionCard(title = "平台", subtitle = "决定用哪个执行层；两种机型的配置项互不影响") {
+            // 1. 宿主硬件资源检测（Stitch 卡片 1，全部取自真实探测结果）
+            SectionCard(
+                title = "宿主硬件检测",
+                subtitle = "未 Root 的手机只能用 TCG 软件模拟，没有 KVM 加速",
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StatusChip(
+                        text = if (state.env?.ready == true) "TCG 软件模拟就绪" else "执行环境未就绪",
+                        tone = if (state.env?.ready == true) Tone.Ok else Tone.Error,
+                    )
+                    Text(
+                        "QEMU ${state.env?.version ?: "未知版本"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                KeyValueRow("处理器", state.env?.soc ?: "未知")
+                KeyValueRow("加速方式", "TCG 软件模拟（未 Root，无 KVM）")
+                KeyValueRow("设备内存", "${state.deviceMemoryMb} MB")
+                KeyValueRow("剩余存储", "${state.freeSpaceMb} MB")
+                state.env?.detail?.takeIf { state.env?.ready != true }?.let { detail ->
+                    Text(
+                        detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
+            // 2. 虚拟机标识与平台（Stitch 卡片 2：只有三个真实平台，没有 x86_64）
+            SectionCard(
+                title = "虚拟机标识与平台",
+                subtitle = "平台决定用哪个执行层；三种机型的配置项互不影响",
+            ) {
+                OutlinedTextField(
+                    value = draft.name,
+                    onValueChange = { name -> onUpdate { it.copy(name = name.take(60)) } },
+                    label = { Text("名称") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 // A7：3 个长标签改为整行单选，避免 320dp / 大字号横向裁切。
-                // 仍复用 Button/OutlinedButton，选中态与原有语义一致。
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     VmPlatform.values().forEach { platform ->
+                        val description = when (platform) {
+                            VmPlatform.UEFI_ARM64 ->
+                                "QEMU 11.1.2 + edk2，跑 Windows / Linux，TCG 软件模拟"
+                            VmPlatform.APPLE_T8030 ->
+                                "Inferno t8030 机型，模拟 iPhone 11（A13），加载 iOS 还原包资源"
+                            VmPlatform.ANDROID_ARM64 ->
+                                "UEFI + virtio-gpu，从导入的完整磁盘镜像启动，内存不低于 4 GB"
+                        }
                         if (draft.platform == platform) {
                             Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
                                 Text(platform.label, textAlign = TextAlign.Center)
@@ -268,71 +318,34 @@ fun CreateVmScreen(
                                 Text(platform.label, textAlign = TextAlign.Center)
                             }
                         }
+                        Text(
+                            description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (draft.platform == platform) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
                     }
                 }
-            }
-
-            SectionCard(title = "基本配置") {
-                OutlinedTextField(
-                    value = draft.name,
-                    onValueChange = { name -> onUpdate { it.copy(name = name.take(60)) } },
-                    label = { Text("名称") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                SliderRow(
-                    label = "CPU 核心",
-                    value = draft.cpuCores.toFloat(),
-                    valueRange = 1f..8f,
-                    steps = 6,
-                    valueText = "${draft.cpuCores} vCPU",
-                    onChange = { cores -> onUpdate { it.copy(cpuCores = cores) } },
-                )
-                SliderRow(
-                    label = "内存",
-                    value = draft.memoryMb.toFloat(),
-                    valueRange = 1024f..8192f,
-                    steps = 13,
-                    valueText = "${draft.memoryMb} MB",
-                    onChange = { mem -> onUpdate { it.copy(memoryMb = (mem / 512).toInt() * 512) } },
-                )
-                if (!isApple && !isAndroid) {
-                    SliderRow(
-                        label = "磁盘容量",
-                        value = draft.diskSizeGb.toFloat(),
-                        valueRange = 32f..256f,
-                        steps = 13,
-                        valueText = "${draft.diskSizeGb} GB",
-                        onChange = { gb -> onUpdate { it.copy(diskSizeGb = (gb / 16).toInt() * 16) } },
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(64, 128, 256).forEach { size ->
-                            OutlinedButton(onClick = { onUpdate { it.copy(diskSizeGb = size) } }) {
-                                Text("$size GB")
-                            }
-                        }
-                    }
+                if (isApple) {
                     Text(
-                        "qcow2 精简置备：文件只随实际写入增长，256 GB 的盘初始也只占几百 KB。",
+                        "iPhone 11 机型：CPU 不超过 4 核、内存不超过 3072 MB，切换平台时已自动收敛。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                state.diskUsage[draft.id]?.takeIf { it > 0 }?.let { used ->
+                if (isAndroid) {
                     Text(
-                        "当前磁盘实际占用 ${used / (1024 * 1024)} MB",
+                        "Android 机型：显示固定为 virtio-gpu、从磁盘启动（不从光盘引导）、内存不低于 4096 MB。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Text(
-                    "设备内存 ${state.deviceMemoryMb} MB · 剩余存储 ${state.freeSpaceMb} MB",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
 
+            // 3a. iOS 资源（仅 Apple 平台）
             if (isApple) {
                 SectionCard(
                     title = "iOS 资源",
@@ -374,6 +387,7 @@ fun CreateVmScreen(
                 }
             }
 
+            // 3b. Android 磁盘镜像（仅 Android 平台）
             if (isAndroid) {
                 SectionCard(
                     title = "Android 磁盘镜像",
@@ -405,203 +419,332 @@ fun CreateVmScreen(
                 }
             }
 
+            // 3c. UEFI 固件（Apple 平台没有 UEFI）
             if (!isApple) {
-            SectionCard(
-                title = "UEFI 固件",
-                subtitle = "aarch64 需要 edk2 pflash 镜像；变量存储会按固件大小自动创建",
-            ) {
-                androidx.compose.foundation.layout.Box {
-                    OutlinedButton(
-                        onClick = { firmwareMenu = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            (draft.firmwareCodePath ?: state.firmwareOptions.firstOrNull())
-                                ?.substringAfterLast('/')
-                                ?: "未找到固件，点击选择",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    DropdownMenu(expanded = firmwareMenu, onDismissRequest = { firmwareMenu = false }) {
-                        if (state.firmwareOptions.isEmpty()) {
-                            DropdownMenuItem(
-                                text = { Text("firmware/ 目录为空") },
-                                onClick = { firmwareMenu = false },
+                SectionCard(
+                    title = "UEFI 固件",
+                    subtitle = "aarch64 需要 edk2 pflash 镜像；变量存储会按固件大小自动创建",
+                ) {
+                    androidx.compose.foundation.layout.Box {
+                        OutlinedButton(
+                            onClick = { firmwareMenu = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                (draft.firmwareCodePath ?: state.firmwareOptions.firstOrNull())
+                                    ?.substringAfterLast('/')
+                                    ?: "未找到固件，点击选择",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        state.firmwareOptions.forEach { path ->
-                            DropdownMenuItem(
-                                text = { Text(File(path).name) },
-                                onClick = {
-                                    firmwareMenu = false
-                                    onUpdate { it.copy(firmwareCodePath = path) }
-                                },
-                            )
+                        DropdownMenu(expanded = firmwareMenu, onDismissRequest = { firmwareMenu = false }) {
+                            if (state.firmwareOptions.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("firmware/ 目录为空") },
+                                    onClick = { firmwareMenu = false },
+                                )
+                            }
+                            state.firmwareOptions.forEach { path ->
+                                DropdownMenuItem(
+                                    text = { Text(File(path).name) },
+                                    onClick = {
+                                        firmwareMenu = false
+                                        onUpdate { it.copy(firmwareCodePath = path) }
+                                    },
+                                )
+                            }
                         }
                     }
+                    TextButton(onClick = { firmwarePicker.launch(arrayOf("*/*")) }) {
+                        Text("从文件管理器导入 QEMU_EFI.fd")
+                    }
                 }
-                TextButton(onClick = { firmwarePicker.launch(arrayOf("*/*")) }) {
-                    Text("从文件管理器导入 QEMU_EFI.fd")
-                }
-            }
             }
 
+            // 3d. 安装介质与驱动盘（仅 UEFI 平台；Android 自带引导，Apple 没有 ISO）
             if (!isApple && !isAndroid) {
-            SectionCard(title = "安装介质", subtitle = "ISO 会被复制到应用私有目录，QEMU 不支持 content:// 路径") {
-                Text(
-                    draft.isoPath?.substringAfterLast('/') ?: "尚未选择",
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { isoPicker.launch(arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*")) },
-                        enabled = state.importing == null,
-                    ) { Text("导入新 ISO") }
-                    if (state.imageOptions.isNotEmpty()) {
-                        androidx.compose.foundation.layout.Box {
-                            OutlinedButton(
-                                onClick = { imageMenu = true },
-                                enabled = state.importing == null,
-                            ) { Text("使用已导入镜像") }
-                            DropdownMenu(expanded = imageMenu, onDismissRequest = { imageMenu = false }) {
-                                state.imageOptions.forEach { path ->
-                                    DropdownMenuItem(
-                                        text = { Text(File(path).name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                        onClick = {
-                                    imageMenu = false
-                                    onUpdate { draft ->
-                                        draft.copy(
-                                            isoPath = path,
-                                            bootFromCd = true,
-                                            name = if (draft.name == VmConfig.DEFAULT_NAME || draft.name.isBlank())
-                                                VmConfig.nameFromIso(path) ?: draft.name
-                                            else draft.name,
+                SectionCard(title = "安装介质", subtitle = "ISO 会被复制到应用私有目录，QEMU 不支持 content:// 路径") {
+                    Text(
+                        draft.isoPath?.substringAfterLast('/') ?: "尚未选择",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { isoPicker.launch(arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*")) },
+                            enabled = state.importing == null,
+                        ) { Text("导入新 ISO") }
+                        if (state.imageOptions.isNotEmpty()) {
+                            androidx.compose.foundation.layout.Box {
+                                OutlinedButton(
+                                    onClick = { imageMenu = true },
+                                    enabled = state.importing == null,
+                                ) { Text("使用已导入镜像") }
+                                DropdownMenu(expanded = imageMenu, onDismissRequest = { imageMenu = false }) {
+                                    state.imageOptions.forEach { path ->
+                                        DropdownMenuItem(
+                                            text = { Text(File(path).name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                            onClick = {
+                                                imageMenu = false
+                                                onUpdate { draft ->
+                                                    draft.copy(
+                                                        isoPath = path,
+                                                        bootFromCd = true,
+                                                        name = if (draft.name == VmConfig.DEFAULT_NAME || draft.name.isBlank())
+                                                            VmConfig.nameFromIso(path) ?: draft.name
+                                                        else draft.name,
+                                                    )
+                                                }
+                                            },
                                         )
                                     }
-                                        },
-                                    )
+                                }
+                            }
+                        }
+                        if (draft.isoPath != null) {
+                            TextButton(
+                                onClick = { onUpdate { it.copy(isoPath = null) } },
+                                enabled = state.importing == null,
+                            ) { Text("移除") }
+                        }
+                    }
+                    if (MediaHints.looksLikeWindows(draft.isoPath, draft.name)) {
+                        MediaHints.classifyIso(draft.isoPath)?.let { info ->
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    info.label,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = when (info.tone) {
+                                        MediaHintTone.WARNING -> MaterialTheme.colorScheme.error
+                                        MediaHintTone.OK -> MaterialTheme.colorScheme.primary
+                                        MediaHintTone.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                                Text(
+                                    info.detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        "同一份 ISO 可被多台虚拟机共用，无需重复复制。安装完成后移除介质，" +
+                            "下次启动就会直接从虚拟磁盘引导。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    state.importing?.let { progress ->
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "正在复制${progress.kind.label}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (progress.kind == ImportKind.INSTALL_ISO ||
+                                    progress.kind == ImportKind.DRIVER_ISO
+                                ) {
+                                    TextButton(onClick = onCancelImport) { Text("取消导入") }
+                                }
+                            }
+                            val fraction = progress.fraction
+                            if (fraction != null) {
+                                LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                            } else {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            }
+                            Text(
+                                buildString {
+                                    append("复制中 ")
+                                    append(progress.copiedBytes / (1024 * 1024))
+                                    append(" MB")
+                                    progress.totalBytes?.let { append(" / ${it / (1024 * 1024)} MB") }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
+                SectionCard(
+                    title = "驱动盘（VirtIO 驱动）",
+                    subtitle = "USB 光驱在本机会令 QEMU 崩溃时，挂这张盘让 WinPE 加载 vioscsi 才能装 Windows",
+                ) {
+                    val driverName = draft.driverIsoPath?.substringAfterLast('/')
+                    Text(
+                        driverName ?: "未选择（仅当 USB 崩溃、改用 virtio-scsi 装 Windows 时才需要）",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { driverIsoPicker.launch(arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*")) },
+                            enabled = state.importing == null,
+                        ) { Text("导入驱动盘 ISO") }
+                        if (draft.driverIsoPath != null) {
+                            TextButton(
+                                onClick = { onUpdate { it.copy(driverIsoPath = null) } },
+                                enabled = state.importing == null,
+                            ) { Text("移除") }
+                        }
+                    }
+                    MediaHints.driverAdvice(draft.isoPath, draft.driverIsoPath, draft.name)?.let { advice ->
+                        Text(
+                            advice,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Text(
+                        "用 Fedora 的 virtio-win 驱动盘（含 vioscsi、viostor 等）。安装时 Windows 停在「找不到驱动程序」" +
+                            "或读不到安装文件时，点「加载驱动程序」指向这张 AHCI 盘里的 vioscsi（如 w11arm64 目录）即可。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            // 4. 硬件资源分配（Stitch 卡片 4：vCPU / 内存 / 磁盘 + 真实存储总线）
+            SectionCard(
+                title = "硬件资源分配",
+                subtitle = "TCG 下每多一个 vCPU / 每多 1 GB 内存，都是实打实的宿主开销",
+            ) {
+                SliderRow(
+                    label = "CPU 核心",
+                    value = draft.cpuCores.toFloat(),
+                    valueRange = if (isApple) 1f..4f else 1f..8f,
+                    steps = if (isApple) 3 else 6,
+                    valueText = "${draft.cpuCores} vCPU",
+                    onChange = { cores -> onUpdate { it.copy(cpuCores = cores) } },
+                )
+                if (isApple) {
+                    Text(
+                        "iPhone 11 机型最多 4 核。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                SliderRow(
+                    label = "内存",
+                    value = draft.memoryMb.toFloat(),
+                    valueRange = when {
+                        isApple -> 1024f..3072f
+                        isAndroid -> 4096f..8192f
+                        else -> 1024f..8192f
+                    },
+                    steps = when {
+                        isApple -> 3
+                        isAndroid -> 7
+                        else -> 13
+                    },
+                    valueText = "${draft.memoryMb} MB",
+                    onChange = { mem -> onUpdate { it.copy(memoryMb = (mem / 512).toInt() * 512) } },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(2048, 4096, 6144, 8192)
+                        .filter { mb ->
+                            when {
+                                isApple -> mb <= 3072
+                                isAndroid -> mb >= 4096
+                                else -> true
+                            }
+                        }
+                        .forEach { mb ->
+                            val label = "${mb / 1024} GB"
+                            if (draft.memoryMb == mb) {
+                                Button(onClick = { }) { Text(label) }
+                            } else {
+                                OutlinedButton(onClick = { onUpdate { it.copy(memoryMb = mb) } }) {
+                                    Text(label)
+                                }
+                            }
+                        }
+                }
+                Text(
+                    "设备内存 ${state.deviceMemoryMb} MB · 剩余存储 ${state.freeSpaceMb} MB",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!isApple && !isAndroid) {
+                    SliderRow(
+                        label = "磁盘容量",
+                        value = draft.diskSizeGb.toFloat(),
+                        valueRange = 32f..256f,
+                        steps = 13,
+                        valueText = "${draft.diskSizeGb} GB",
+                        onChange = { gb -> onUpdate { it.copy(diskSizeGb = (gb / 16).toInt() * 16) } },
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(64, 128, 256).forEach { size ->
+                            OutlinedButton(onClick = { onUpdate { it.copy(diskSizeGb = size) } }) {
+                                Text("$size GB")
+                            }
+                        }
+                    }
+                    Text(
+                        "qcow2 精简置备：文件只随实际写入增长，256 GB 的盘初始也只占几百 KB。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    state.diskUsage[draft.id]?.takeIf { it > 0 }?.let { used ->
+                        UsageBar(usedBytes = used, totalGb = draft.diskSizeGb)
+                    }
+                }
+            }
+
+            // 存储总线：只提供真实的 StorageController 两个值，没有 SATA。
+            if (!isApple && !isAndroid) {
+                SectionCard(
+                    title = "存储总线",
+                    subtitle = "Windows 安装程序自带 NVMe 与 USB 驱动；virtio 需要额外注入驱动盘",
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(
+                            StorageController.NVME to "NVMe（推荐）",
+                            StorageController.VIRTIO to "virtio",
+                        ).forEach { (mode, label) ->
+                            if (draft.storageController == mode) {
+                                Button(onClick = { }) { Text(label) }
+                            } else {
+                                OutlinedButton(onClick = { onUpdate { it.copy(storageController = mode) } }) {
+                                    Text(label)
                                 }
                             }
                         }
                     }
-                    if (draft.isoPath != null) {
-                        TextButton(
-                            onClick = { onUpdate { it.copy(isoPath = null) } },
-                            enabled = state.importing == null,
-                        ) { Text("移除") }
-                    }
-                }
-                if (MediaHints.looksLikeWindows(draft.isoPath, draft.name)) {
-                    MediaHints.classifyIso(draft.isoPath)?.let { info ->
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                info.label,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = when (info.tone) {
-                                    MediaHintTone.WARNING -> MaterialTheme.colorScheme.error
-                                    MediaHintTone.OK -> MaterialTheme.colorScheme.primary
-                                    MediaHintTone.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            )
-                            Text(
-                                info.detail,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-                Text(
-                    "同一份 ISO 可被多台虚拟机共用，无需重复复制。安装完成后移除介质，" +
-                        "下次启动就会直接从虚拟磁盘引导。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                state.importing?.let { progress ->
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                "正在复制${progress.kind.label}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            if (progress.kind == ImportKind.INSTALL_ISO ||
-                                progress.kind == ImportKind.DRIVER_ISO
-                            ) {
-                                TextButton(onClick = onCancelImport) { Text("取消导入") }
-                            }
-                        }
-                        val fraction = progress.fraction
-                        if (fraction != null) {
-                            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-                        } else {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        }
-                        Text(
-                            buildString {
-                                append("复制中 ")
-                                append(progress.copiedBytes / (1024 * 1024))
-                                append(" MB")
-                                progress.totalBytes?.let { append(" / ${it / (1024 * 1024)} MB") }
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
-            SectionCard(
-                title = "驱动盘（VirtIO 驱动）",
-                subtitle = "USB 光驱在本机会令 QEMU 崩溃时，挂这张盘让 WinPE 加载 vioscsi 才能装 Windows",
-            ) {
-                val driverName = draft.driverIsoPath?.substringAfterLast('/')
-                Text(
-                    driverName ?: "未选择（仅当 USB 崩溃、改用 virtio-scsi 装 Windows 时才需要）",
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { driverIsoPicker.launch(arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*")) },
-                        enabled = state.importing == null,
-                    ) { Text("导入驱动盘 ISO") }
-                    if (draft.driverIsoPath != null) {
-                        TextButton(
-                            onClick = { onUpdate { it.copy(driverIsoPath = null) } },
-                            enabled = state.importing == null,
-                        ) { Text("移除") }
-                    }
-                }
-                MediaHints.driverAdvice(draft.isoPath, draft.driverIsoPath, draft.name)?.let { advice ->
                     Text(
-                        advice,
+                        if (draft.storageController == StorageController.NVME) {
+                            "磁盘走 NVMe、安装介质走 USB，两者都有 Windows 原生驱动，ISO 可直接装进虚拟磁盘。"
+                        } else {
+                            "virtio 更快且支持 TRIM，但安装界面会看不到磁盘，需要先加载 virtio-win 里的 viostor。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Text(
-                    "用 Fedora 的 virtio-win 驱动盘（含 vioscsi、viostor 等）。安装时 Windows 停在「找不到驱动程序」" +
-                        "或读不到安装文件时，点「加载驱动程序」指向这张 AHCI 盘里的 vioscsi（如 w11arm64 目录）即可。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
 
-            }
-
+            // 5. VNC 显示：协议只有 VNC，没有 Spice；所有平台都显示。
             SectionCard(
-                title = "VNC 服务",
+                title = "VNC 显示",
                 subtitle = "画面由 QEMU 自带的 VNC 服务提供，本 App 只负责启动与监督",
             ) {
+                Text(
+                    "显示协议：VNC（唯一可用；Spice 未启用）",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
                 OutlinedTextField(
                     value = portText,
                     onValueChange = { input ->
@@ -748,109 +891,68 @@ fun CreateVmScreen(
                 )
             }
 
+            // 6. 显示与高级选项（Stitch 卡片 5 的可折叠区；仅 UEFI 平台）
             if (!isApple && !isAndroid) {
-            SectionCard(
-                title = "磁盘控制器",
-                subtitle = "Windows 安装程序自带 NVMe 与 USB 驱动；virtio 需要额外注入驱动盘",
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(
-                        StorageController.NVME to "NVMe（推荐）",
-                        StorageController.VIRTIO to "virtio",
-                    ).forEach { (mode, label) ->
-                        if (draft.storageController == mode) {
-                            Button(onClick = { }) { Text(label) }
-                        } else {
-                            OutlinedButton(onClick = { onUpdate { it.copy(storageController = mode) } }) {
-                                Text(label)
-                            }
-                        }
-                    }
-                }
-                Text(
-                    if (draft.storageController == StorageController.NVME) {
-                        "磁盘走 NVMe、安装介质走 USB，两者都有 Windows 原生驱动，ISO 可直接装进虚拟磁盘。"
+                CollapsibleSection(
+                    title = "显示与高级选项",
+                    subtitle = if (advanced) {
+                        "出问题才需要改这里"
                     } else {
-                        "virtio 更快且支持 TRIM，但安装界面会看不到磁盘，需要先加载 virtio-win 里的 viostor。"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            SectionCard(
-                title = "启动模式",
-                subtitle = "标准模式需要较大的 TCG 代码缓存；部分芯片/系统上分配不到时会启动即退出",
-            ) {
-                // Two rows: four buttons do not fit on a phone in one line.
-                listOf(
-                    listOf(LaunchMode.AUTO to "自动", LaunchMode.STANDARD to "标准"),
-                    listOf(LaunchMode.COMPAT to "兼容", LaunchMode.MINIMAL to "最小"),
-                ).forEach { row ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        row.forEach { (mode, label) ->
-                            if (draft.launchMode == mode) {
-                                Button(onClick = { }, modifier = Modifier.weight(1f)) { Text(label) }
-                            } else {
-                                OutlinedButton(
-                                    onClick = { onUpdate { it.copy(launchMode = mode) } },
-                                    modifier = Modifier.weight(1f),
-                                ) { Text(label) }
-                            }
-                        }
-                    }
-                }
-                Text(
-                    when (draft.launchMode) {
-                        LaunchMode.AUTO ->
-                            "先按标准启动，失败后自动尝试兼容、最小模式；每次尝试都会单独记录日志。" +
-                                "这是默认值，建议保持。"
-                        LaunchMode.STANDARD ->
-                            "多线程 TCG、tb-size 512 MB、-cpu max，性能最好。若启动即退出，改回「自动」。"
-                        LaunchMode.COMPAT ->
-                            "单线程 TCG、tb-size 128 MB、cortex-a76、关闭 virtio-rng。" +
-                                "用于标准模式分配代码缓存失败或机型兼容性差的设备。"
-                        LaunchMode.MINIMAL ->
-                            "在兼容基础上再关闭网络、tb-size 64 MB。" +
-                                "只用于排查，装完系统后建议切回自动。"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            // Everything that decides whether Windows can be booted at all, exposed
-            // instead of hardcoded: these are the knobs a device-specific failure
-            // usually comes down to.
-            SectionCard(
-                title = "引导相关（可选）",
-                subtitle = if (advanced) "出问题才需要改这里" else "默认组合已适配多数机型",
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { advanced = !advanced }) {
-                        Text(if (advanced) "收起" else "展开引导选项")
-                    }
-                }
-                if (!advanced) {
-                    // Collapsed summary: enough to confirm what a VM is actually
-                    // booting with, without reading seven separate controls.
-                    Text(
                         "光驱 ${if (draft.usbDisabled) "virtio-scsi+AHCI（USB 已禁用）" else draft.cdTransport.label}" +
                             (if (draft.driverIsoPath != null) " · 驱动盘已挂" else "") +
                             (if (draft.portForwards.isNotEmpty()) " · 转发 ${draft.portForwards.size} 个端口" else "") +
                             " · 输入 ${if (draft.usbDisabled || !draft.usbInput) "virtio" else "USB"} · " +
                             "显示 ${draft.displayDevice.label} · " +
                             "串口恢复 ${if (draft.serialRecovery) "开" else "关"} · " +
-                            "CPU ${draft.cpuModel ?: "跟随档位"} · 提取镜像 ${if (draft.useBootImage) "开" else "关"}",
+                            "CPU ${draft.cpuModel ?: "跟随档位"} · 提取镜像 ${if (draft.useBootImage) "开" else "关"}"
+                    },
+                    expanded = advanced,
+                    onToggle = { advanced = !advanced },
+                ) {
+                    Text(
+                        "启动模式：标准模式需要较大的 TCG 代码缓存；部分芯片/系统上分配不到时会启动即退出",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
+                    // Two rows: four buttons do not fit on a phone in one line.
+                    listOf(
+                        listOf(LaunchMode.AUTO to "自动", LaunchMode.STANDARD to "标准"),
+                        listOf(LaunchMode.COMPAT to "兼容", LaunchMode.MINIMAL to "最小"),
+                    ).forEach { row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            row.forEach { (mode, label) ->
+                                if (draft.launchMode == mode) {
+                                    Button(onClick = { }, modifier = Modifier.weight(1f)) { Text(label) }
+                                } else {
+                                    OutlinedButton(
+                                        onClick = { onUpdate { it.copy(launchMode = mode) } },
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text(label) }
+                                }
+                            }
+                        }
+                    }
+                    Text(
+                        when (draft.launchMode) {
+                            LaunchMode.AUTO ->
+                                "先按标准启动，失败后自动尝试兼容、最小模式；每次尝试都会单独记录日志。" +
+                                    "这是默认值，建议保持。"
+                            LaunchMode.STANDARD ->
+                                "多线程 TCG、tb-size 512 MB、-cpu max，性能最好。若启动即退出，改回「自动」。"
+                            LaunchMode.COMPAT ->
+                                "单线程 TCG、tb-size 128 MB、cortex-a76、关闭 virtio-rng。" +
+                                    "用于标准模式分配代码缓存失败或机型兼容性差的设备。"
+                            LaunchMode.MINIMAL ->
+                                "在兼容基础上再关闭网络、tb-size 64 MB。" +
+                                    "只用于排查，装完系统后建议切回自动。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
 
-                if (advanced) {
                     ChoiceRow(
                         label = "USB 总线",
                         options = listOf(false to "启用", true to "禁用"),
@@ -965,7 +1067,6 @@ fun CreateVmScreen(
                     )
                 }
             }
-            }
 
             if (state.issues.isNotEmpty()) {
                 SectionCard(title = "启动前检查", subtitle = "错误会阻止启动，警告不会") {
@@ -988,6 +1089,21 @@ fun CreateVmScreen(
                             )
                         }
                     }
+                }
+            }
+
+            // QEMU 命令预览：只显示上次启动的真实参数；没有 argv 时整节不出现，
+            // 绝不展示编造的参数。
+            if (state.argv.isNotEmpty()) {
+                SectionCard(
+                    title = "QEMU 启动参数预览",
+                    subtitle = "上次启动的实际参数（只读），供对照检查",
+                ) {
+                    Text(
+                        state.argv.joinToString(" "),
+                        style = MonoTextStyle,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
 

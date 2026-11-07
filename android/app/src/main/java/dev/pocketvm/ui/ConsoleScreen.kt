@@ -7,12 +7,13 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,15 +29,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
-import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -56,18 +61,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.pocketvm.core.model.DisplayDevice
 import dev.pocketvm.core.model.LaunchMode
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmPlatform
@@ -82,6 +86,19 @@ import kotlinx.coroutines.delay
 private const val LOG_HEIGHT_DP = 360
 private const val SERIAL_HEIGHT_DP = 220
 
+/**
+ * 运行中虚拟机的控制台（Stitch 布局重写）。
+ *
+ * 版式顺序照 Stitch 的控制台设计：顶栏（名称 + 状态 + 运行计时）→ 显示通道横幅 →
+ * VNC 画面区 → 输入工具栏 → 实时负载 → 控制指令 → 日志速览；SSH 与诊断仍是独立 Tab。
+ * 颜色只用 MaterialTheme.colorScheme（灰白主题），不用 Stitch 的深色 Titanium Slate。
+ *
+ * 几个 Stitch 里的假东西在这里是诚实版，原因写在对应位置：
+ * - PocketVM 没有内置 VNC 画面渲染，「桌面预览」只是一个说明占位 + 外部客户端连接信息，
+ *   绝不画假的 Windows 桌面或任务管理器。
+ * - 显示是 VNC（RFB 3.8，127.0.0.1），不是 Spice；QEMU 11.1.2 TCG，没有分辨率/帧率/延迟数据。
+ * - 没有温度、功耗、ZRAM 数据，没有重启与快照功能——都没有画出来或写了说明。
+ */
 @Composable
 fun ConsoleScreen(
     state: UiState,
@@ -131,6 +148,16 @@ fun ConsoleScreen(
     val clipboard = LocalClipboardManager.current
     val logScroll = rememberScrollState()
     val serialScroll = rememberScrollState()
+    // 运行计时：每秒一拍。计时文本是顶栏里唯一的逐秒变化量。
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    val liveRunning = runtime as? VmRuntimeState.Running
+    LaunchedEffect(running) {
+        if (!running) return@LaunchedEffect
+        while (true) {
+            delay(1_000)
+            nowMs = System.currentTimeMillis()
+        }
+    }
     val shortStatus = when (runtime) {
         is VmRuntimeState.Running -> "运行中"
         is VmRuntimeState.Preparing -> "启动中"
@@ -175,14 +202,14 @@ fun ConsoleScreen(
             showBack = true,
             onBack = onBack,
             actions = {
-                StatusChip(text = shortStatus, tone = statusTone)
-                IconButton(onClick = if (running) onStop else onStart, enabled = canToggle) {
-                    Icon(
-                        if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                        contentDescription = if (running) "停止" else "启动",
-                        tint = if (running) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                if (running && liveRunning != null) {
+                    Text(
+                        formatUptime((nowMs - liveRunning.startedAtEpochMs).coerceAtLeast(0L)),
+                        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                StatusChip(text = shortStatus, tone = statusTone)
                 IconButton(onClick = { onRefresh() }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                 }
@@ -232,6 +259,7 @@ fun ConsoleScreen(
                     .togetherWith(fadeOut(tween(120)))
             },
             label = "consoleTab",
+            modifier = Modifier.weight(1f),
         ) { activeTab ->
             when (activeTab) {
             0 -> OverviewTab(
@@ -258,6 +286,9 @@ fun ConsoleScreen(
                     clipboard.setText(AnnotatedString(errorReport(runtime, state.log)))
                     copiedError = true
                 },
+                onOpenLogs = { tab = 1 },
+                onOpenPerformance = { tab = 2 },
+                onOpenSsh = { tab = 3 },
             )
             1 -> LogsTab(
                 state = state,
@@ -300,6 +331,34 @@ fun ConsoleScreen(
                 onExport = onExport,
                 onOpenLogs = { tab = 1 },
             )
+            }
+        }
+
+        // Stitch 的底部吸底操作栏：主操作是启动/停止，次操作是导出诊断包。
+        // 「停止」就是真关机（QEMU 进程退出），不是 Stitch 写的「断开连接」——
+        // 虚拟机不会在后台继续跑；「全屏沉浸视窗」没有对应物，本应用不内置
+        // VNC 画面，无画面可全屏，所以不画这个按钮。
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = if (running) onStop else onStart,
+                enabled = canToggle,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (running) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary,
+                ),
+                modifier = Modifier.weight(1f).height(48.dp),
+            ) {
+                Icon(
+                    if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                )
+                Text(if (running) "停止" else "启动", modifier = Modifier.padding(start = 6.dp))
+            }
+            OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f).height(48.dp)) {
+                Text("导出诊断包")
             }
         }
     }
@@ -457,6 +516,17 @@ private fun formatUptime(ms: Long): String {
     }
 }
 
+/** 日志速览用的原文尾部：只截行，不改内容。 */
+private fun takeLastLines(text: String, count: Int): String =
+    text.lines().takeLast(count).joinToString("\n").trimEnd()
+
+/**
+ * 概览 Tab：Stitch 控制台的版式顺序，内容全部是真数据。
+ *
+ * 顶栏的状态与计时在 [ConsoleScreen]；这里依次是安装介质提示、运行状态、
+ * 显示通道横幅、VNC 画面区、客户机按键、实时负载、控制指令、日志速览，
+ * 再加两张条件卡（卸载安装介质 / 引导卡在固件）。
+ */
 @Composable
 private fun OverviewTab(
     state: UiState,
@@ -476,9 +546,14 @@ private fun OverviewTab(
     onGuestText: (String) -> Unit,
     onBootFromShell: () -> Unit,
     onCopyError: () -> Unit,
+    onOpenLogs: () -> Unit,
+    onOpenPerformance: () -> Unit,
+    onOpenSsh: () -> Unit,
 ) {
     val usedBytes = state.diskUsage[vm.id] ?: 0L
     var guestText by remember { mutableStateOf("") }
+    // 输入工具栏的模式：0 方向键 / 1 输入文本。只切换面板显示，按键本身都走 QMP 回调。
+    var inputMode by remember { mutableStateOf(0) }
     val haptic = LocalHapticFeedback.current
     val liveRuntime = runtime as? VmRuntimeState.Running
     val cdRunStart = liveRuntime?.startedAtEpochMs ?: 0L
@@ -595,6 +670,12 @@ private fun OverviewTab(
                     else "虚拟盘 virtio-blk · 光驱 AHCI",
                 )
                 KeyValueRow(
+                    "显示设备",
+                    vm.displayDevice.label +
+                        if (vm.displayDevice == DisplayDevice.RAMFB) "（Windows 引导必需）"
+                        else "（Linux / Android 用）",
+                )
+                KeyValueRow(
                     "启动模式",
                     when (vm.launchMode) {
                         LaunchMode.AUTO -> "自动（标准 → 兼容 → 最小）"
@@ -653,165 +734,54 @@ private fun OverviewTab(
             }
         }
 
-        if (vm.platform != VmPlatform.APPLE_T8030) {
         item {
-            SectionCard(
-                title = "客户机按键",
-                subtitle = "手机 VNC 客户端没有方向键/功能键时，用这里发给客户机",
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("↑" to "up", "↓" to "down", "←" to "left", "→" to "right").forEach { (label, code) ->
-                            OutlinedButton(
-                                onClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    onGuestKey(code, label)
-                                },
-                                enabled = running,
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(vertical = 6.dp),
-                            ) { Text(label) }
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("Enter" to "ret", "Esc" to "esc", "Tab" to "tab", "空格" to "spc").forEach { (label, code) ->
-                            OutlinedButton(
-                                onClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    onGuestKey(code, label)
-                                },
-                                enabled = running,
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(vertical = 6.dp),
-                            ) { Text(label, style = MaterialTheme.typography.labelSmall) }
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("F2" to "f2", "F10" to "f10", "Del" to "delete").forEach { (label, code) ->
-                            OutlinedButton(
-                                onClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    onGuestKey(code, label)
-                                },
-                                enabled = running,
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(vertical = 6.dp),
-                            ) { Text(label, style = MaterialTheme.typography.labelSmall) }
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                onGuestCombo(listOf("ctrl", "alt", "delete"))
-                            },
-                            enabled = running,
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(vertical = 6.dp),
-                        ) { Text("Ctrl+Alt+Del", style = MaterialTheme.typography.labelSmall) }
-                    }
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OutlinedTextField(
-                            value = guestText,
-                            onValueChange = { guestText = it.take(200) },
-                            label = { Text("键入文本") },
-                            singleLine = true,
-                            enabled = running,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Button(
-                            onClick = {
-                                onGuestText(guestText)
-                                guestText = ""
-                            },
-                            enabled = running && guestText.isNotEmpty(),
-                        ) { Text("输入") }
-                        Button(
-                            onClick = {
-                                onGuestText(guestText + "\r")
-                                guestText = ""
-                            },
-                            enabled = running && guestText.isNotEmpty(),
-                        ) { Text("输入+⏎") }
-                    }
-                    state.lastGuestKeyLabel?.let { label ->
-                        val ok = state.lastGuestKeyOk == true
-                        Text(
-                            "上次发送：$label " + if (ok) "✓" else "✗（QMP 未连接）",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (ok) Success else Danger,
-                        )
-                    }
-                    Text(
-                        "按键经 QMP 直接注入客户机，和 VNC 客户端里的键盘等价；" +
-                            "方向键用于固件启动菜单，Enter 用于「按任意键从 CD 启动」。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        }
-
-        if (vm.isoPath != null && usedBytes > 4L * 1024 * 1024 * 1024) {
-            item {
-                SectionCard(
-                    title = "安装完成了吗？",
-                    subtitle = "虚拟盘已写入 ${usedBytes / (1024 * 1024 * 1024)} GB，系统看起来已经装好",
-                ) {
-                    Text(
-                        "卸载 ${vm.isoPath.substringAfterLast('/')} 后，之后每次都直接从虚拟磁盘启动，" +
-                            "不会再看到安装程序。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onEject, enabled = !state.busy && otherRunning == null) {
-                            Text(if (running) "卸载并重启" else "卸载安装介质")
-                        }
-                    }
-                }
-            }
-        }
-
-        if (vm.isoPath != null && usedBytes <= 4L * 1024 * 1024 * 1024) {
-            item {
-                SectionCard(
-                    title = "引导卡在固件？",
-                    subtitle = "选完启动项后黑屏 / 固件进度条不动 / Display output is not active",
-                ) {
-                    Text(
-                        "选完启动项后长时间黑屏、或屏幕出现「Display output is not active.」" +
-                            "（QEMU 占位画面：客户机关闭显示输出后没恢复；社区确认这是引导器→登录界面间的正常过渡，不是故障），" +
-                            "排查顺序：\n" +
-                            "① 串口日志里 starting Boot0001 之后是否仍有输出——有就是系统还在启动，TCG 下先等 5-10 分钟；\n" +
-                            "② 黑屏时先在 VNC 客户端里按 Ctrl+Alt+F1 强制切 TTY，画面通常会回来；\n" +
-                            "③ USB 光驱在本机会崩：保持「光驱总线=自动」启动一次，App 会自动改成" +
-                            "virtio-scsi + AHCI，键鼠仍走 USB（实测方向键可用）；只有同一档再次崩溃" +
-                            "才会把输入降为 virtio，而本机 virtio 键盘收不到按键——需要键盘时请在编辑页" +
-                            "把输入设备改回 USB；\n" +
-                            "④ Windows 在 virtio-scsi 下读不到安装文件：挂 VirtIO 驱动盘（virtio-win），" +
-                            "在 WinPE 的「加载驱动」里进 驱动盘盘符 → vioscsi → w11 → ARM64" +
-                            "（认准含 vioscsi.inf 的目录）；挂了驱动盘时光盘只走 virtio-scsi，" +
-                            "两个 ISO 设备同屏会让 Windows 安装冻结；\n" +
-                            "⑤ 仍黑屏就确认编辑页「显示设备」是 ramfb（默认值）：virtio-gpu 的 GOP " +
-                            "没有线性帧缓冲，Windows 引导管理器会写空指针 Data Abort；ramfb 固定 " +
-                            "800x600，可在固件界面按 F10 进 Setup 调分辨率（会写入变量存储，重启保留）；\n" +
-                            "⑥ 以上无效再把固件换回内置 2024.02 原版（QEMU_EFI.fd）重试，隔离固件回归。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            DisplayProtocolBanner(vm = vm, running = running)
         }
 
         item {
             val vncHost = "127.0.0.1"
             SectionCard(
-                title = "VNC 服务",
+                title = "虚拟机画面（VNC）",
                 subtitle = "App 不渲染画面，用外部 RFB 客户端连接",
             ) {
+                // Stitch 的「Windows 桌面预览 + 任务管理器」是假图：PocketVM 没有
+                // 内置 VNC 画面渲染，这里不画假桌面，只放一个诚实的占位说明。
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(168.dp)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp))
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                            shape = RoundedCornerShape(12.dp),
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(16.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.DesktopWindows,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(32.dp),
+                        )
+                        Text("画面在外部 VNC 客户端中查看", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "本应用不内置 VNC 画面渲染",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "127.0.0.1:${vm.vncPort}",
+                            style = MonoTextStyle,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -874,7 +844,7 @@ private fun OverviewTab(
                 Text(
                     "两种「未激活」别混淆：① 屏幕正中出现「Display output is not active.」" +
                         "——这是 QEMU 的占位画面（引导交接后显示输出没恢复），与激活无关；" +
-                        "先按 Ctrl+Alt+F1 强制切 TTY，多半能恢复，详见上方排查卡；" +
+                        "先按 Ctrl+Alt+F1 强制切 TTY，多半能恢复，详见下方排查卡；" +
                         "② 部分 VNC 客户端（尤其商业版）会在画面角落叠加试用遮罩——" +
                         "那是客户端自身水印，与目标系统无关。换用免费客户端即可去除：" +
                         "aVNC（开源）、bVNC Free、RealVNC Viewer 免费版。",
@@ -895,6 +865,476 @@ private fun OverviewTab(
                 }
             }
         }
+
+        if (vm.platform != VmPlatform.APPLE_T8030) {
+        item {
+            SectionCard(
+                title = "客户机按键",
+                subtitle = "手机 VNC 客户端没有方向键/功能键时，用这里发给客户机",
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // Stitch 的输入工具栏：触控板模式、软键盘、Ctrl+Alt+Del、缩放。
+                    // 触控板没有真实对应物（没有内置画面可触控），改成方向键盘；
+                    // 软键盘对应文本输入（手机键盘键入后经 typeText 发给客户机）；
+                    // Ctrl+Alt+Del 直接走组合键回调；缩放没有内置画面可缩放，已去掉。
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (inputMode == 0) {
+                            Button(
+                                onClick = { inputMode = 0 },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 6.dp),
+                            ) { Text("方向键", style = MaterialTheme.typography.labelSmall) }
+                        } else {
+                            OutlinedButton(
+                                onClick = { inputMode = 0 },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 6.dp),
+                            ) { Text("方向键", style = MaterialTheme.typography.labelSmall) }
+                        }
+                        if (inputMode == 1) {
+                            Button(
+                                onClick = { inputMode = 1 },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 6.dp),
+                            ) { Text("输入文本", style = MaterialTheme.typography.labelSmall) }
+                        } else {
+                            OutlinedButton(
+                                onClick = { inputMode = 1 },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 6.dp),
+                            ) { Text("输入文本", style = MaterialTheme.typography.labelSmall) }
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onGuestCombo(listOf("ctrl", "alt", "delete"))
+                            },
+                            enabled = running,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(vertical = 6.dp),
+                        ) { Text("Ctrl+Alt+Del", style = MaterialTheme.typography.labelSmall) }
+                    }
+                    if (inputMode == 0) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("↑" to "up", "↓" to "down", "←" to "left", "→" to "right").forEach { (label, code) ->
+                                OutlinedButton(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onGuestKey(code, label)
+                                    },
+                                    enabled = running,
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(vertical = 6.dp),
+                                ) { Text(label) }
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("Enter" to "ret", "Esc" to "esc", "Tab" to "tab", "空格" to "spc").forEach { (label, code) ->
+                                OutlinedButton(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onGuestKey(code, label)
+                                    },
+                                    enabled = running,
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(vertical = 6.dp),
+                                ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("F2" to "f2", "F10" to "f10", "Del" to "delete").forEach { (label, code) ->
+                                OutlinedButton(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onGuestKey(code, label)
+                                    },
+                                    enabled = running,
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(vertical = 6.dp),
+                                ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                            }
+                        }
+                    } else {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            OutlinedTextField(
+                                value = guestText,
+                                onValueChange = { guestText = it.take(200) },
+                                label = { Text("键入文本") },
+                                singleLine = true,
+                                enabled = running,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Button(
+                                onClick = {
+                                    onGuestText(guestText)
+                                    guestText = ""
+                                },
+                                enabled = running && guestText.isNotEmpty(),
+                            ) { Text("输入") }
+                            Button(
+                                onClick = {
+                                    onGuestText(guestText + "\r")
+                                    guestText = ""
+                                },
+                                enabled = running && guestText.isNotEmpty(),
+                            ) { Text("输入+⏎") }
+                        }
+                    }
+                    state.lastGuestKeyLabel?.let { label ->
+                        val ok = state.lastGuestKeyOk == true
+                        Text(
+                            "上次发送：$label " + if (ok) "✓" else "✗（QMP 未连接）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (ok) Success else Danger,
+                        )
+                    }
+                    Text(
+                        "按键经 QMP 直接注入客户机，和 VNC 客户端里的键盘等价；" +
+                            "方向键用于固件启动菜单，Enter 用于「按任意键从 CD 启动」。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        }
+
+        item {
+            TelemetrySection(
+                state = state,
+                vm = vm,
+                running = running,
+                usedBytes = usedBytes,
+                onOpenPerformance = onOpenPerformance,
+            )
+        }
+
+        item {
+            SectionCard(title = "控制指令", subtitle = "关机即停止 QEMU 进程") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = if (running) onStop else onStart,
+                        enabled = !state.busy &&
+                            runtime !is VmRuntimeState.Preparing &&
+                            runtime !is VmRuntimeState.Stopping &&
+                            otherRunning == null,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (running) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.primary,
+                        ),
+                    ) {
+                        Icon(
+                            if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                        )
+                        Text(if (running) "停止" else "启动", modifier = Modifier.padding(start = 6.dp))
+                    }
+                    OutlinedButton(onClick = onExport) { Text("导出诊断包") }
+                }
+                OutlinedButton(
+                    onClick = onOpenSsh,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("打开 SSH 终端") }
+                Text(
+                    "PocketVM 没有重启与快照功能：重启请先停止再启动；" +
+                        "虚拟盘本身就是持久的，不需要快照。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        if (vm.isoPath != null && usedBytes > 4L * 1024 * 1024 * 1024) {
+            item {
+                SectionCard(
+                    title = "安装完成了吗？",
+                    subtitle = "虚拟盘已写入 ${usedBytes / (1024 * 1024 * 1024)} GB，系统看起来已经装好",
+                ) {
+                    Text(
+                        "卸载 ${vm.isoPath.substringAfterLast('/')} 后，之后每次都直接从虚拟磁盘启动，" +
+                            "不会再看到安装程序。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onEject, enabled = !state.busy && otherRunning == null) {
+                            Text(if (running) "卸载并重启" else "卸载安装介质")
+                        }
+                    }
+                }
+            }
+        }
+
+        if (vm.isoPath != null && usedBytes <= 4L * 1024 * 1024 * 1024) {
+            item {
+                SectionCard(
+                    title = "引导卡在固件？",
+                    subtitle = "选完启动项后黑屏 / 固件进度条不动 / Display output is not active",
+                ) {
+                    Text(
+                        "选完启动项后长时间黑屏、或屏幕出现「Display output is not active.」" +
+                            "（QEMU 占位画面：客户机关闭显示输出后没恢复；社区确认这是引导器→登录界面间的正常过渡，不是故障），" +
+                            "排查顺序：\n" +
+                            "① 串口日志里 starting Boot0001 之后是否仍有输出——有就是系统还在启动，TCG 下先等 5-10 分钟；\n" +
+                            "② 黑屏时先在 VNC 客户端里按 Ctrl+Alt+F1 强制切 TTY，画面通常会回来；\n" +
+                            "③ USB 光驱在本机会崩：保持「光驱总线=自动」启动一次，App 会自动改成" +
+                            "virtio-scsi + AHCI，键鼠仍走 USB（实测方向键可用）；只有同一档再次崩溃" +
+                            "才会把输入降为 virtio，而本机 virtio 键盘收不到按键——需要键盘时请在编辑页" +
+                            "把输入设备改回 USB；\n" +
+                            "④ Windows 在 virtio-scsi 下读不到安装文件：挂 VirtIO 驱动盘（virtio-win），" +
+                            "在 WinPE 的「加载驱动」里进 驱动盘盘符 → vioscsi → w11 → ARM64" +
+                            "（认准含 vioscsi.inf 的目录）；挂了驱动盘时光盘只走 virtio-scsi，" +
+                            "两个 ISO 设备同屏会让 Windows 安装冻结；\n" +
+                            "⑤ 仍黑屏就确认编辑页「显示设备」是 ramfb（默认值）：virtio-gpu 的 GOP " +
+                            "没有线性帧缓冲，Windows 引导管理器会写空指针 Data Abort；ramfb 固定 " +
+                            "800x600，可在固件界面按 F10 进 Setup 调分辨率（会写入变量存储，重启保留）；\n" +
+                            "⑥ 以上无效再把固件换回内置 2024.02 原版（QEMU_EFI.fd）重试，隔离固件回归。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        item {
+            SectionCard(
+                title = "日志速览",
+                subtitle = "串口与 QEMU 输出原文 · 完整内容见「日志」页",
+                headerEnd = {
+                    TextButton(onClick = onOpenLogs) { Text("完整日志") }
+                },
+            ) {
+                // Stitch 的日志行（spice-vdagent、virgl3d）是假的：这里只放
+                // state.serial / state.log 的原文尾部，一字不改。
+                Text("固件输出（串口）", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    takeLastLines(state.serial, 8).ifBlank {
+                        if (running) {
+                            "（客户机还没有任何串口输出：固件仍在初始化，或启动项里没有可引导介质）"
+                        } else {
+                            "（未运行）"
+                        }
+                    },
+                    style = MonoTextStyle,
+                    maxLines = 10,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                )
+                Text("QEMU 输出", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    takeLastLines(state.log, 8).ifBlank {
+                        if (running) "（QEMU 正常运行时不会输出内容，画面请用 VNC 客户端连接）"
+                        else "（暂无输出）"
+                    },
+                    style = MonoTextStyle,
+                    maxLines = 10,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                )
+            }
+        }
+    }
+}
+
+/** Stitch 的协议横幅：只写真实值——VNC/RFB 3.8、仅本机、显示设备、QEMU 11.1.2 TCG。 */
+@Composable
+private fun DisplayProtocolBanner(vm: VmConfig, running: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp))
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                shape = RoundedCornerShape(12.dp),
+            )
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.Tv,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(18.dp),
+        )
+        Column(
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(
+                "VNC · RFB 3.8 · 仅本机",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                "显示 ${vm.displayDevice.label} · QEMU 11.1.2 · TCG 软件模拟",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        StatusChip(
+            text = if (running) "监听中" else "未启动",
+            tone = if (running) Tone.Ok else Tone.Idle,
+        )
+    }
+}
+
+/** Stitch 遥测区的 2×2 网格：vCPU、内存、磁盘 I/O、虚拟盘，全部来自 state.metrics 与磁盘用量。 */
+@Composable
+private fun TelemetrySection(
+    state: UiState,
+    vm: VmConfig,
+    running: Boolean,
+    usedBytes: Long,
+    onOpenPerformance: () -> Unit,
+) {
+    val metrics = state.metrics
+    SectionCard(
+        title = "实时负载",
+        subtitle = "宿主机侧采样（/proc + QMP）· 1 秒一拍 · 不需要客户机装 agent",
+        headerEnd = {
+            TextButton(onClick = onOpenPerformance) { Text("完整性能") }
+        },
+    ) {
+        if (!running || metrics == null) {
+            Text(
+                "虚拟机运行后，这里显示 QEMU 进程的 CPU、内存与磁盘 I/O；" +
+                    "数据来自 /proc 与 QMP，不需要客户机里装 agent。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@SectionCard
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MiniCard(
+                icon = Icons.Filled.Speed,
+                label = "vCPU 占用",
+                value = "${metrics.cpuPercent.toInt()}%",
+                modifier = Modifier.weight(1f),
+            ) {
+                Sparkline(
+                    history = metrics.cpuHistory,
+                    modifier = Modifier.fillMaxWidth().height(32.dp),
+                )
+                Text(
+                    "${metrics.vcpuPercents.size.coerceAtLeast(1)} vCPU · " +
+                        (state.env?.soc ?: "宿主 ARM64"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            val phoneMb = state.deviceMemoryMb
+            val rss = metrics.rssMb
+            MiniCard(
+                icon = Icons.Filled.Memory,
+                label = "内存 RSS",
+                value = rss?.let { "$it MB" } ?: "不可用",
+                modifier = Modifier.weight(1f),
+            ) {
+                if (rss != null && phoneMb > 0) {
+                    MeterBar(fraction = rss.toFloat() / phoneMb.toFloat())
+                    Text(
+                        "占手机内存 ${rss * 100 / phoneMb}% · 客户机设定 ${vm.memoryMb} MB",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "客户机设定 ${vm.memoryMb} MB",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MiniCard(
+                icon = Icons.Filled.Storage,
+                label = "磁盘读",
+                value = metrics.readMBs?.let(::formatRate) ?: "不可用",
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    "写 ${metrics.writeMBs?.let(::formatRate) ?: "不可用"}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "块层速率",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            MiniCard(
+                icon = Icons.Filled.Folder,
+                label = "虚拟盘",
+                value = "${usedBytes / (1024 * 1024)} MB",
+                modifier = Modifier.weight(1f),
+            ) {
+                UsageBar(usedBytes = usedBytes, totalGb = vm.diskSizeGb)
+            }
+        }
+        Text(
+            "CPU 超过 100% 是正常的：多线程 TCG 让 vCPU 线程并行翻译，各自都能吃满一个核。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** 遥测网格里的小卡片：图标 + 名称 + 大数字 + 自定义内容。 */
+@Composable
+private fun MiniCard(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp))
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                shape = RoundedCornerShape(12.dp),
+            )
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            value,
+            style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum"),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        content()
     }
 }
 

@@ -20,14 +20,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -50,9 +48,21 @@ import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.storage.AppleAssets
 import dev.pocketvm.ui.theme.Danger
 import dev.pocketvm.ui.theme.ShapeCard
+import dev.pocketvm.ui.theme.ShapeChip
 import dev.pocketvm.ui.theme.Success
 import dev.pocketvm.ui.theme.Warning
 
+/**
+ * 虚拟机列表：布局与组件按 Stitch 首页设计（宿主状态卡片、筛选 chips、
+ * 每台虚拟机一张卡片），但只用真实状态、不编造数字：
+ *
+ * - QEMU 版本取 env?.version，缺失时标 QEMU 11.1.2；显示走 VNC，绝不用 Spice；
+ * - 加速是 TCG 软件模拟，绝不用 KVM；只跑 ARM64 客户机，绝不用 x86_64；
+ * - SoC 取 env?.soc（本机为 Snapdragon 8 Gen 3 / Adreno 750）。
+ *
+ * Stitch 里没有真实数据源的元素（宿主实时 CPU%、ZRAM 压缩比、「60 FPS」、
+ * 终端快捷入口、模板库、重启/快照按钮）一律不画。
+ */
 @Composable
 fun VmListScreen(
     state: UiState,
@@ -67,9 +77,22 @@ fun VmListScreen(
     onProbe: () -> Unit,
 ) {
     val runningId = (state.runtime as? VmRuntimeState.Running)?.vmId
+    val preparingId = (state.runtime as? VmRuntimeState.Preparing)?.vmId
+    val stoppingId = (state.runtime as? VmRuntimeState.Stopping)?.vmId
+    // 同一时间只能跑一台：正在准备/运行/停止的都算「运行中」。
+    val activeId = runningId ?: preparingId ?: stoppingId
+    val runningCount = if (activeId != null && state.vms.any { it.id == activeId }) 1 else 0
+    val stoppedCount = state.vms.size - runningCount
     val env = state.env
     var pendingDelete by remember { mutableStateOf<VmConfig?>(null) }
     var envExpanded by remember { mutableStateOf(false) }
+    var filter by remember { mutableStateOf(VmFilter.ALL) }
+
+    val visibleVms = when (filter) {
+        VmFilter.ALL -> state.vms
+        VmFilter.RUNNING -> state.vms.filter { it.id == activeId }
+        VmFilter.STOPPED -> state.vms.filter { it.id != activeId }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(contentPadding),
@@ -93,7 +116,7 @@ fun VmListScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     HeroStat("虚拟机", "${state.vms.size}", modifier = Modifier.weight(1f))
-                    HeroStat("运行中", if (runningId != null) "1" else "0", modifier = Modifier.weight(1f))
+                    HeroStat("运行中", "$runningCount", modifier = Modifier.weight(1f))
                     HeroStat(
                         "执行层",
                         if (env?.ready == true) "就绪" else "缺失",
@@ -104,12 +127,29 @@ fun VmListScreen(
         }
 
         item {
+            HostHardwareCard(
+                env = env,
+                deviceMemoryMb = state.deviceMemoryMb,
+                freeSpaceMb = state.freeSpaceMb,
+                allocatedMemoryMb = state.vms.firstOrNull { it.id == activeId }?.memoryMb ?: 0,
+                diskUsedBytes = state.diskUsage.values.sum(),
+            )
+        }
+
+        item {
             ReadinessBanner(
                 env = env,
                 expanded = envExpanded,
                 onToggle = { envExpanded = !envExpanded },
                 onProbe = onProbe,
             )
+        }
+
+        val importing = state.importing
+        if (importing != null) {
+            item {
+                ImportingCard(importing = importing)
+            }
         }
 
         if (state.vms.isEmpty()) {
@@ -129,24 +169,49 @@ fun VmListScreen(
                 }
             }
         } else {
-            items(state.vms, key = { it.id }) { vm ->
-                VmCard(
-                    vm = vm,
-                    usedBytes = state.diskUsage[vm.id] ?: 0L,
-                    appleStatus = state.appleAssets[vm.id],
-                    androidDiskBytes = state.androidDisks[vm.id] ?: 0L,
-                    androidDiskFormat = state.androidFormats[vm.id] ?: "raw",
-                    runtime = state.runtime,
-                    runningId = runningId,
-                    metrics = if (runningId == vm.id) state.metrics else null,
-                    busy = state.busy,
-                    lastRun = state.lastRuns[vm.id],
-                    onOpen = { onOpen(vm.id) },
-                    onEdit = { onEdit(vm.id) },
-                    onStart = { onStart(vm.id) },
-                    onStop = { onStop(vm.id) },
-                    onDelete = { pendingDelete = vm },
+            item {
+                FilterChipsRow(
+                    selected = filter,
+                    totalCount = state.vms.size,
+                    runningCount = runningCount,
+                    stoppedCount = stoppedCount,
+                    onSelect = { filter = it },
                 )
+            }
+            if (visibleVms.isEmpty()) {
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        shape = ShapeCard,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        EmptyState(
+                            icon = Icons.Filled.Computer,
+                            title = if (filter == VmFilter.RUNNING) "没有正在运行的虚拟机" else "没有已停止的虚拟机",
+                            subtitle = if (filter == VmFilter.RUNNING) "启动一台虚拟机后，它会出现在这里。" else "全部虚拟机都在运行中。",
+                        )
+                    }
+                }
+            } else {
+                items(visibleVms, key = { it.id }) { vm ->
+                    VmCard(
+                        vm = vm,
+                        usedBytes = state.diskUsage[vm.id] ?: 0L,
+                        appleStatus = state.appleAssets[vm.id],
+                        androidDiskBytes = state.androidDisks[vm.id] ?: 0L,
+                        androidDiskFormat = state.androidFormats[vm.id] ?: "raw",
+                        runtime = state.runtime,
+                        runningId = runningId,
+                        metrics = if (runningId == vm.id) state.metrics else null,
+                        busy = state.busy,
+                        lastRun = state.lastRuns[vm.id],
+                        onOpen = { onOpen(vm.id) },
+                        onEdit = { onEdit(vm.id) },
+                        onStart = { onStart(vm.id) },
+                        onStop = { onStop(vm.id) },
+                        onDelete = { pendingDelete = vm },
+                    )
+                }
             }
         }
     }
@@ -181,6 +246,185 @@ fun VmListScreen(
                 TextButton(onClick = { pendingDelete = null }) { Text("取消") }
             },
         )
+    }
+}
+
+private enum class VmFilter(val label: String) {
+    ALL("全部"),
+    RUNNING("运行中"),
+    STOPPED("已停止"),
+}
+
+/**
+ * Stitch 的「宿主硬件分配状态」卡片，只用真实数据：
+ * 已分配内存 = 正在运行那台 VM 的 memoryMb / 本机总内存；
+ * 磁盘已用 = 全部 disk.qcow2 实际占用之和；QEMU 版本取 env.version。
+ * 宿主实时 CPU%、ZRAM、本机剩余存储总量没有数据源，不画。
+ */
+@Composable
+private fun HostHardwareCard(
+    env: EnvSnapshot?,
+    deviceMemoryMb: Long,
+    freeSpaceMb: Long,
+    allocatedMemoryMb: Int,
+    diskUsedBytes: Long,
+) {
+    SectionCard(
+        title = "宿主硬件",
+        subtitle = "TCG 软件模拟 · VNC 显示 · 仅本机访问",
+        headerEnd = {
+            SpecChip(env?.soc ?: "未知芯片")
+        },
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            HostMetricBox(
+                label = "已分配内存",
+                value = if (deviceMemoryMb > 0) "$allocatedMemoryMb MB" else "—",
+                subtext = if (deviceMemoryMb > 0) "本机共 $deviceMemoryMb MB" else "本机内存未知",
+                fraction = if (deviceMemoryMb > 0) {
+                    (allocatedMemoryMb.toFloat() / deviceMemoryMb).coerceIn(0f, 1f)
+                } else {
+                    null
+                },
+                modifier = Modifier.weight(1f),
+            )
+            HostMetricBox(
+                label = "虚拟磁盘已用",
+                value = "${diskUsedBytes / (1024 * 1024)} MB",
+                subtext = "剩余空间 ${freeSpaceMb / 1024} GB",
+                fraction = null,
+                modifier = Modifier.weight(1f),
+            )
+            HostMetricBox(
+                label = "QEMU 版本",
+                value = env?.version ?: "11.1.2",
+                subtext = "TCG · ARM64 客户机",
+                fraction = null,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun HostMetricBox(
+    label: String,
+    value: String,
+    subtext: String,
+    fraction: Float?,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(10.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (fraction != null) {
+            MeterBar(fraction = fraction)
+        }
+        Text(
+            subtext,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** Stitch 的筛选 chips：全部 / 运行中 / 已停止（PocketVM 没有模板库，不画）。 */
+@Composable
+private fun FilterChipsRow(
+    selected: VmFilter,
+    totalCount: Int,
+    runningCount: Int,
+    stoppedCount: Int,
+    onSelect: (VmFilter) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        listOf(VmFilter.ALL, VmFilter.RUNNING, VmFilter.STOPPED).forEach { filter ->
+            val isSelected = selected == filter
+            val count = when (filter) {
+                VmFilter.ALL -> totalCount
+                VmFilter.RUNNING -> runningCount
+                VmFilter.STOPPED -> stoppedCount
+            }
+            Surface(
+                onClick = { onSelect(filter) },
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                },
+                shape = ShapeChip,
+            ) {
+                Text(
+                    "${filter.label} ($count)",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** Stitch 的「正在写入镜像」卡片：只在真有导入任务时出现，进度取 importing.fraction。 */
+@Composable
+private fun ImportingCard(importing: ImportProgress) {
+    SectionCard(
+        title = "正在导入",
+        subtitle = importing.kind.label,
+    ) {
+        val fraction = importing.fraction
+        if (fraction != null) {
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier.fillMaxWidth().height(6.dp),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surface,
+            )
+            Text(
+                "已复制 ${importing.copiedBytes / (1024 * 1024)} MB / " +
+                    "${(importing.totalBytes ?: 0L) / (1024 * 1024)} MB（${(fraction * 100).toInt()}%）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth().height(6.dp),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surface,
+            )
+            Text(
+                "已复制 ${importing.copiedBytes / (1024 * 1024)} MB",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -257,12 +501,23 @@ private fun VmCard(
                         }
                     }
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            vm.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                vm.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            SpecChip(
+                                when {
+                                    isApple -> "iPhone 11"
+                                    else -> "ARM64"
+                                },
+                            )
+                        }
                         Text(
                             when {
                                 isApple -> "iPhone 11（t8030）· iOS"
@@ -293,18 +548,54 @@ private fun VmCard(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SpecChip("${vm.cpuCores} vCPU")
-                    SpecChip("${vm.memoryMb} MB")
-                    if (isApple) {
-                        SpecChip("iPhone 11")
-                        SpecChip("iOS 14")
-                    } else if (isAndroid) {
-                        SpecChip("Android")
-                        SpecChip("ARM64")
-                    } else {
-                        SpecChip("${vm.diskSizeGb} GB")
-                        SpecChip(vm.storageController.name.lowercase())
+                // Stitch 的硬件拓扑参数网格：vCPU / 内存 / 存储 / 显示（VNC，绝不用 Spice）。
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            SpecCell(
+                                label = "虚拟核心",
+                                value = "${vm.cpuCores} vCPU",
+                                modifier = Modifier.weight(1f),
+                            )
+                            SpecCell(
+                                label = "内存",
+                                value = "${vm.memoryMb} MB",
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            SpecCell(
+                                label = "存储",
+                                value = when {
+                                    isApple -> if (appleStatus?.present == true) "iOS 资源已导入" else "iOS 资源未导入"
+                                    isAndroid -> if (androidDiskBytes > 0) {
+                                        "$androidDiskFormat · ${androidDiskBytes / (1024 * 1024)} MB"
+                                    } else {
+                                        "未导入磁盘镜像"
+                                    }
+                                    else -> "${vm.diskSizeGb} GB ${vm.storageController.name.lowercase()}"
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                            SpecCell(
+                                label = "显示",
+                                value = "${vm.displayDevice.label} · VNC",
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
                     }
                 }
 
@@ -386,8 +677,15 @@ private fun VmCard(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Button(
+                        onClick = onOpen,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("打开控制台")
+                    }
+                    OutlinedButton(
                         onClick = if (isRunning) onStop else onStart,
                         enabled = when {
                             busy -> false
@@ -396,10 +694,6 @@ private fun VmCard(
                             otherRunning -> false
                             else -> true
                         },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isRunning) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.primary,
-                        ),
                     ) {
                         Icon(
                             if (isRunning) Icons.Filled.Stop else Icons.Filled.PlayArrow,
@@ -409,9 +703,6 @@ private fun VmCard(
                             if (isRunning) "停止" else "启动",
                             modifier = Modifier.padding(start = 4.dp),
                         )
-                    }
-                    OutlinedButton(onClick = onOpen, enabled = !busy || isRunning) {
-                        Text("控制台")
                     }
                     TextButton(
                         onClick = onEdit,
@@ -432,6 +723,24 @@ private fun VmCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SpecCell(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
