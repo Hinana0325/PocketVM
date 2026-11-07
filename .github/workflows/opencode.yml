@@ -1,0 +1,45 @@
+name: opencode
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Task for OpenCode (for example: add one line of Chinese to the README)"
+        required: true
+        type: string
+  issue_comment:
+    types: [created]
+
+jobs:
+  opencode:
+    # Manual runs always proceed. Comment runs only when the repo owner
+    # mentions /opencode or /oc, so other people's comments can't burn
+    # the free-model quota.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.comment.user.login == 'Hinana0325' &&
+        (
+          contains(github.event.comment.body, '/opencode') ||
+          contains(github.event.comment.body, '/oc') ||
+        )
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      # Pinned to the `latest` tag as of 2026-11-08; no OpenCode App install,
+      # the workflow's own GITHUB_TOKEN is used instead.
+      - uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: opencode/deepseek-v4.1-flash-free
+          use_github_token: true
+          prompt: ${{ inputs.prompt }}
