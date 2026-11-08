@@ -36,10 +36,13 @@ jobs:
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
       # Pinned to the `latest` tag as of 2026-11-08; no OpenCode App install,
       # the workflow's own GITHUB_TOKEN is used instead.
+      # Model is CloudBase hy4 (see opencode.json in the repo root); the key
+      # comes from the CLOUDBASE_API_KEY repository secret.
       - uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLOUDBASE_API_KEY: ${{ secrets.CLOUDBASE_API_KEY }}
         with:
-          model: opencode/deepseek-v4.1-flash-free
+          model: cloudbase/hy4
           use_github_token: true
           prompt: ${{ inputs.prompt }}
