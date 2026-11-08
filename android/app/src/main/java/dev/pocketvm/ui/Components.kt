@@ -91,7 +91,7 @@ fun SectionCard(
                 shape = RoundedCornerShape(16.dp),
             )
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -102,12 +102,19 @@ fun SectionCard(
                 verticalArrangement = Arrangement.spacedBy(2.dp),
                 modifier = Modifier.weight(1f, false),
             ) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
                 subtitle?.let {
                     Text(
                         it,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -190,6 +197,8 @@ fun StatusChip(
             text,
             style = MaterialTheme.typography.labelSmall,
             color = animated,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         )
     }
 }
@@ -205,12 +214,16 @@ fun KeyValueRow(key: String, value: String, valueColor: Color = MaterialTheme.co
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(0.35f),
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         )
         Text(
             value,
             style = MaterialTheme.typography.bodySmall,
             color = valueColor,
             modifier = Modifier.weight(0.65f),
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         )
     }
 }
@@ -272,7 +285,7 @@ fun PocketNavBar(current: Screen, onSelect: (Screen) -> Unit) {
         NavDestination(Screen.About, "关于", Icons.Filled.Info),
     )
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Surface(
             shape = RoundedCornerShape(26.dp),
@@ -357,7 +370,7 @@ fun HeroHeader(
                 }
             }
             .border(1.dp, Color(0xFFC9CDD3).copy(alpha = 0.24f), ShapeHero)
-            .padding(20.dp),
+            .padding(16.dp),
     ) {
         Text(
             ">_",
@@ -376,8 +389,16 @@ fun HeroHeader(
                     brush = Brush.linearGradient(listOf(Color(0xFFF2F2F2), Color(0xFFC9CDD3))),
                     letterSpacing = 0.4.sp,
                 ),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFB9B9C6))
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFB9B9C6),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
             content?.invoke(this)
         }
         if (trailing != null) {
@@ -403,7 +424,13 @@ fun HeroStat(label: String, value: String, modifier: Modifier = Modifier) {
             maxLines = 1,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         )
-        Text(label, style = MaterialTheme.typography.labelSmall, color = Color(0x99FFFFFF))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0x99FFFFFF),
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -460,8 +487,16 @@ fun StatPill(label: String, value: String, modifier: Modifier = Modifier) {
             value,
             style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum"),
             color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         )
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -477,6 +512,8 @@ fun SpecChip(text: String, modifier: Modifier = Modifier) {
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         )
     }
 }
@@ -526,6 +563,8 @@ fun UsageBar(usedBytes: Long, totalGb: Int, modifier: Modifier = Modifier) {
             "虚拟盘已用 ${usedBytes / (1024 * 1024)} MB / $totalGb GB",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         )
     }
 }

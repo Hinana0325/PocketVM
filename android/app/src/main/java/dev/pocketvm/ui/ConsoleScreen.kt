@@ -339,7 +339,7 @@ fun ConsoleScreen(
         // 虚拟机不会在后台继续跑；「全屏沉浸视窗」没有对应物，本应用不内置
         // VNC 画面，无画面可全屏，所以不画这个按钮。
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Button(
@@ -654,6 +654,7 @@ private fun OverviewTab(
                             is VmRuntimeState.Exited, is VmRuntimeState.Failed -> Tone.Error
                             VmRuntimeState.Idle -> Tone.Idle
                         },
+                        modifier = Modifier.weight(1f, false),
                     )
                     TextButton(onClick = onCopyError) { Text(if (copiedError) "已复制" else "复制错误") }
                 }
@@ -769,16 +770,25 @@ private fun OverviewTab(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(32.dp),
                         )
-                        Text("画面在外部 VNC 客户端中查看", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "画面在外部 VNC 客户端中查看",
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                         Text(
                             "本应用不内置 VNC 画面渲染",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             "127.0.0.1:${vm.vncPort}",
                             style = MonoTextStyle,
                             color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -795,6 +805,8 @@ private fun OverviewTab(
                         "127.0.0.1",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 Row(
@@ -802,7 +814,12 @@ private fun OverviewTab(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("地址  $vncHost:${vm.vncPort}", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "地址  $vncHost:${vm.vncPort}",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     TextButton(onClick = onCopyVnc) { Text(if (copiedVnc) "已复制" else "复制") }
                 }
                 KeyValueRow("Display", ":${vm.vncPort - 5900}")
@@ -1175,11 +1192,15 @@ private fun DisplayProtocolBanner(vm: VmConfig, running: Boolean) {
                 "VNC · RFB 3.8 · 仅本机",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 "显示 ${vm.displayDevice.label} · QEMU 11.1.2 · TCG 软件模拟",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         StatusChip(
@@ -1231,6 +1252,8 @@ private fun TelemetrySection(
                         (state.env?.soc ?: "宿主 ARM64"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             val phoneMb = state.deviceMemoryMb
@@ -1247,12 +1270,16 @@ private fun TelemetrySection(
                         "占手机内存 ${rss * 100 / phoneMb}% · 客户机设定 ${vm.memoryMb} MB",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 } else {
                     Text(
                         "客户机设定 ${vm.memoryMb} MB",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -1536,6 +1563,7 @@ private fun SshTab(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -1566,6 +1594,9 @@ private fun SshTab(
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f, false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                     Text(
@@ -1590,6 +1621,7 @@ private fun SshTab(
             SectionCard(title = "交互终端（PTY）", subtitle = "sudo 提示、需要真实终端的命令") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -1613,6 +1645,9 @@ private fun SshTab(
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f, false),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                     if (state.sshShellOpen) {

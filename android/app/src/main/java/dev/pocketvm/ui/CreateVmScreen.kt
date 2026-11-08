@@ -268,6 +268,8 @@ fun CreateVmScreen(
                         "QEMU ${state.env?.version ?: "未知版本"}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 KeyValueRow("处理器", state.env?.soc ?: "未知")
@@ -820,6 +822,9 @@ fun CreateVmScreen(
                         Text(
                             "手机 ${forward.hostPort} → 客户机 ${forward.guestPort}",
                             style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f, false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         TextButton(
                             onClick = {
@@ -1176,7 +1181,10 @@ private fun <T> ChoiceRow(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             options.forEach { (value, text) ->
                 if (value == selected) {
                     Button(onClick = { }) { Text(text) }

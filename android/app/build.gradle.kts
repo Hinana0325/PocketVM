@@ -18,7 +18,7 @@ android {
         minSdk = 30
         targetSdk = 35
         versionCode = 57
-        versionName = "0.10.35-qemu11.1.2-edk2026.08"
+        versionName = "0.10.36-qemu11.1.2-edk2026.08"
 
         // The MVP only ships an arm64 execution layer. 32-bit devices cannot run
         // a 64-bit guest, so there is no point in building other ABIs.

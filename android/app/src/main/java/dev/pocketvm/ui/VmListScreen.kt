@@ -320,13 +320,15 @@ private fun HostMetricBox(
     Column(
         modifier = modifier
             .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(10.dp))
-            .padding(10.dp),
+            .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Text(
             value,
@@ -412,6 +414,8 @@ private fun ImportingCard(importing: ImportProgress) {
                     "${(importing.totalBytes ?: 0L) / (1024 * 1024)} MB（${(fraction * 100).toInt()}%）",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         } else {
             LinearProgressIndicator(
@@ -423,6 +427,8 @@ private fun ImportingCard(importing: ImportProgress) {
                 "已复制 ${importing.copiedBytes / (1024 * 1024)} MB",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -480,11 +486,11 @@ private fun VmCard(
                 modifier = Modifier
                     .weight(1f)
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Surface(
@@ -508,6 +514,7 @@ private fun VmCard(
                             Text(
                                 vm.name,
                                 style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.weight(1f, false),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -555,7 +562,7 @@ private fun VmCard(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(
-                        modifier = Modifier.padding(10.dp),
+                        modifier = Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Row(
@@ -606,7 +613,7 @@ private fun VmCard(
                 if (isRunning && metrics != null) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         LiveMetric("CPU", "${metrics.cpuPercent.toInt()}%")
