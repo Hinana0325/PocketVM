@@ -390,3 +390,5 @@ docs/                       架构、排障、打包与推送、第三方许可�
   [docs/third-party-sources.md](docs/third-party-sources.md)。
 - QEMU 以 GPLv2 分发，随包二进制受 GPL 约束；分发 APK 时须能提供对应源码。
   法律文本以人类 owner 最终确认为准。
+
+PocketVM 是一款在未 Root 的 arm64 Android 手机上，以 QEMU TCG 作为独立进程运行 Windows ARM64 等操作系统的虚拟机应用：Kotlin/Compose 仅负责配置、状态与进程监督，画面通过 VNC 输出。
