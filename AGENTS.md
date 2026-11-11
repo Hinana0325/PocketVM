@@ -69,7 +69,7 @@ cd android
 
 ## Android 17（API 37，targetSdk 37）
 
-- 工具链：AGP 9.1.1（支持 API 37 的最低版本；AGP 9.0 最高只到 36.1）+ Gradle 9.3.1 + Kotlin 2.2.10（AGP 9.1 的 KGP 下限）+ compileSdk/targetSdk 37。AGP 9 内置 Kotlin，`kotlin-android` 插件已移除（与新 DSL 不兼容）；`kotlin-compose` / `kotlin-serialization` 仍显式应用，版本与 `kotlin` 对齐（Issue #1，CI 有检查）。Compose BOM 本次未动（2024.10.01）。
+- 工具链：AGP 9.1.1（支持 API 37 的最低版本；AGP 9.0 最高只到 36.1）+ Gradle 9.3.1 + Kotlin 2.2.10（AGP 9.1 的 KGP 下限）+ compileSdk/targetSdk 37。AGP 9 内置 Kotlin，`kotlin-android` 插件已移除（与新 DSL 不兼容）；`kotlin-compose` / `kotlin-serialization` 仍显式应用，版本与 `kotlin` 对齐（Issue #1，CI 有检查）。Compose BOM 本次未动（2024.10.01）。**平台包名是 `platforms;android-37.0`，不是 `platforms;android-37`**：AGP 9 给 API 37 编了 minor 版本（37.0/37.1/37.2），仓库里没有裸的 android-37，写错 sdkmanager 只报 “Failed to find package”（2026-11-12 连踩两次）；build-tools 仍钉 36.0.0（AGP 9.1.1 的默认值），不跟 compileSdk 走。
 - 行为变更审计（2026-11-12，结论：无需改 Kotlin 代码）：
   - 本地网络权限 `ACCESS_LOCAL_NETWORK`：**回环（127.0.0.1）豁免**。VNC、QMP（unix socket）、SSH hostfwd 全走回环/域套接字，不受影响。局域网模式（0.0.0.0）若将来恢复，必须先声明并运行时申请该权限（见 `VncAccess` 注释）。
   - Safer Native DCL：只约束 `System.load()` 加载的 native 库；PocketVM 的执行层是 fork 出来的进程（exec），从不 `System.load()`，也没有 JNI，不受影响。

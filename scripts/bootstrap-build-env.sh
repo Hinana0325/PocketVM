@@ -23,9 +23,10 @@ JDK_SHA256="${PVM_JDK_SHA256:-8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1
 CMDLINE_TOOLS_URL="${PVM_CMDLINE_TOOLS_URL:-https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip}"
 CMDLINE_TOOLS_SHA256="${PVM_CMDLINE_TOOLS_SHA256:-2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258}"
 
-# Android 17（API 37）目前只在 Preview channel（Android Studio 里是
-# “Android Cinnamon Bun Preview”），stable channel 还没有 platforms;android-37，
-# 须用 --channel=3（Canary，含以下所有 channel）安装。
+# API 37 带 minor 版本：仓库里只有 android-37.0/37.1/37.2，没有裸的
+# android-37，写错 sdkmanager 就报 "Failed to find package"。
+# --channel=3（Canary，含以下所有 channel）是保险：37.0 可能还在 Preview
+# channel，未进 stable。build-tools 仍用 36.0.0（AGP 9.1.1 钉死它）。
 SDK_PACKAGES=("platform-tools" "build-tools;36.0.0")
 
 log()  { printf '[bootstrap] %s\n' "$*"; }
@@ -91,11 +92,8 @@ export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
 # 3) SDK 组件（platform-tools 由 sdkmanager 取最新可用版本）
 yes | "$SDKMGR" --sdk_root="$SDK_DIR" --licenses >/dev/null 2>&1 || true
-"$SDKMGR" --sdk_root="$SDK_DIR" --channel=3 "platforms;android-37"
+"$SDKMGR" --sdk_root="$SDK_DIR" --channel=3 "platforms;android-37.0"
 "$SDKMGR" --sdk_root="$SDK_DIR" "${SDK_PACKAGES[@]}"
-# AGP 9.1.1 默认 build-tools 若为 37.x 也一并装上；尚不存在时不致命。
-"$SDKMGR" --sdk_root="$SDK_DIR" --channel=3 "build-tools;37.0.0" \
-    || log "build-tools 37.0.0 尚不存在，继续用 36.0.0"
 
 # 4) 环境文件（不写 shell rc，显式 source）
 cat > "$ENV_FILE" <<EOF
@@ -109,7 +107,7 @@ EOF
 # 5) 校验
 [ -x "$SDK_DIR/build-tools/36.0.0/aapt2" ] || fail "缺少 build-tools/36.0.0/aapt2"
 [ -x "$SDK_DIR/platform-tools/adb" ] || fail "缺少 platform-tools/adb"
-[ -d "$SDK_DIR/platforms/android-37" ] || fail "缺少 platforms/android-37"
+[ -d "$SDK_DIR/platforms/android-37.0" ] || fail "缺少 platforms/android-37.0"
 
 log "JDK: $(head -1 <<< "$("$JDK_DIR/bin/java" -version 2>&1)")"
 log "aapt2: $("$SDK_DIR/build-tools/36.0.0/aapt2" version 2>&1 | head -1)"
