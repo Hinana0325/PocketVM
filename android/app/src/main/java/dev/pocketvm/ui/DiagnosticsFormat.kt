@@ -9,6 +9,7 @@ import dev.pocketvm.diagnostics.SessionReport
 import dev.pocketvm.diagnostics.StallAttribution
 import dev.pocketvm.diagnostics.StallAttributor
 import dev.pocketvm.diagnostics.StallHypothesis
+import dev.pocketvm.runtime.ThermalPolicy
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -248,12 +249,41 @@ object DiagnosticsFormat {
         }
     }
 
-    fun signals(snapshot: DiagSnapshot): List<SignalUi> = listOf(
+    fun signals(snapshot: DiagSnapshot): List<SignalUi> = listOfNotNull(
         qmpSignal(snapshot),
         vncSignal(snapshot),
         serialSignal(snapshot),
         mainThreadSignal(snapshot),
+        thermalSignal(snapshot),
+        affinitySignal(snapshot),
     )
+
+    /** 温控行：状态是温控档位，值是当前 vCPU 亲和性档位；调度器未启用时不显示。 */
+    private fun thermalSignal(snapshot: DiagSnapshot): SignalUi? {
+        val code = snapshot.thermalStatusCode ?: return null
+        val tone = when {
+            ThermalPolicy.shouldWarn(code) -> DiagTone.ERROR
+            code >= android.os.PowerManager.THERMAL_STATUS_MODERATE -> DiagTone.IDLE
+            else -> DiagTone.OK
+        }
+        return SignalUi(
+            label = "温控",
+            state = ThermalPolicy.label(code),
+            value = "vCPU ${snapshot.affinityMode ?: "未绑核"}",
+            tone = tone,
+        )
+    }
+
+    /** 绑核行：值是实际生效的 taskset 掩码，可直接与 adb 侧 taskset -p 对照。 */
+    private fun affinitySignal(snapshot: DiagSnapshot): SignalUi? {
+        val mode = snapshot.affinityMode ?: return null
+        return SignalUi(
+            label = "绑核",
+            state = mode,
+            value = snapshot.affinityMaskHex?.let { "掩码 $it" } ?: "未绑核",
+            tone = if (mode == "性能核") DiagTone.OK else DiagTone.IDLE,
+        )
+    }
 
     /** 判定卡的一行依据：只复述信号状态，不推断。 */
     fun signalBasis(snapshot: DiagSnapshot): String {

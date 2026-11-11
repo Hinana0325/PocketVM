@@ -20,6 +20,10 @@ import kotlinx.serialization.Serializable
  * `VNC_LAN_UNAVAILABLE`. The value is kept so previously saved configs still
  * deserialize; do not offer it as a working option until the QEMU build
  * includes a DES-capable backend.
+ *
+ * Android 17 note: restoring LAN also needs the `ACCESS_LOCAL_NETWORK`
+ * runtime permission (targetSdk 37 blocks LAN by default); loopback
+ * (127.0.0.1) is exempt from that permission, so [LOOPBACK] needs nothing.
  */
 @Serializable
 enum class VncAccess { LOOPBACK, LAN }

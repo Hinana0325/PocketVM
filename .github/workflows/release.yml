@@ -1,0 +1,70 @@
+name: Release
+
+# 打 tag（v*）后自动编译 APK 并创建 GitHub Release。
+# 触发方式：git tag v0.11.0 && git push origin v0.11.0
+# 注意：Release 说明里的版本更新内容是写死的，发新版时记得改下面的 notes。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK 37
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android platform 37
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platforms;android-37" "build-tools;36.0.0"
+
+      # 单元测试是纯 JVM，不需要设备；测试不过就不发版。
+      - name: Run unit tests
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Build APKs
+        working-directory: android
+        run: |
+          ./gradlew :app:assembleDebug :app:assemblePerf -PpvmSideBySide=true --stacktrace
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "PocketVM ${{ github.ref_name }}" \
+            --notes "## 安装包说明
+          - app-debug.apk：标准调试版（包名 dev.pocketvm），可直接安装。
+          - app-perf.apk：侧载性能版（包名 dev.pocketvm.debug，非 debuggable、release 运行时、debug 签名），可直接覆盖已装的 debug 版。
+
+          ## 0.11.0 更新内容
+          - Android 17（API 37）工具链：AGP 9.1.1、Gradle 9.3.1、Kotlin 2.2.10、compileSdk/targetSdk 37。
+          - 性能调度：vCPU 绑性能核（QMP 握手后）、优先级 -4、温控自动降档到能效核并自恢复、VM 运行时持续性能模式、诊断页电池白名单按钮。
+          - 导航迁移到 Navigation Compose：17 个路由（详情管理中心、连接信息、配置分类页、诊断子页）、创建向导拆成 5 步、逐级返回、杀进程恢复上次页面。
+          - 数据层：虚拟机配置迁到 Room 2.7.2（首次启动自动迁移旧 config.json）、偏好设置迁到 DataStore、网络状态走 ConnectivityManager。
+          - Hilt 依赖注入 + WorkManager 每日日志清理。
+          - 主循环停摆可观测/归因（系统冻结 H4 归因 + 启动/会话报表）。
+
+          全部改动未在真机上逐项验证过，装之前请备份虚拟机配置。" \
+            android/app/build/outputs/apk/debug/app-debug.apk \
+            android/app/build/outputs/apk/perf/app-perf.apk

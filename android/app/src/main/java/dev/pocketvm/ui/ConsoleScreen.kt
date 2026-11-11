@@ -30,18 +30,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Dashboard
-import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -123,6 +120,9 @@ fun ConsoleScreen(
     onSshShellSend: (String) -> Unit,
     onSshShellCtrlC: () -> Unit,
     onBack: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    onOpenConnection: () -> Unit,
+    onRequestBatteryWhitelist: () -> Unit = {},
 ) {
     BackHandler { onBack() }
     val sessionRuntime = state.runtime
@@ -244,12 +244,6 @@ fun ConsoleScreen(
                 icon = { Icon(Icons.Filled.Terminal, contentDescription = null, modifier = Modifier.size(18.dp)) },
                 text = { Text("SSH") },
             )
-            Tab(
-                selected = tab == 4,
-                onClick = { tab = 4 },
-                icon = { Icon(Icons.Filled.MonitorHeart, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                text = { Text("诊断") },
-            )
         }
 
         AnimatedContent(
@@ -289,6 +283,8 @@ fun ConsoleScreen(
                 onOpenLogs = { tab = 1 },
                 onOpenPerformance = { tab = 2 },
                 onOpenSsh = { tab = 3 },
+                onOpenDiagnostics = onOpenDiagnostics,
+                onOpenConnection = onOpenConnection,
             )
             1 -> LogsTab(
                 state = state,
@@ -315,22 +311,6 @@ fun ConsoleScreen(
                 onCloseShell = onSshCloseShell,
                 onShellSend = onSshShellSend,
                 onShellCtrlC = onSshShellCtrlC,
-            )
-            4 -> DiagnosticsTab(
-                vm = vm,
-                runtime = runtime,
-                otherRunning = otherRunning,
-                lastManifest = state.lastRuns[vm.id],
-                report = state.sessionReports[vm.id],
-                diag = state.diagnostics,
-                canStart = !state.busy && otherRunning == null &&
-                    (runtime is VmRuntimeState.Idle ||
-                        runtime is VmRuntimeState.Exited ||
-                        runtime is VmRuntimeState.Failed),
-                onStart = onStart,
-                onStop = onStop,
-                onExport = onExport,
-                onOpenLogs = { tab = 1 },
             )
             }
         }
@@ -525,8 +505,9 @@ private fun takeLastLines(text: String, count: Int): String =
  * 概览 Tab：Stitch 控制台的版式顺序，内容全部是真数据。
  *
  * 顶栏的状态与计时在 [ConsoleScreen]；这里依次是安装介质提示、运行状态、
- * 显示通道横幅、VNC 画面区、客户机按键、实时负载、控制指令、日志速览，
+ * 连接信息入口、诊断中心入口、客户机按键、实时负载、控制指令、日志速览，
  * 再加两张条件卡（卸载安装介质 / 引导卡在固件）。
+ * VNC 画面区已拆到独立的连接信息页（VmConnectionScreen），诊断已拆到诊断中心。
  */
 @Composable
 private fun OverviewTab(
@@ -550,6 +531,8 @@ private fun OverviewTab(
     onOpenLogs: () -> Unit,
     onOpenPerformance: () -> Unit,
     onOpenSsh: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    onOpenConnection: () -> Unit,
 ) {
     val usedBytes = state.diskUsage[vm.id] ?: 0L
     var guestText by remember { mutableStateOf("") }
@@ -737,150 +720,47 @@ private fun OverviewTab(
         }
 
         item {
-            DisplayProtocolBanner(vm = vm, running = running)
-        }
-
-        item {
-            val vncHost = "127.0.0.1"
-            SectionCard(
-                title = "虚拟机画面（VNC）",
-                subtitle = "App 不渲染画面，用外部 RFB 客户端连接",
-            ) {
-                // Stitch 的「Windows 桌面预览 + 任务管理器」是假图：PocketVM 没有
-                // 内置 VNC 画面渲染，这里不画假桌面，只放一个诚实的占位说明。
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(168.dp)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp))
-                        .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
-                            shape = RoundedCornerShape(12.dp),
-                        ),
-                    contentAlignment = Alignment.Center,
+            SectionCard(title = "连接信息", subtitle = "VNC 地址、Display、密码、adb forward") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.padding(16.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.DesktopWindows,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(32.dp),
-                        )
-                        Text(
-                            "画面在外部 VNC 客户端中查看",
-                            style = MaterialTheme.typography.titleSmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            "本应用不内置 VNC 画面渲染",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             "127.0.0.1:${vm.vncPort}",
                             style = MonoTextStyle,
                             color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "VNC · RFB 3.8 · 仅本机 · ${vm.displayDevice.label}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
                     StatusChip(
                         text = if (running) "监听中" else "未启动",
                         tone = if (running) Tone.Ok else Tone.Idle,
                     )
-                    Text(
-                        "127.0.0.1",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
                 }
-                Row(
+                OutlinedButton(
+                    onClick = onOpenConnection,
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "地址  $vncHost:${vm.vncPort}",
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    TextButton(onClick = onCopyVnc) { Text(if (copiedVnc) "已复制" else "复制") }
-                }
-                KeyValueRow("Display", ":${vm.vncPort - 5900}")
-                KeyValueRow("密码", vm.vncPassword?.takeIf { it.isNotBlank() } ?: "未设置")
+                ) { Text("查看连接信息") }
+            }
+        }
+
+        item {
+            SectionCard(title = "诊断中心", subtitle = "看门狗、性能、卡顿、温控与绑核、会话报告") {
                 Text(
-                    "adb forward tcp:${vm.vncPort} tcp:${vm.vncPort}",
-                    style = MonoTextStyle,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp))
-                        .padding(8.dp),
-                )
-                Text(
-                    "协议 RFB 3.8。P1 不支持局域网 VNC，已下线，请用仅本机 + adb forward：",
+                    "诊断已从控制台拆出去：健康判定、停摆归因、线程分布、会话报告都在诊断中心。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (vm.portForwards.isNotEmpty()) {
-                    Text(
-                        "端口转发（手机 → 客户机）",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                    vm.portForwards.forEach { forward ->
-                        KeyValueRow(
-                            "127.0.0.1:${forward.hostPort}",
-                            "→ 客户机 :${forward.guestPort}",
-                        )
-                    }
-                    Text(
-                        "只监听 127.0.0.1：电脑上执行 adb forward tcp:<手机端口> tcp:<手机端口> 后，" +
-                            "连接 127.0.0.1:<手机端口>。P1 不支持局域网 VNC，已下线，转发无法改绑 0.0.0.0。" +
-                            "转发的服务仍需各自的认证（RDP/SSH 密码等）。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Text(
-                    "两种「未激活」别混淆：① 屏幕正中出现「Display output is not active.」" +
-                        "——这是 QEMU 的占位画面（引导交接后显示输出没恢复），与激活无关；" +
-                        "先按 Ctrl+Alt+F1 强制切 TTY，多半能恢复，详见下方排查卡；" +
-                        "② 部分 VNC 客户端（尤其商业版）会在画面角落叠加试用遮罩——" +
-                        "那是客户端自身水印，与目标系统无关。换用免费客户端即可去除：" +
-                        "aVNC（开源）、bVNC Free、RealVNC Viewer 免费版。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (running) {
-                    Text(
-                        "固件若停在 UEFI Shell，App 会通过串口自动输入引导命令，" +
-                            "Shell 的回应见「日志」页的「固件输出」。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    OutlinedButton(
-                        onClick = onBootFromShell,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("在 Shell 中引导 Windows") }
-                }
+                OutlinedButton(
+                    onClick = onOpenDiagnostics,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("打开诊断中心") }
             }
         }
 
@@ -1056,6 +936,18 @@ private fun OverviewTab(
                     onClick = onOpenSsh,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("打开 SSH 终端") }
+                if (running) {
+                    OutlinedButton(
+                        onClick = onBootFromShell,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("在 Shell 中引导 Windows") }
+                    Text(
+                        "固件若停在 UEFI Shell，App 会通过串口自动输入引导命令，" +
+                            "Shell 的回应见「日志」页的「固件输出」。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     "PocketVM 没有重启与快照功能：重启请先停止再启动；" +
                         "虚拟盘本身就是持久的，不需要快照。",
@@ -1163,53 +1055,7 @@ private fun OverviewTab(
     }
 }
 
-/** Stitch 的协议横幅：只写真实值——VNC/RFB 3.8、仅本机、显示设备、QEMU 11.1.2 TCG。 */
-@Composable
-private fun DisplayProtocolBanner(vm: VmConfig, running: Boolean) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp))
-            .border(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
-                shape = RoundedCornerShape(12.dp),
-            )
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.Filled.Tv,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(18.dp),
-        )
-        Column(
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-            modifier = Modifier.weight(1f),
-        ) {
-            Text(
-                "VNC · RFB 3.8 · 仅本机",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                "显示 ${vm.displayDevice.label} · QEMU 11.1.2 · TCG 软件模拟",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        StatusChip(
-            text = if (running) "监听中" else "未启动",
-            tone = if (running) Tone.Ok else Tone.Idle,
-        )
-    }
-}
+
 
 /** Stitch 遥测区的 2×2 网格：vCPU、内存、磁盘 I/O、虚拟盘，全部来自 state.metrics 与磁盘用量。 */
 @Composable

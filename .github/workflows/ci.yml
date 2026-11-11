@@ -10,6 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Issue #1：kotlin-compose / kotlin-serialization 必须用
+      # version.ref = "kotlin"（单点来源），禁止单独写死版本，否则 Kotlin 与
+      # Compose 编译器插件版本脱钩会编译报错。改 libs.versions.toml 时别绕过它。
+      - name: Check Kotlin plugin version binding (Issue #1)
+        run: |
+          grep '^kotlin-compose = .*version\.ref = "kotlin"' android/gradle/libs.versions.toml
+          grep '^kotlin-serialization = .*version\.ref = "kotlin"' android/gradle/libs.versions.toml
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -17,13 +25,13 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Set up Android SDK 35
+      - name: Set up Android SDK 37
         uses: android-actions/setup-android@v4
 
-      - name: Install Android platform 35
+      - name: Install Android platform 37
         run: |
           yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platforms;android-37" "build-tools;36.0.0"
 
       # Unit tests are pure JVM (no Robolectric, no androidTest source set),
       # so no emulator or device is needed.

@@ -5,6 +5,7 @@ import dev.pocketvm.core.model.DisplayDevice
 import dev.pocketvm.core.model.LaunchProfile
 import dev.pocketvm.core.model.PortForward
 import dev.pocketvm.core.model.StorageController
+import javax.inject.Inject
 
 /**
  * UEFI pflash pair. Both images must have exactly the same size; QEMU maps them
@@ -106,7 +107,7 @@ data class LaunchRequest(
  * * `-qmp` is the control channel used for graceful shutdown and status polling;
  *   `-monitor none` keeps a stray human from stealing it.
  */
-class QemuCommandBuilder {
+class QemuCommandBuilder @Inject constructor() {
 
     fun build(request: LaunchRequest): List<String> {
         val args = mutableListOf<String>()

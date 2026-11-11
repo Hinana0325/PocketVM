@@ -1,7 +1,9 @@
 package dev.pocketvm.runtime
 
 import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.pocketvm.storage.VmStorageLayout
+import javax.inject.Inject
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -35,7 +37,7 @@ data class QemuBinary(
  *
  * Therefore: probe by execution, never by existence check alone.
  */
-class QemuEnvironment(context: Context) {
+class QemuEnvironment @Inject constructor(@ApplicationContext context: Context) {
 
     private val appContext = context.applicationContext
 
@@ -106,7 +108,9 @@ class QemuEnvironment(context: Context) {
         return probed.firstOrNull { it.executable }
     }
 
-    /** `qemu-img` is optional: without it PocketVM falls back to a raw preallocated disk. */
+    /** `qemu-img` is optional: without it DiskProvisioner falls back to the
+     * built-in [dev.pocketvm.storage.Qcow2Creator]. Only qcow2 is ever
+     * produced (ADR-004); there is no raw fallback. */
     fun resolveQemuImg(layout: VmStorageLayout): File? {
         val nativeLibDir = appContext.applicationInfo?.nativeLibraryDir?.let { File(it) }
         val candidates = buildList {

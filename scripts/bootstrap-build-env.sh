@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 用户级构建环境引导：JDK 17 + Android SDK 35。
+# 用户级构建环境引导：JDK 17 + Android SDK 37。
 # 不需要 root，不写系统目录，不修改 shell rc；所有文件落在
 # ${PVM_BUILD_ROOT:-$HOME/.local/share/pocketvm-build}，删目录即回滚。
 #
@@ -23,7 +23,7 @@ JDK_SHA256="${PVM_JDK_SHA256:-8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1
 CMDLINE_TOOLS_URL="${PVM_CMDLINE_TOOLS_URL:-https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip}"
 CMDLINE_TOOLS_SHA256="${PVM_CMDLINE_TOOLS_SHA256:-2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258}"
 
-SDK_PACKAGES=("platform-tools" "platforms;android-35" "build-tools;35.0.0")
+SDK_PACKAGES=("platform-tools" "platforms;android-37" "build-tools;36.0.0")
 
 log()  { printf '[bootstrap] %s\n' "$*"; }
 fail() { printf '[bootstrap] 错误：%s\n' "$*" >&2; exit 1; }
@@ -100,12 +100,12 @@ export PATH="\$JAVA_HOME/bin:\$ANDROID_HOME/platform-tools:\$ANDROID_HOME/cmdlin
 EOF
 
 # 5) 校验
-[ -x "$SDK_DIR/build-tools/35.0.0/aapt2" ] || fail "缺少 build-tools/35.0.0/aapt2"
+[ -x "$SDK_DIR/build-tools/36.0.0/aapt2" ] || fail "缺少 build-tools/36.0.0/aapt2"
 [ -x "$SDK_DIR/platform-tools/adb" ] || fail "缺少 platform-tools/adb"
-[ -d "$SDK_DIR/platforms/android-35" ] || fail "缺少 platforms/android-35"
+[ -d "$SDK_DIR/platforms/android-37" ] || fail "缺少 platforms/android-37"
 
 log "JDK: $(head -1 <<< "$("$JDK_DIR/bin/java" -version 2>&1)")"
-log "aapt2: $("$SDK_DIR/build-tools/35.0.0/aapt2" version 2>&1 | head -1)"
+log "aapt2: $("$SDK_DIR/build-tools/36.0.0/aapt2" version 2>&1 | head -1)"
 log "adb: $("$SDK_DIR/platform-tools/adb" version | head -1)"
 log "占用：JDK $(du -sh "$JDK_DIR" | cut -f1)，SDK $(du -sh "$SDK_DIR" | cut -f1)"
 log "完成。后续会话执行：source \"$ENV_FILE\""

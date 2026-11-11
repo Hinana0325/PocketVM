@@ -1,34 +1,35 @@
 package dev.pocketvm.ui
 
 import android.app.ActivityManager
-import android.app.Application
 import android.content.Context
-import android.net.Uri
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import dev.pocketvm.AppContainer
-import dev.pocketvm.PocketVmApp
-import dev.pocketvm.core.config.Issue
-import dev.pocketvm.core.config.Severity
-import dev.pocketvm.core.config.ValidationInput
+import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.pocketvm.data.VmConfigRepository
+import dev.pocketvm.diagnostics.RunManifestStore
+import dev.pocketvm.runtime.NetworkMonitor
+import dev.pocketvm.runtime.QemuEnvironment
+import dev.pocketvm.runtime.VmSession
+import dev.pocketvm.storage.DiskProvisioner
+import dev.pocketvm.storage.FirmwareManager
+import dev.pocketvm.storage.VmStorageLayout
+import javax.inject.Inject
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.CdTransport
-import dev.pocketvm.core.model.DisplayDevice
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
-import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.diagnostics.SessionReport
 import dev.pocketvm.storage.AppleAssets
 import dev.pocketvm.storage.Qcow2Creator
 import dev.pocketvm.runtime.AnsiText
+import dev.pocketvm.runtime.BatteryOptimization
 import dev.pocketvm.runtime.LaunchOutcome
 import dev.pocketvm.runtime.SshConsole
 import dev.pocketvm.runtime.SshDefaults
 import dev.pocketvm.runtime.SshState
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,33 +40,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-sealed interface Screen {
-    data object List : Screen
-    data object Environment : Screen
-    data object About : Screen
-    data object Create : Screen
-    data class Console(val vmId: String) : Screen
-}
 
-/** Whether this screen sits behind the bottom navigation bar. */
-val Screen.isTopLevel: Boolean
-    get() = this is Screen.List || this is Screen.Environment || this is Screen.About
 
 /** SSH 控制台保留的输出上限：超出后从头截断，防止长命令把 UiState 撑爆。 */
 private const val SSH_OUTPUT_LIMIT = 128 * 1024
 
-/** 导入任务来源：只有 ISO / 驱动盘导入支持离页取消。 */
-enum class ImportKind(val label: String) {
-    INSTALL_ISO("安装镜像"),
-    DRIVER_ISO("驱动盘镜像"),
-    APPLE_BUNDLE("iOS 资源"),
-    ANDROID_DISK("Android 磁盘镜像"),
-}
 
-data class ImportProgress(val copiedBytes: Long, val totalBytes: Long?, val kind: ImportKind) {
-    val fraction: Float?
-        get() = totalBytes?.takeIf { it > 0 }?.let { (copiedBytes.toFloat() / it).coerceIn(0f, 1f) }
-}
 
 /** One poll of the live run's on-disk state; a tuple would be unreadable. */
 private data class LogTick(
@@ -94,12 +74,6 @@ data class EnvSnapshot(
 
 data class UiState(
     val vms: kotlin.collections.List<VmConfig> = emptyList(),
-    val screen: Screen = Screen.List,
-    val draft: VmConfig? = null,
-    /** True when the wizard was opened for an existing VM. */
-    val editing: Boolean = false,
-    /** Snapshot the draft was opened from, used to detect unsaved edits. */
-    val baseline: VmConfig? = null,
     val runtime: VmRuntimeState = VmRuntimeState.Idle,
     val log: String = "",
     /**
@@ -109,7 +83,6 @@ data class UiState(
      */
     val serial: String = "",
     val argv: kotlin.collections.List<String> = emptyList(),
-    val issues: kotlin.collections.List<Issue> = emptyList(),
     val env: EnvSnapshot? = null,
     val firmwareOptions: kotlin.collections.List<String> = emptyList(),
     /** ISOs already copied into images/, reusable without a second 5 GB copy. */
@@ -128,10 +101,14 @@ data class UiState(
     val sessionReports: kotlin.collections.Map<String, SessionReport> = emptyMap(),
     /** Phone's Wi-Fi/USB-tether IPv4, shown as the VNC endpoint hint. */
     val localIp: String? = null,
+    /** 本机是否有默认网络（ConnectivityManager 实时推，默认 true 免得首帧闪「未连接」）。 */
+    val networkAvailable: Boolean = true,
     /** Latest performance sample of the running VM; null when nothing runs. */
     val metrics: dev.pocketvm.diagnostics.VmMetrics? = null,
     /** 诊断看板数据：T2 watchdog 的 diag / diagEvents 在这里映射为 UI 契约。 */
     val diagnostics: WatchdogUiState = WatchdogUiState(),
+    /** 电池优化白名单状态；null 表示未知。false 时诊断页提示去设置「无限制」。 */
+    val batteryWhitelisted: Boolean? = null,
     /** SSH 控制台连接状态；密码不在 UiState 里。 */
     val sshState: SshState = SshState.Disconnected,
     /** SSH 输出尾部（stdout + stderr），最多保留 [SSH_OUTPUT_LIMIT] 字节。 */
@@ -151,19 +128,33 @@ data class UiState(
     val androidDisks: Map<String, Long> = emptyMap(),
     /** vmId -> 磁盘镜像格式（raw / qcow2）。 */
     val androidFormats: Map<String, String> = emptyMap(),
-) {
-    val hasUnsavedChanges: Boolean get() = draft != null && draft != baseline
-}
+)
 
-class VmViewModel(app: Application) : AndroidViewModel(app) {
-
-    private val container: AppContainer = (app as PocketVmApp).container
+/**
+ * 主 ViewModel（P3 起由 Hilt 注入）。
+ *
+ * 依赖全部走构造函数注入，不再从 AppContainer 里取；Application 只以
+ * @ApplicationContext 的 Context 形式进来（原来 AndroidViewModel 的
+ * getApplication() 全部改成 appContext——startActivity 用的 intent 自带
+ * FLAG_ACTIVITY_NEW_TASK，Application Context 直接起没有问题）。
+ * SshConsole 仍是每个 ViewModel 一份的内部会话对象，不进依赖图。
+ */
+@HiltViewModel
+class VmViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
+    private val session: VmSession,
+    private val configRepository: VmConfigRepository,
+    private val environment: QemuEnvironment,
+    private val firmwareManager: FirmwareManager,
+    private val layout: VmStorageLayout,
+    private val diskProvisioner: DiskProvisioner,
+    private val manifests: RunManifestStore,
+    private val networkMonitor: NetworkMonitor,
+) : ViewModel() {
 
     /** SSH 控制台：一条 VM 会话只挂一条 SSH 连接。 */
     private val sshConsole = SshConsole()
 
-    /** 当前 ISO/驱动盘导入任务；用于离页保护与「取消导入」。 */
-    private var importJob: Job? = null
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
@@ -172,6 +163,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         probeEnvironment()
         refresh()
         collectRuntime()
+        collectNetwork()
         tickLog()
     }
 
@@ -180,8 +172,8 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     fun probeEnvironment() {
         viewModelScope.launch {
             val (report, firmwarePaths) = withContext(Dispatchers.IO) {
-                container.environment.resolve(container.layout) to
-                    container.firmwareManager.available().map { f -> f.absolutePath }
+                environment.resolve(layout) to
+                    firmwareManager.available().map { f -> f.absolutePath }
             }
             val snapshot = EnvSnapshot(
                 ready = report.ready,
@@ -189,8 +181,8 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 version = report.usable?.version,
                 origin = report.usable?.origin?.name,
                 imageTool = report.imageBinary?.takeIf { it.executable }?.file?.absolutePath,
-                dataDir = container.environment.dataDir(container.layout),
-                nativeLibDir = getApplication<Application>().applicationInfo.nativeLibraryDir,
+                dataDir = environment.dataDir(layout),
+                nativeLibDir = appContext.applicationInfo.nativeLibraryDir,
                 detail = report.abortReason ?: report.imageBinary?.diagnostic,
                 staticExec = report.staticExecOk,
                 soc = dev.pocketvm.runtime.DeviceInfo.socLabel(),
@@ -199,268 +191,90 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update {
                 it.copy(
                     env = snapshot,
-                    localIp = dev.pocketvm.runtime.NetworkInfo.localIpv4(),
+                    localIp = networkMonitor.state.value.localIpv4,
                     firmwareOptions = firmwarePaths,
                 )
             }
         }
     }
 
-    // ---------- navigation ----------
+    // ---------- 控制台准备（P1：导航归 NavController 管，这里只做业务准备） ----------
 
-    fun newVm() {
-        viewModelScope.launch {
-            val firmware = withContext(Dispatchers.IO) {
-                container.firmwareManager.available().firstOrNull()?.absolutePath
-            }
-            val draft = VmConfig.create("Windows 11 ARM64").let { base ->
-                base.copy(
-                    memoryMb = suggestedMemoryMb(),
-                    firmwareCodePath = firmware,
-                )
-            }
-            _ui.update {
-                it.copy(
-                    screen = Screen.Create,
-                    draft = draft,
-                    editing = false,
-                    baseline = draft,
-                    issues = emptyList(),
-                    notice = null,
-                )
-            }
-            refreshIssues(draft)
-        }
-    }
+    /** 最近一次准备控制台的虚拟机；换了虚拟机才清 SSH 会话。 */
+    private var lastConsoleVmId: String? = null
 
-    fun editVm(vmId: String) {
-        val vm = container.configStore.load(vmId) ?: return
-        _ui.update {
-            it.copy(screen = Screen.Create, draft = vm, editing = true, baseline = vm, notice = null)
-        }
-        refreshIssues(vm)
-    }
-
+    /**
+     * 准备进入某台虚拟机的控制台：换了虚拟机就清掉旧 SSH 会话（免得串台），
+     * 读一份当前日志/串口尾部，刷新电池白名单状态。
+     * 不再改 navigation 状态——去控制台是调用方用 navController.navigate 做的。
+     */
     fun openConsole(vmId: String) {
-        if ((_ui.value.screen as? Screen.Console)?.vmId != vmId) {
+        if (lastConsoleVmId != vmId) {
             // 换了虚拟机：旧 SSH 会话没有意义，清掉输出免得串台。
             viewModelScope.launch(Dispatchers.IO) { sshConsole.disconnect() }
             _ui.update { it.copy(sshOutput = "", sshRunning = false) }
+            lastConsoleVmId = vmId
         }
+        refreshBatteryState()
         _ui.update {
             it.copy(
-                screen = Screen.Console(vmId),
-                log = container.session.readLog(vmId),
-                serial = container.session.readSerialTail(vmId),
+                log = session.readLog(vmId),
+                serial = session.readSerialTail(vmId),
                 notice = null,
             )
         }
     }
 
-    fun back() {
-        _ui.update { it.copy(screen = Screen.List, draft = null, editing = false, baseline = null, notice = null) }
-        refresh()
-    }
-
-    /** Bottom-navigation: jump to a top-level destination. */
-    fun navigate(screen: Screen) {
-        _ui.update { it.copy(screen = screen, notice = null) }
-    }
-
-    // ---------- draft editing ----------
-
-    fun updateDraft(transform: (VmConfig) -> VmConfig) {
-        val current = _ui.value.draft ?: return
-        val next = transform(current)
-        _ui.update { it.copy(draft = next) }
-        refreshIssues(next)
-    }
-
-    fun setPlatform(platform: VmPlatform) = updateDraft { draft ->
-        if (draft.platform == platform) return@updateDraft draft
-        val apple = platform == VmPlatform.APPLE_T8030
-        val android = platform == VmPlatform.ANDROID_ARM64
-        val defaultName = draft.name.isBlank() || draft.name == VmConfig.DEFAULT_NAME
-        val name = when {
-            apple && defaultName -> "iPhone 11"
-            android && defaultName -> "Android"
-            else -> draft.name
-        }
-        // t8030 在 TCG 下每多一个 vCPU/GB 都是实打实的宿主内存与线程开销；
-        // 现有脚本用 7 vCPU / 6 GB，手机端先按 4 / 3 GB 起步，用户仍可再调。
-        // Android 走 virtio-gpu（GKI 自带 DRM 驱动），并且总是从磁盘启动。
-        draft.copy(
-            platform = platform,
-            name = name,
-            cpuCores = if (apple) draft.cpuCores.coerceAtMost(4) else draft.cpuCores,
-            memoryMb = when {
-                apple -> draft.memoryMb.coerceAtMost(3072)
-                android -> draft.memoryMb.coerceAtLeast(4096)
-                else -> draft.memoryMb
-            },
-            displayDevice = if (android) DisplayDevice.VIRTIO_GPU else draft.displayDevice,
-            bootFromCd = if (android) false else draft.bootFromCd,
-            isoPath = if (android) null else draft.isoPath,
-            driverIsoPath = if (android) null else draft.driverIsoPath,
-        )
-    }
-
-    /**
-     * 导入一份 Android arm64 磁盘镜像（.img / .qcow2），直接放进 VM 的 disk 路径。
-     * qcow2/raw 的格式由 DiskProvisioner 按魔数判断，这里只负责完整落盘。
-     */
-    fun importAndroidDisk(uri: Uri) {
-        val draft = _ui.value.draft ?: return
-        val target = container.layout.diskFile(draft.id)
-        viewModelScope.launch {
-            _ui.update { it.copy(importing = ImportProgress(0, null, ImportKind.ANDROID_DISK), notice = null) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val input = getApplication<Application>().contentResolver.openInputStream(uri)
-                        ?: error("无法打开所选文件")
-                    val tmp = java.io.File(target.parentFile, target.name + ".part")
-                    tmp.parentFile?.mkdirs()
-                    input.use { stream ->
-                        tmp.outputStream().buffered(1 shl 20).use { out ->
-                            val buf = ByteArray(1 shl 20)
-                            var copied = 0L
-                            while (true) {
-                                val n = stream.read(buf)
-                                if (n <= 0) break
-                                out.write(buf, 0, n)
-                                copied += n
-                                _ui.update { state ->
-                                    state.copy(importing = ImportProgress(copied, null, ImportKind.ANDROID_DISK))
-                                }
-                            }
-                        }
-                    }
-                    if (tmp.length() < 64L * 1024 * 1024) {
-                        tmp.delete()
-                        error("镜像只有 ${tmp.length() / (1024 * 1024)} MB，不像是完整的系统盘")
-                    }
-                    if (target.exists()) target.delete()
-                    if (!tmp.renameTo(target)) error("无法写入目标文件")
-                    target.length()
-                }
-            }
-            result.fold(
-                onSuccess = { size ->
-                    _ui.update {
-                        it.copy(
-                            importing = null,
-                            notice = "已导入 Android 磁盘镜像（${size / (1024 * 1024)} MB）",
-                            androidDisks = it.androidDisks + (draft.id to size),
-                            androidFormats = it.androidFormats + (draft.id to if (Qcow2Creator.isQcow2(target)) "qcow2" else "raw"),
-                        )
-                    }
-                    refreshIssues(draft)
-                },
-                onFailure = { t ->
-                    _ui.update {
-                        it.copy(importing = null, notice = "Android 镜像导入失败：${t.message}")
-                    }
-                },
-            )
+    /** 刷新电池优化白名单状态；从设置页返回后下次打开控制台会重新读。 */
+    fun refreshBatteryState() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val whitelisted = BatteryOptimization.isWhitelisted(appContext)
+            _ui.update { it.copy(batteryWhitelisted = whitelisted) }
         }
     }
 
-    /**
-     * 导入 iOS 还原包 zip。一个 25 GB 的 nvme.1 解压要几分钟，所以进度按
-     * 「已写字节数」推进；中途离开页面也继续写完，避免留下半个镜像。
-     */
-    fun importAppleBundle(uri: Uri) {
-        val draft = _ui.value.draft ?: return
-        val target = AppleAssets.dir(container.layout, draft.id)
-        viewModelScope.launch {
-            _ui.update { it.copy(importing = ImportProgress(0, null, ImportKind.APPLE_BUNDLE), notice = null) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val input = getApplication<Application>().contentResolver.openInputStream(uri)
-                        ?: error("无法打开所选文件")
-                    input.use { stream ->
-                        AppleAssets.importZip(stream, target) { _, total ->
-                            _ui.update { state ->
-                                state.copy(importing = ImportProgress(total, null, ImportKind.APPLE_BUNDLE))
-                            }
-                        }
-                    }
-                }
-            }
-            result.fold(
-                onSuccess = { names ->
-                    val status = withContext(Dispatchers.IO) {
-                        AppleAssets.status(container.layout, draft.id)
-                    }
-                    _ui.update {
-                        it.copy(
-                            importing = null,
-                            notice = "已导入 ${names.size} 个 iOS 资源文件（共 ${status.totalBytes / (1024 * 1024)} MB）",
-                            appleAssets = it.appleAssets + (draft.id to status),
-                        )
-                    }
-                    refreshIssues(draft)
-                },
-                onFailure = { t ->
-                    _ui.update {
-                        it.copy(importing = null, notice = "iOS 资源导入失败：${t.message}")
-                    }
-                },
-            )
-        }
+    /** 打开系统电池优化白名单申请页；用户仍需在弹窗里点「允许」才生效。 */
+    fun requestBatteryWhitelist() {
+        runCatching { appContext.startActivity(BatteryOptimization.requestIntent(appContext)) }
+        _ui.update { it.copy(notice = "已打开电池优化设置：请把 PocketVM 设为「无限制」") }
     }
 
-    fun saveDraft() {
-        val draft = _ui.value.draft ?: return
-        container.configStore.save(draft)
-        val errors = _ui.value.issues.count { it.severity == Severity.ERROR }
-        refresh()
-        _ui.update {
-            it.copy(
-                screen = Screen.List,
-                draft = null,
-                editing = false,
-                baseline = null,
-                notice = if (errors > 0) {
-                    "已保存 ${draft.name}，但还有 $errors 个错误，需修复后才能启动"
-                } else {
-                    "已保存 ${draft.name}"
-                },
-            )
-        }
-    }
+
 
     fun deleteVm(vmId: String) {
         // 只拦「这一台」还在运行/准备/停止；另一台在运行不该阻止删除 B。
         val runtime = _ui.value.runtime
-        val busy = container.session.runningVmId() == vmId ||
+        val busy = session.runningVmId() == vmId ||
             (runtime as? VmRuntimeState.Preparing)?.vmId == vmId ||
             (runtime as? VmRuntimeState.Stopping)?.vmId == vmId
         if (busy) {
             _ui.update { it.copy(notice = "虚拟机正在运行或正在停止，无法删除") }
             return
         }
-        container.configStore.delete(vmId)
-        refresh()
-        _ui.update { it.copy(notice = "已删除虚拟机") }
+        // P2：删配置行 + 整台虚拟机目录走 Room 仓库（suspend，先判忙再动手）。
+        viewModelScope.launch {
+            configRepository.delete(vmId)
+            refresh()
+            _ui.update { it.copy(notice = "已删除虚拟机") }
+        }
     }
 
     // ---------- lifecycle ----------
 
     fun start(vmId: String) {
-        val vm = container.configStore.load(vmId) ?: return
         viewModelScope.launch {
-            // Jump straight to the console: that is where the launch progress
-            // steps and the reason for a failure are shown. Staying on the list
-            // made a 20 s prepare phase look like a dead button.
+            // P2：配置从 Room 读（suspend，仓库内部切 IO）；读不到就不启动。
+            val vm = configRepository.load(vmId) ?: return@launch
+            // 跳转到控制台由调用方用 navController.navigate 做（P1）：
+            // 这里只清状态、起 QEMU；从列表/详情启动时调用方会同时导航到控制台。
             _ui.update {
                 it.copy(
-                    busy = true, notice = null, log = "", screen = Screen.Console(vmId),
+                    busy = true, notice = null, log = "",
                     sshOutput = "", sshRunning = false,
                 )
             }
             withContext(Dispatchers.IO) { sshConsole.disconnect() }
-            val outcome = container.session.start(vm)
+            val outcome = session.start(vm)
             // The CD fell back to virtio-scsi: remember it so the next start skips
             // the crash entirely (AUTO no longer retries USB). Input is left as
             // configured — the downgrade now keeps USB key/tablet, and virtio
@@ -484,7 +298,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             if (persisted != vm) {
-                container.configStore.save(persisted)
+                configRepository.save(persisted)
                 refresh()
             }
             val message = when (outcome) {
@@ -503,7 +317,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                             }
                             append("；重试后启动成功")
                         }
-                        container.session.preflightNote?.let { append("；").append(it) }
+                        session.preflightNote?.let { append("；").append(it) }
                     }
                 }
                 is LaunchOutcome.Rejected -> outcome.report.errors.joinToString("\n") { it.message }
@@ -513,9 +327,9 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     busy = false,
                     notice = message,
-                    log = container.session.readLog(vmId),
-                    serial = container.session.readSerialTail(vmId),
-                    argv = container.session.currentRun(vmId)?.argv ?: it.argv,
+                    log = session.readLog(vmId),
+                    serial = session.readSerialTail(vmId),
+                    argv = session.currentRun(vmId)?.argv ?: it.argv,
                 )
             }
         }
@@ -524,26 +338,76 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     fun stop(vmId: String) {
         viewModelScope.launch {
             _ui.update { it.copy(busy = true, notice = "正在请求关机…") }
-            container.session.stop(vmId)
+            session.stop(vmId)
             // 前台服务/唤醒锁由 VmSession 在进程真正退出后释放。
-            val stillRunning = container.session.isRunning()
+            val stillRunning = session.isRunning()
             _ui.update {
                 it.copy(
                     busy = false,
                     notice = if (stillRunning) "已发送关机请求，等待 Windows 响应…" else "虚拟机已停止",
-                    log = container.session.readLog(vmId),
+                    log = session.readLog(vmId),
                 )
             }
         }
     }
 
-    fun refreshLog() {
-        val vmId = (_ui.value.screen as? Screen.Console)?.vmId
+    /**
+     * 重读某台虚拟机的日志 / 串口尾部 / 本次启动参数。
+     * P1：vmId 由调用方（控制台页）传进来，不再从已删除的 Screen 里取。
+     */
+    fun refreshLog(vmId: String?) {
         _ui.update {
             it.copy(
-                log = container.session.readLog(vmId),
-                serial = container.session.readSerialTail(vmId),
-                argv = container.session.currentRun(vmId)?.argv ?: it.argv,
+                log = session.readLog(vmId),
+                serial = session.readSerialTail(vmId),
+                argv = session.currentRun(vmId)?.argv ?: it.argv,
+            )
+        }
+    }
+
+    // ---------- 草稿 ViewModel 的回调入口（CreateVmViewModel 用） ----------
+
+    /** 重新从磁盘读虚拟机列表与状态（草稿保存 / 导入取消后调用）。 */
+    fun refreshVms() {
+        refresh()
+    }
+
+    /** 发一条通知（进 snackbar；只保留最新一条，展示后由 PocketVmRoot 清掉）。 */
+    fun postNotice(message: String) {
+        _ui.update { it.copy(notice = message) }
+    }
+
+    /** 设置当前导入进度（null = 没有导入在进行）；列表页的导入卡与向导共用。 */
+    fun setImporting(progress: ImportProgress?) {
+        _ui.update { it.copy(importing = progress) }
+    }
+
+    /** ISO 导入完成：把文件加入镜像库（向导「使用已导入镜像」下拉的数据源）。 */
+    fun addImportedImage(path: String) {
+        _ui.update { it.copy(imageOptions = (it.imageOptions + path).distinct().sorted()) }
+    }
+
+    /** 启动时把磁盘上已有的 ISO 一次性并进镜像库。 */
+    fun addImportedImages(paths: List<String>) {
+        _ui.update { it.copy(imageOptions = (it.imageOptions + paths).distinct().sorted()) }
+    }
+
+    /** iOS 还原包导入 / 校验完成：更新该台虚拟机的资源状态（列表卡与向导共用）。 */
+    fun setAppleStatus(vmId: String, status: AppleAssets.Status) {
+        _ui.update { it.copy(appleAssets = it.appleAssets + (vmId to status)) }
+    }
+
+    /** Android 磁盘镜像大小变化（导入 / 校验时更新；格式不变）。 */
+    fun setAndroidDiskSize(vmId: String, size: Long) {
+        _ui.update { it.copy(androidDisks = it.androidDisks + (vmId to size)) }
+    }
+
+    /** Android 磁盘镜像导入完成：同时更新大小与格式（qcow2 / raw）。 */
+    fun setAndroidDisk(vmId: String, size: Long, format: String) {
+        _ui.update {
+            it.copy(
+                androidDisks = it.androidDisks + (vmId to size),
+                androidFormats = it.androidFormats + (vmId to format),
             )
         }
     }
@@ -681,7 +545,9 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
 
     fun exportDiagnostics(vmId: String) {
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { container.session.exportDiagnostics(vmId) }
+            // P2：诊断包里的 config.json 写 Room 里的当前配置，不写磁盘旧文件。
+            val config = configRepository.load(vmId)
+            val result = withContext(Dispatchers.IO) { session.exportDiagnostics(vmId, config) }
             _ui.update { state ->
                 result.fold(
                     onSuccess = { state.copy(shareFile = it, notice = "诊断包已生成") },
@@ -700,13 +566,13 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun bootFromShell(vmId: String) {
         viewModelScope.launch {
-            val running = (container.session.state.value as? VmRuntimeState.Running)?.vmId == vmId
+            val running = (session.state.value as? VmRuntimeState.Running)?.vmId == vmId
             if (!running) {
                 _ui.update { it.copy(notice = "虚拟机未运行") }
                 return@launch
             }
             _ui.update { it.copy(notice = "正在向 UEFI Shell 输入引导命令…") }
-            val ok = withContext(Dispatchers.IO) { container.session.bootFromShell("fs0") }
+            val ok = withContext(Dispatchers.IO) { session.bootFromShell("fs0") }
             _ui.update {
                 it.copy(
                     notice = if (ok) {
@@ -732,7 +598,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
      * 所以这是固件菜单/安装界面唯一可靠的输入途径。静默发送，不弹提示。
      */
     fun sendGuestKey(vmId: String, qcode: String, label: String) {
-        if (container.session.runningVmId() != vmId) {
+        if (session.runningVmId() != vmId) {
             _ui.update {
                 it.copy(
                     lastGuestKeyLabel = label,
@@ -743,7 +609,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) { container.session.sendKey(qcode) }
+            val ok = withContext(Dispatchers.IO) { session.sendKey(qcode) }
             _ui.update {
                 it.copy(
                     lastGuestKeyLabel = label,
@@ -756,20 +622,20 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 组合键，例如 Ctrl+Alt+Del。 */
     fun sendGuestCombo(vmId: String, qcodes: List<String>) {
-        if (container.session.runningVmId() != vmId) return
-        viewModelScope.launch(Dispatchers.IO) { container.session.sendKeys(qcodes) }
+        if (session.runningVmId() != vmId) return
+        viewModelScope.launch(Dispatchers.IO) { session.sendKeys(qcodes) }
     }
 
     /** 把一段文本打给客户机（US 布局子集），末尾由调用方决定是否带回车。 */
     fun typeGuestText(vmId: String, text: String) {
         val payload = text.take(200)
         if (payload.isEmpty()) return
-        if (container.session.runningVmId() != vmId) {
+        if (session.runningVmId() != vmId) {
             _ui.update { it.copy(notice = "这台虚拟机没有在运行") }
             return
         }
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) { container.session.typeText(payload) }
+            val ok = withContext(Dispatchers.IO) { session.typeText(payload) }
             if (!ok) {
                 _ui.update { it.copy(notice = "文本发送失败：只支持 US 布局的字母/数字/常用符号") }
             }
@@ -778,107 +644,10 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- media ----------
 
-    fun importIso(uri: Uri) {
-        launchIsoImport(uri, ImportKind.INSTALL_ISO)
-    }
 
-    fun importDriverIso(uri: Uri) {
-        launchIsoImport(uri, ImportKind.DRIVER_ISO)
-    }
 
-    /**
-     * ISO / 驱动盘导入：单任务、可取消。
-     *
-     * 离页确认由 CreateVmScreen 负责；副本先落 `.part`，取消或失败由
-     * IsoImporter 清理。若用户已离开编辑页但复制恰好完成，文件会保留并
-     * 加入镜像库——不再走「复制完成后再删除」的静默丢弃路径。
-     */
-    private fun launchIsoImport(uri: Uri, kind: ImportKind) {
-        if (importJob?.isActive == true) {
-            _ui.update { it.copy(notice = "已有镜像正在导入，请等待完成或取消") }
-            return
-        }
-        importJob = viewModelScope.launch {
-            _ui.update { it.copy(importing = ImportProgress(0, null, kind), notice = null) }
-            try {
-                val result = withContext(Dispatchers.IO) {
-                    container.isoImporter.import(uri) { copied, total ->
-                        _ui.update { it.copy(importing = ImportProgress(copied, total, kind)) }
-                    }
-                }
-                result.fold(
-                    onSuccess = { file ->
-                        _ui.update { state ->
-                            val draft = state.draft
-                            val images = (state.imageOptions + file.absolutePath).distinct().sorted()
-                            if (draft == null) {
-                                state.copy(
-                                    importing = null,
-                                    imageOptions = images,
-                                    notice = "${kind.label}已导入，文件已保留在镜像库：${file.name}",
-                                )
-                            } else {
-                                val nextDraft = if (kind == ImportKind.INSTALL_ISO) {
-                                    val name = if (draft.name == VmConfig.DEFAULT_NAME || draft.name.isBlank()) {
-                                        VmConfig.nameFromIso(file.absolutePath) ?: draft.name
-                                    } else {
-                                        draft.name
-                                    }
-                                    draft.copy(isoPath = file.absolutePath, bootFromCd = true, name = name)
-                                } else {
-                                    draft.copy(driverIsoPath = file.absolutePath)
-                                }
-                                state.copy(
-                                    draft = nextDraft,
-                                    importing = null,
-                                    imageOptions = images,
-                                    notice = if (kind == ImportKind.INSTALL_ISO) {
-                                        "已导入 ${file.name}"
-                                    } else {
-                                        "已导入驱动盘 ${file.name}"
-                                    },
-                                )
-                            }
-                        }
-                        if (kind == ImportKind.INSTALL_ISO) {
-                            _ui.value.draft?.let { refreshIssues(it) }
-                        }
-                    },
-                    onFailure = { error ->
-                        _ui.update { it.copy(importing = null, notice = "${kind.label}导入失败：${error.message}") }
-                    },
-                )
-            } catch (c: CancellationException) {
-                _ui.update { it.copy(importing = null, notice = "已取消导入，未完成的临时文件已清理") }
-                // 取消恰好发生在重命名之后时，文件已经在镜像库；刷新一次让用户还能选到。
-                refresh()
-                throw c
-            } finally {
-                importJob = null
-            }
-        }
-    }
 
-    /** 取消当前 ISO / 驱动盘导入；未完成的 `.part` 由 IsoImporter 在取消时删除。 */
-    fun cancelImport() {
-        importJob?.cancel()
-    }
 
-    fun importFirmware(uri: Uri) {
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { container.isoImporter.importFirmware(uri) }
-            result.fold(
-                onSuccess = { file ->
-                    _ui.update { it.copy(notice = "已导入固件 ${file.name}") }
-                    probeEnvironment()
-                    updateDraft { it.copy(firmwareCodePath = file.absolutePath) }
-                },
-                onFailure = { error ->
-                    _ui.update { it.copy(notice = "固件导入失败：${error.message}") }
-                },
-            )
-        }
-    }
 
     /**
      * Once Windows is installed the ISO is only a boot-order obstacle. Eject it
@@ -888,25 +657,25 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun ejectIso(vmId: String) {
         viewModelScope.launch {
-            val vm = container.configStore.load(vmId) ?: return@launch
+            val vm = configRepository.load(vmId) ?: return@launch
             if (vm.isoPath == null) return@launch
             val updated = vm.copy(isoPath = null, bootFromCd = false)
-            container.configStore.save(updated)
+            configRepository.save(updated)
             refresh()
 
-            if (container.session.runningVmId() != vmId) {
+            if (session.runningVmId() != vmId) {
                 _ui.update { it.copy(notice = "已卸载安装介质，下次启动将从虚拟磁盘引导") }
                 return@launch
             }
 
             _ui.update { it.copy(busy = true, notice = "已卸载安装介质，正在从虚拟磁盘重启…") }
-            container.session.stop(vmId)
-            val started = container.session.start(updated) is LaunchOutcome.Started
+            session.stop(vmId)
+            val started = session.start(updated) is LaunchOutcome.Started
             _ui.update {
                 it.copy(
                     busy = false,
                     notice = if (started) "已卸载介质，正在从虚拟磁盘启动" else "介质已卸载，但重启失败，请手动启动",
-                    log = container.session.readLog(vmId),
+                    log = session.readLog(vmId),
                 )
             }
         }
@@ -919,43 +688,43 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
         // strictly off the main thread or cold start ANRs.
         viewModelScope.launch {
             val data = withContext(Dispatchers.IO) {
-                val vms = container.configStore.loadAll()
+                val vms = configRepository.loadAll()
                 val usage = vms.associate { vm ->
-                    vm.id to container.diskProvisioner.usedBytes(container.layout.diskFile(vm.id))
+                    vm.id to diskProvisioner.usedBytes(layout.diskFile(vm.id))
                 }
                 Triple(
                     vms,
                     usage,
-                    container.firmwareManager.available().map { f -> f.absolutePath },
+                    firmwareManager.available().map { f -> f.absolutePath },
                 )
             }
             val images = withContext(Dispatchers.IO) {
-                container.layout.imagesDir.listFiles()
+                layout.imagesDir.listFiles()
                     ?.filter { it.isFile && it.name.endsWith(".iso", ignoreCase = true) }
                     ?.sortedBy { it.name }
                     ?.map { it.absolutePath }
                     ?: emptyList()
             }
             val lastRuns = withContext(Dispatchers.IO) {
-                data.first.mapNotNull { vm -> container.manifests.latest(vm.id)?.let { vm.id to it } }.toMap()
+                data.first.mapNotNull { vm -> manifests.latest(vm.id)?.let { vm.id to it } }.toMap()
             }
             val sessionReports = withContext(Dispatchers.IO) {
                 data.first.associate { vm ->
-                    vm.id to SessionReport.build(container.manifests.listAll(vm.id))
+                    vm.id to SessionReport.build(manifests.listAll(vm.id))
                 }
             }
             val appleAssets = withContext(Dispatchers.IO) {
                 data.first.filter { it.platform == VmPlatform.APPLE_T8030 }
-                    .associate { vm -> vm.id to AppleAssets.status(container.layout, vm.id) }
+                    .associate { vm -> vm.id to AppleAssets.status(layout, vm.id) }
             }
             val androidDisks = withContext(Dispatchers.IO) {
                 data.first.filter { it.platform == VmPlatform.ANDROID_ARM64 }
-                    .associate { vm -> vm.id to container.layout.diskFile(vm.id).length() }
+                    .associate { vm -> vm.id to layout.diskFile(vm.id).length() }
             }
             val androidFormats = withContext(Dispatchers.IO) {
                 data.first.filter { it.platform == VmPlatform.ANDROID_ARM64 }
                     .associate { vm ->
-                        val file = container.layout.diskFile(vm.id)
+                        val file = layout.diskFile(vm.id)
                         vm.id to if (Qcow2Creator.isQcow2(file)) "qcow2" else "raw"
                     }
             }
@@ -971,125 +740,22 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     androidDisks = androidDisks,
                     androidFormats = androidFormats,
                     deviceMemoryMb = deviceMemoryMb(),
-                    freeSpaceMb = container.layout.freeSpaceBytes() / (1024 * 1024),
+                    freeSpaceMb = layout.freeSpaceBytes() / (1024 * 1024),
                 )
             }
         }
     }
 
-    private fun refreshIssues(config: VmConfig) {
-        if (config.platform == VmPlatform.ANDROID_ARM64) {
-            viewModelScope.launch {
-                val size = withContext(Dispatchers.IO) {
-                    container.layout.diskFile(config.id).takeIf { it.isFile }?.length() ?: 0L
-                }
-                val issues = buildList {
-                    if (size == 0L) {
-                        add(
-                            Issue(
-                                Severity.ERROR,
-                                "ANDROID_DISK_MISSING",
-                                "还没有导入 Android 磁盘镜像。请点「导入磁盘镜像」选择 .img/.qcow2；" +
-                                    "镜像需要是可 UEFI 启动的 arm64 系统盘。",
-                            ),
-                        )
-                    } else if (size < 1024L * 1024 * 1024) {
-                        add(
-                            Issue(
-                                Severity.WARNING,
-                                "ANDROID_DISK_SMALL",
-                                "镜像只有 ${size / (1024 * 1024)} MB，可能不是完整的 Android 系统盘。",
-                            ),
-                        )
-                    }
-                    if (config.vncAccess == VncAccess.LAN) {
-                        add(
-                            Issue(
-                                Severity.ERROR,
-                                "VNC_LAN_UNAVAILABLE",
-                                "P1 不支持局域网 VNC，已下线，请用仅本机 + adb forward。" +
-                                    "这台虚拟机保存的是旧版「局域网」配置，请改回「仅本机」后再启动。",
-                            ),
-                        )
-                    }
-                }
-                if (_ui.value.draft == config || _ui.value.draft == null) {
-                    _ui.update {
-                        it.copy(issues = issues, androidDisks = it.androidDisks + (config.id to size))
-                    }
-                }
-            }
-            return
-        }
-        // iOS 机型的校验和 UEFI 完全不同：没有固件/ISO/qcow2，只有「资源是否导入」。
-        if (config.platform == VmPlatform.APPLE_T8030) {
-            viewModelScope.launch {
-                val status = withContext(Dispatchers.IO) {
-                    AppleAssets.status(container.layout, config.id)
-                }
-                val issues = buildList {
-                    if (!status.present) {
-                        add(
-                            Issue(
-                                Severity.ERROR,
-                                "APPLE_ASSETS_MISSING",
-                                "iOS 资源不完整：缺少 ${status.missing.joinToString("、")}。" +
-                                    "请在下方导入还原包 zip。",
-                            ),
-                        )
-                    }
-                    if (config.memoryMb < 2048) {
-                        add(
-                            Issue(
-                                Severity.WARNING,
-                                "APPLE_MEMORY_LOW",
-                                "iOS 建议至少 2 GB 内存；4 GB 客户机在部分机型上会因宿主内存不足而失败。",
-                            ),
-                        )
-                    }
-                    if (config.vncAccess == VncAccess.LAN) {
-                        add(
-                            Issue(
-                                Severity.ERROR,
-                                "VNC_LAN_UNAVAILABLE",
-                                "P1 不支持局域网 VNC，已下线，请用仅本机 + adb forward。" +
-                                    "这台虚拟机保存的是旧版「局域网」配置，请改回「仅本机」后再启动。",
-                            ),
-                        )
-                    }
-                }
-                if (_ui.value.draft == config || _ui.value.draft == null) {
-                    _ui.update {
-                        it.copy(issues = issues, appleAssets = it.appleAssets + (config.id to status))
-                    }
-                }
-            }
-            return
-        }
-        // resolve() may trigger the bundled-firmware decompress; keep it off the
-        // main thread. Draft edits arrive rapidly, so latest-write-wins via the
-        // config identity check after the IO hop.
+
+    /**
+     * P2：订阅 ConnectivityManager 的网络状态（NetworkMonitor 跟 App 走，
+     * 这里只合流进 UiState）；网络一变就更新局域网地址与连接状态，
+     * VNC 连接信息页直接读，不用手动刷新。
+     */
+    private fun collectNetwork() {
         viewModelScope.launch {
-            val report = withContext(Dispatchers.IO) {
-                val vmDir = container.layout.vmDir(config.id)
-                container.validator.validate(
-                    ValidationInput(
-                        config = config,
-                        firmwareCode = container.firmwareManager.resolve(config),
-                        firmwareVars = container.layout.varsFile(config.id),
-                        isoFile = config.isoPath?.let(::File),
-                        diskParentWritable = vmDir.exists() && vmDir.canWrite(),
-                        deviceMemoryMb = deviceMemoryMb(),
-                        freeSpaceBytes = container.layout.freeSpaceBytes(),
-                        qemuAvailable = _ui.value.env?.ready == true,
-                        otherVms = _ui.value.vms.filter { it.id != config.id },
-                        qemuDetail = _ui.value.env?.detail,
-                    ),
-                )
-            }
-            // Drop stale results if the user kept editing while we were on IO.
-            if (_ui.value.draft == config || _ui.value.draft == null) {
-                _ui.update { it.copy(issues = report.issues) }
+            networkMonitor.state.collect { net ->
+                _ui.update { it.copy(localIp = net.localIpv4, networkAvailable = net.connected) }
             }
         }
     }
@@ -1100,7 +766,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             // 「最近一次运行」与启动报表必须重读；只在离开运行态的那一拍
             // refresh，避免每个状态帧都做磁盘 IO。
             var wasLive = false
-            container.session.state.collect { state ->
+            session.state.collect { state ->
                 _ui.update { it.copy(runtime = state) }
                 // Keep the wakelock through the whole shutdown: dropping it while
                 // Stopping is in flight is exactly when Android freezes the app.
@@ -1122,14 +788,14 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch {
-            container.session.metrics.collect { sample ->
+            session.metrics.collect { sample ->
                 _ui.update { it.copy(metrics = sample) }
             }
         }
         // T2 的看门狗快照与事件都已在内存里（每 5 秒整体替换），这里只做
         // 合流与 UI 契约映射；不解析 jsonl，也不在 UI 侧重算判定。
         viewModelScope.launch {
-            combine(container.session.diag, container.session.diagEvents) { snapshot, events ->
+            combine(session.diag, session.diagEvents) { snapshot, events ->
                 WatchdogUiState(enabled = true, snapshot = snapshot, events = events)
             }.collect { diag ->
                 _ui.update { it.copy(diagnostics = diag) }
@@ -1151,13 +817,13 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 if (running) {
                     // All of these are file reads: never on Main.
                     val tick = withContext(Dispatchers.IO) {
-                        val id = container.session.runningVmId()
+                        val id = session.runningVmId()
                         LogTick(
-                            log = container.session.readLog(id),
-                            serial = container.session.readSerialTail(id),
+                            log = session.readLog(id),
+                            serial = session.readSerialTail(id),
                             vmId = id,
                             usedBytes = id?.let {
-                                container.diskProvisioner.usedBytes(container.layout.diskFile(it))
+                                diskProvisioner.usedBytes(layout.diskFile(it))
                             },
                         )
                     }
@@ -1180,16 +846,10 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun deviceMemoryMb(): Long {
-        val am = getApplication<Application>().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val am = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
         return info.totalMem / (1024 * 1024)
     }
 
-    private fun suggestedMemoryMb(): Int {
-        val total = deviceMemoryMb()
-        val candidate = ((total * 0.5).toInt() / 512) * 512
-        return candidate.coerceIn(2048, 6144)
-    }
 
-    val warningCount: Int get() = _ui.value.issues.count { it.severity == Severity.WARNING }
 }

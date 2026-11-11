@@ -3,22 +3,29 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    // AGP 9 起内置 Kotlin（built-in Kotlin），不再需要 kotlin-android 插件；
+    // kotlin-compose / kotlin-serialization 仍需显式应用，版本与 kotlin 对齐。
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    // Room 代码生成：KSP（2.2.10-2.0.2，与 Kotlin 2.2.10 配对）。
+    alias(libs.plugins.ksp)
+    // Hilt（P3）：@AndroidEntryPoint / @HiltViewModel / @HiltWorker 的字节码
+    // 转换与代码生成靠它；hilt-compiler 与 androidx.hilt:hilt-compiler
+    // 走下面的 ksp（与 Room 共用 KSP 2.2.10-2.0.2）。
+    alias(libs.plugins.hilt)
 }
 
 android {
     namespace = "dev.pocketvm"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "dev.pocketvm"
         // memfd_create 是 API 30 符号，QEMU 执行层以 android30 为 target 编译。
         minSdk = 30
-        targetSdk = 35
-        versionCode = 57
-        versionName = "0.10.36-qemu11.1.2-edk2026.08"
+        targetSdk = 37
+        versionCode = 58
+        versionName = "0.11.0-qemu11.1.2-edk2026.08"
 
         // The MVP only ships an arm64 execution layer. 32-bit devices cannot run
         // a 64-bit guest, so there is no point in building other ABIs.
@@ -114,8 +121,26 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    // 官方导航：Navigation Compose + Kotlin Serialization 类型安全路由（P0 导航迁移）。
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.datastore.preferences)
+    // 官方结构化存储：Room 2.7.2（P2 数据层）。room-ktx 自 2.7.0 起已并入
+    // room-runtime，不再单独引；编译期代码生成走 KSP。
+    implementation(libs.androidx.room.runtime)
+    ksp(libs.androidx.room.compiler)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    // Hilt（P3）：官方依赖注入。hilt-android 是运行时，hilt-compiler 是
+    // 注解处理（KSP）；androidx.hilt 的两个扩展分别给 Compose 的
+    // hiltViewModel() 与 WorkManager 的 @HiltWorker 用。
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+    implementation(libs.androidx.hilt.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.hilt.work)
+    ksp(libs.androidx.hilt.compiler)
+    // WorkManager（P3）：日志清理定时任务。只要 work-runtime-ktx
+    //（CoroutineWorker）；配置走 Hilt 的 HiltWorkerFactory，见 di/AppModule。
+    implementation(libs.androidx.work.runtime.ktx)
     // SSH 控制台：mwiede 的 JSch 分支，纯 Java、支持 rsa-sha2/ed25519。
     implementation(libs.jsch)
 

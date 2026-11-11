@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Loopback TCP for the VNC endpoint still requires INTERNET. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ConnectivityManager 读网络状态（P2：NetworkMonitor）要的权限，普通权限，无需运行时申请。 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- H4 缓解：诊断页「去设置电池无限制」按钮用的白名单申请。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".PocketVmApp"
@@ -39,6 +44,15 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="virtual machine execution" />
         </service>
+
+        <!-- P3：WorkManager 默认初始化关掉——库自带的 androidx.startup 会用
+             默认 Configuration 建 WorkManager，拿不到 Hilt 的
+             HiltWorkerFactory，@HiltWorker 的依赖就注不进去。配置改由
+             PocketVmApp（Configuration.Provider）提供。 -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="remove" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

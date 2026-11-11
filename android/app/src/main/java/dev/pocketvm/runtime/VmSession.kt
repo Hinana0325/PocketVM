@@ -5,6 +5,8 @@ import android.content.Context
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.Build
+import android.os.PowerManager
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.pocketvm.core.config.ConfigValidator
 import dev.pocketvm.core.config.ValidationInput
 import dev.pocketvm.core.config.ValidationReport
@@ -62,6 +64,8 @@ import java.io.File
 import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * What Windows Setup prints before a CD boot, and the last moment the app can
@@ -100,9 +104,15 @@ sealed interface LaunchOutcome {
  * Ordering in [start] is the contract: probe → validate → prepare storage → write
  * manifest → fork → confirm over QMP. The manifest is written *before* the fork so
  * that a crash between fork and confirmation still leaves the exact argv on disk.
+ *
+ * P3 起由 Hilt 以 @Singleton 提供：单例是硬要求，同时只能跑一台 VM，
+ * Application 级的这一个实例就是全部状态的归属；UI 只通过 [VmRuntimeState]
+ * 看到执行层。不要再手动 new 它，也不要把它放进 ViewModel（旋转屏幕、
+ * UI 重建都不该碰到 QEMU 进程）。
  */
-class VmSession(
-    context: Context,
+@Singleton
+class VmSession @Inject constructor(
+    @ApplicationContext context: Context,
     private val layout: VmStorageLayout,
     private val environment: QemuEnvironment,
     private val firmwareManager: FirmwareManager,
@@ -149,6 +159,8 @@ class VmSession(
     private var healthJob: Job? = null
     private var metricsJob: Job? = null
     private var watchdogJob: Job? = null
+    /** 运行期性能调度器（绑核 + 温控降档）；与看门狗同生同死。 */
+    private var perfScheduler: VmPerformanceScheduler? = null
 
     /** Last CPU-tick sample; the only way to tell "running" from "wedged". */
     private var lastHealth: ProcessHealth.Sample? = null
@@ -728,6 +740,7 @@ class VmSession(
                 startHealthWatch(launched)
                 startMetricsWatch(launched, client)
                 startRuntimeWatchdog(launched, client, effectivePort, config.id, runId)
+                startPerformanceScheduler(launched, client)
                 // Watch the firmware serial console for a UEFI Shell drop and
                 // recover automatically — the backup plan for devices whose edk2
                 // will not auto-boot the CD.
@@ -764,6 +777,7 @@ class VmSession(
             runCatching { healthJob?.cancel() }
             runCatching { metricsJob?.cancel() }
             runCatching { watchdogJob?.cancel() }
+            stopPerformanceScheduler()
             qemuProcess = null
             activeVmId = null
             client.close()
@@ -917,6 +931,7 @@ class VmSession(
             // 关机过程中 VNC/QMP 会按预期有序失联，不是停摆；先停看门狗再发
             // powerdown，避免把用户停止记成一个异常窗口。
             runCatching { watchdogJob?.cancel() }
+            stopPerformanceScheduler()
             _state.value = VmRuntimeState.Stopping(vmId)
             val client = qmp
             withContext(Dispatchers.IO) {
@@ -1233,7 +1248,8 @@ class VmSession(
         }
     }
 
-    fun exportDiagnostics(vmId: String): Result<File> = diagnostics.export(vmId, environmentSummary)
+    fun exportDiagnostics(vmId: String, config: VmConfig? = null): Result<File> =
+        diagnostics.export(vmId, environmentSummary, config)
 
     /**
      * Feeds the performance dashboard once a second.
@@ -1288,6 +1304,34 @@ class VmSession(
                 AgentFeed.event("metrics.error", "pid" to pid, "error" to t.toString())
             }
         }
+    }
+
+    /**
+     * 运行期性能调度：QMP 握手 + 稳定窗口之后再绑核——vCPU 线程在机器初始化
+     * 完成前不存在，太早绑会扑空。只做两件事：启动时 taskset 的细粒度补充
+     * （逐 vCPU 线程绑核 + 提优先级）与温控降档；主线程不动，启动参数
+     * （档位/磁盘/内存/核数）一律不动。任何一步失败都只记事件，绝不影响
+     * 已经跑起来的 VM。
+     */
+    private fun startPerformanceScheduler(process: Process, client: QmpClient) {
+        val pid = pidOf(process)
+        if (pid <= 0) return
+        val powerManager =
+            appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+        val scheduler = VmPerformanceScheduler(
+            scope = scope,
+            thermalSource = PowerManagerThermalSource(powerManager, appContext.mainExecutor),
+        )
+        perfScheduler = scheduler
+        // vCPU 线程号一次运行内不变，取一次即可；取不到时调度器退化为
+        // 「只监听温控、发警告」，仍然比没有强。
+        val vcpuTids = runCatching { client.cpuThreadIds() }.getOrDefault(emptyList())
+        scheduler.arm(vcpuTids)
+    }
+
+    private fun stopPerformanceScheduler() {
+        runCatching { perfScheduler?.disarm() }
+        perfScheduler = null
     }
 
     /**
@@ -1349,6 +1393,7 @@ class VmSession(
                         // 避免 awaitExit 把 processAlive 置 false 后又被最后一拍覆盖。
                         // 进程级 CPU/运行时长复用性能仪表（1 Hz），看门狗不重复采样。
                         val metrics = _metrics.value
+                        val perf = perfScheduler?.state?.value
                         _diag.value = DiagContract.snapshot(
                             vmId = vmId,
                             runId = runId,
@@ -1357,6 +1402,9 @@ class VmSession(
                             processAlive = process.isAlive,
                             processUptimeMs = metrics?.uptimeMs,
                             processCpuPercent = metrics?.cpuPercent,
+                            thermalStatusCode = perf?.thermalStatus,
+                            affinityMode = perf?.let { ThermalPolicy.modeLabel(it.mode) },
+                            affinityMaskHex = perf?.appliedMaskHex,
                         )
                         val fresh = DiagContract.eventsOnSample(sample, verdict)
                         if (fresh.isNotEmpty()) {
@@ -1613,6 +1661,7 @@ class VmSession(
         startHealthWatch(launched)
         startMetricsWatch(launched, client)
         startRuntimeWatchdog(launched, client, effectivePort, config.id, runId)
+        startPerformanceScheduler(launched, client)
         return LaunchOutcome.Started(
             LaunchProfile.STANDARD,
             emptyList(),
@@ -1635,6 +1684,7 @@ class VmSession(
                 runCatching { healthJob?.cancel() }
                 runCatching { metricsJob?.cancel() }
                 runCatching { watchdogJob?.cancel() }
+                stopPerformanceScheduler()
                 _metrics.value = null
                 // 保留最后一次运行的诊断快照供 Exited 展示，但要标明进程已不在。
                 _diag.update { it?.copy(processAlive = false) }

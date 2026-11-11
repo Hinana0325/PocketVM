@@ -1,7 +1,9 @@
 package dev.pocketvm.storage
 
 import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.pocketvm.core.model.VmConfig
+import javax.inject.Inject
 import dev.pocketvm.runtime.FirmwareFiles
 import java.io.File
 import java.io.RandomAccessFile
@@ -31,8 +33,8 @@ private const val MIN_PFLASH_BYTES = 32L * 1024 * 1024
  * The variable bank may start as zeros: edk2 formats an unformatted store on
  * first boot. Verified by booting the shipped firmware pair under a real QEMU.
  */
-class FirmwareManager(
-    private val context: Context,
+class FirmwareManager @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val layout: VmStorageLayout,
 ) {
 

@@ -2,6 +2,7 @@ package dev.pocketvm.core.config
 
 import dev.pocketvm.core.model.VmConfig
 import java.io.File
+import javax.inject.Inject
 
 enum class Severity { ERROR, WARNING }
 
@@ -37,7 +38,7 @@ data class ValidationInput(
  * Produces *actionable* issues instead of a boolean. Each code maps to a hint in
  * docs/troubleshooting.md, so the UI can show "为什么会失败" rather than "启动失败".
  */
-class ConfigValidator {
+class ConfigValidator @Inject constructor() {
 
     fun validate(input: ValidationInput): ValidationReport {
         val issues = mutableListOf<Issue>()

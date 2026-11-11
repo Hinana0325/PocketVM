@@ -2,6 +2,8 @@ package dev.pocketvm.storage
 
 import android.content.Context
 import android.net.Uri
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
 import android.provider.OpenableColumns
 import java.io.File
 import kotlinx.coroutines.CancellationException
@@ -17,8 +19,8 @@ import kotlinx.coroutines.ensureActive
  * 写入先落到 `*.part`，成功后才 rename：进程被杀或用户取消时不会留下一个
  * 看起来能选、实际是半个文件的 ISO/固件。
  */
-class IsoImporter(
-    context: Context,
+class IsoImporter @Inject constructor(
+    @ApplicationContext context: Context,
     private val layout: VmStorageLayout,
 ) {
 

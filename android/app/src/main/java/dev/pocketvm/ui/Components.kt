@@ -274,15 +274,25 @@ fun PocketTopBar(
     )
 }
 
-data class NavDestination(val screen: Screen, val label: String, val icon: ImageVector)
+/**
+ * 底部导航的三个顶层目的地（P1：按路由，不再按旧的 sealed interface Screen）。
+ * PocketVmRoot 按当前路由（hasRoute）算出 current，点选后映射回路由跳转。
+ */
+enum class TopLevelDestination {
+    HOME,
+    ENVIRONMENT,
+    ABOUT,
+}
+
+private data class NavDestination(val destination: TopLevelDestination, val label: String, val icon: ImageVector)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PocketNavBar(current: Screen, onSelect: (Screen) -> Unit) {
+fun PocketNavBar(current: TopLevelDestination, onSelect: (TopLevelDestination) -> Unit) {
     val items = listOf(
-        NavDestination(Screen.List, "虚拟机", Icons.Filled.Computer),
-        NavDestination(Screen.Environment, "环境", Icons.Filled.Memory),
-        NavDestination(Screen.About, "关于", Icons.Filled.Info),
+        NavDestination(TopLevelDestination.HOME, "虚拟机", Icons.Filled.Computer),
+        NavDestination(TopLevelDestination.ENVIRONMENT, "环境", Icons.Filled.Memory),
+        NavDestination(TopLevelDestination.ABOUT, "关于", Icons.Filled.Info),
     )
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
@@ -299,7 +309,7 @@ fun PocketNavBar(current: Screen, onSelect: (Screen) -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 items.forEach { dest ->
-                    val selected = current == dest.screen
+                    val selected = current == dest.destination
                     val indicator by animateColorAsState(
                         if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                         else Color.Transparent,
@@ -316,7 +326,7 @@ fun PocketNavBar(current: Screen, onSelect: (Screen) -> Unit) {
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .background(indicator)
-                            .clickable { if (!selected) onSelect(dest.screen) }
+                            .clickable { if (!selected) onSelect(dest.destination) }
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,

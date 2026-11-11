@@ -34,7 +34,7 @@ cd android                      # Gradle 根是 android/，不是仓库根
 # 产物：android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-需要 JDK 17+ 与 Android SDK 35。两个不能碰的地方：
+需要 JDK 17+ 与 Android SDK 37。两个不能碰的地方：
 
 - `jniLibs.useLegacyPackaging = true`：Android 10+ 的 W^X 只允许执行 `nativeLibraryDir` 里的文件，去掉就整条启动链断掉。
 - `minSdk = 30`：`memfd_create` 的下限。

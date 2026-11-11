@@ -253,7 +253,7 @@ ARM64 的一致结论，PocketVM 的默认配置与回退逻辑就是按它搭�
 ## 构建
 
 ```bash
-# 需要 JDK 17+、Android SDK 35
+# 需要 JDK 17+、Android SDK 37
 cd android
 ./gradlew :app:assembleDebug      # 调试用；产物 app/build/outputs/apk/debug/app-debug.apk
 ./gradlew :app:assemblePerf -PpvmSideBySide=true   # 侧载/日常使用：非 debuggable，明显更流畅；产物 apk/perf/app-perf.apk
@@ -393,7 +393,7 @@ docs/                       架构、排障、打包与推送、第三方许可�
 
 ## 已知限制
 
-- VNC 只监听 `127.0.0.1`；查看画面需 `adb forward tcp:5900 tcp:5900`。
+- VNC 只有「仅本机」（`127.0.0.1`）是通的；查看画面需 `adb forward tcp:5900 tcp:5900`。
   **局域网模式（`0.0.0.0`）不可用**：这个 QEMU 构建的加密后端不支持 DES，而 VNC
   的密码认证就是 DES——设了密码 QEMU 会拒绝启动（exit=1）。要恢复局域网，得在重建
   执行层时编入支持 DES 的加密后端（nettle/gnutls）。

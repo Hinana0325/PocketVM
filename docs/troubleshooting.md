@@ -102,6 +102,36 @@ qcow2 删掉文件即完全回收；guest 内删除文件不会自动缩小镜�
 - **修复**：设置 → 应用设置 → 电池 → 把 PocketVM 设为「无限制」（MIUI/HyperOS）。
   实测设完后 `cgroup.freeze` 持续为 0、VNC 常活、看门狗连续增长。`adb shell` 侧
   的 doze/appops 调整拦不住 PowerKeeper 反复冻结，只有 per-app 电池白名单有效。
+  诊断页健康卡里有「去设置电池无限制」按钮，一键打开系统白名单申请页（仍需
+  在弹窗里点一下「允许」）。
+
+**性能调度：绑核 / 温控降档 / 持续性能模式（2026-11-12，未验证）**
+启动时 taskset 把整个 QEMU 进程绑到性能核（`CpuTopology`：`cpu_capacity`
+优先、`cpuinfo_max_freq` 兜底；没有大小核或 taskset 不可用时不绑核）。
+启动后 `VmPerformanceScheduler` 再按 QMP `query-cpus-fast` 的 vCPU 线程号
+逐个绑核（`taskset -p`）并把优先级提到 -4；QEMU 主线程不动。温控
+（PowerManager 监听）中度发热及以上时 vCPU 自动切到能效核、优先级回 0，
+降温后恢复；严重发热及以上在诊断页警告。VM 运行时 Activity 开持续性能
+模式（仅系统声明支持时），峰值可能略降、换长时间稳定。诊断页「关键信号」
+里有「温控」「绑核」两行，可直接看到当前档位与掩码。
+- 验证：`adb shell ps -A | grep pocketvm` 取 pid，`adb shell taskset -p <tid>`
+  看 vCPU 线程掩码是否为性能核；`cat /proc/<pid>/task/<tid>/status` 的
+  `Cpus_allowed_list` 对照；`awk '{print $19}' /proc/<pid>/task/<tid>/stat`
+  看 nice 值应为 -4；`adb logcat -s PocketVM:*` 搜 `perf.armed` /
+  `perf.mode_changed` / `perf.thermal_warning`；重负载下看诊断页温控行是否
+  从「正常」变「中度发热」且绑核切到能效核。
+- 不做、也做不到的事：实时调度（要 CAP_SYS_NICE）、Kotlin 直接调
+  sched_setaffinity（`android.system.Os` 没有这个公开 API）、改 cgroup /
+  cpuset（要 root）、运行时改 vCPU 数与 TCG 线程数（QEMU 不支持，需重启）、
+  自动暂停 VM（中途停 Windows 有损坏磁盘的风险，过热时请手动停止）。
+
+**「虚拟机跑着跑着 App 直接没了」（Android 17 内存上限，未验证）**
+形态：App 进程直接消失（不是冻结后恢复），QEMU 跟着死；`ApplicationExitInfo`
+里 `reason=REASON_OTHER`、描述含 `MemoryLimiter:AnonSwap`。Android 17 对所有
+App 按设备内存设上限，QEMU 子进程（与 App 同 UID）占几个 GB 客户机内存可能
+触发上限。与 cgroup 冻结（H4）是两回事：冻结是暂停后自愈，内存上限是直接杀掉。
+确认：`adb shell am memory-limiter status` 看当前上限；`dumpsys` 查退出原因。
+截至 2026-11-12 尚未在 Android 17 真机上验证，先跑满内存的 VM 观察。
 
 **VNC 连上但黑屏**
 固件还没初始化显卡（启动前 10–30 秒正常），或 `virtio-gpu` 未被 edk2 驱动。

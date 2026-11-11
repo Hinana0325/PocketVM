@@ -1,6 +1,7 @@
 package dev.pocketvm.runtime
 
 import java.io.File
+import javax.inject.Inject
 
 /**
  * iPhone 11（ChefKiss Inferno `t8030` 机型）的启动参数。
@@ -23,7 +24,7 @@ data class AppleLaunchRequest(
     val extraArgs: List<String> = emptyList(),
 )
 
-class AppleCommandBuilder {
+class AppleCommandBuilder @Inject constructor() {
 
     fun build(request: AppleLaunchRequest): List<String> {
         val dir = request.assetDir.trimEnd('/')

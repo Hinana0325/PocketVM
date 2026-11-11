@@ -56,8 +56,8 @@ cd android
 ```
 
 - `scripts/verify.sh` 是**提交前唯一需要手工跑的自检**：检查执行层架构、跑单元测试、检查 APK 的 `extractNativeLibs=true`。它是 bash-only，依赖 `file` 与 `aapt2`，按 `${ANDROID_HOME:-/opt/android-sdk}` 找 SDK。在 Windows 上用 Git Bash / WSL，别在 PowerShell 里跑。
-- 需要 JDK 17+ 与 Android SDK 35；Windows 下用 `gradlew.bat`。
-- 有 GitHub Actions CI（`.github/workflows/ci.yml`，在 JDK 17 + Android SDK 35 上跑单元测试）；没有 pre-commit 配置。
+- 需要 JDK 17+ 与 Android SDK 37；Windows 下用 `gradlew.bat`。
+- 有 GitHub Actions CI（`.github/workflows/ci.yml`，在 JDK 17 + Android SDK 37 上跑单元测试）；没有 pre-commit 配置。
 
 ## 测试
 
@@ -66,6 +66,51 @@ cd android
 `Qcow2CreatorTest` 里两个用例通过 `assumeTrue` 依赖宿主机的 `/usr/bin/qemu-img`（还有一个要求 `qemu-io`）：宿主机没装就**静默跳过**。所以「测试全绿」不等于 qcow2 格式真的被交叉校验过。
 
 新增错误码时要同时改三处：`ConfigValidator` 的 issue code、`FailureHints` 的日志归因、`docs/troubleshooting.md` 的对照表。
+
+## Android 17（API 37，targetSdk 37）
+
+- 工具链：AGP 9.1.1（支持 API 37 的最低版本；AGP 9.0 最高只到 36.1）+ Gradle 9.3.1 + Kotlin 2.2.10（AGP 9.1 的 KGP 下限）+ compileSdk/targetSdk 37。AGP 9 内置 Kotlin，`kotlin-android` 插件已移除（与新 DSL 不兼容）；`kotlin-compose` / `kotlin-serialization` 仍显式应用，版本与 `kotlin` 对齐（Issue #1，CI 有检查）。Compose BOM 本次未动（2024.10.01）。
+- 行为变更审计（2026-11-12，结论：无需改 Kotlin 代码）：
+  - 本地网络权限 `ACCESS_LOCAL_NETWORK`：**回环（127.0.0.1）豁免**。VNC、QMP（unix socket）、SSH hostfwd 全走回环/域套接字，不受影响。局域网模式（0.0.0.0）若将来恢复，必须先声明并运行时申请该权限（见 `VncAccess` 注释）。
+  - Safer Native DCL：只约束 `System.load()` 加载的 native 库；PocketVM 的执行层是 fork 出来的进程（exec），从不 `System.load()`，也没有 JNI，不受影响。
+  - 大屏可调大小：未声明 `screenOrientation` / `resizeableActivity`，系统忽略这些约束等于无操作；但大屏/桌面模式下的 UI 适配仍需真机验证。
+  - `static final` 不可改 + MessageQueue 无锁化：`VmSession.pidOf()` 反射的是实例字段 `pid`（非 static final），且已有 `/proc` 兜底；不触及 MessageQueue 私有字段。无改动。
+  - 前台服务：`specialUse` + `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` 已是正确类型；通知是标准 `NotificationCompat`（无自定义 RemoteViews），不受 RemoteViews 内存上限影响。
+  - 16KB 页：执行层已按 0x4000 对齐，探针在 16KB 设备上跳过；Android 17 没有新增的 16KB 要求。
+  - 不适用：SMS OTP、蓝牙 RFCOMM、CP2 联系人、ContentCapture、后台音频——均未使用。
+- **待真机验证的最大风险：App 内存上限**。Android 17 对所有 App 按设备内存设上限；QEMU 子进程（与 App 同 UID）占几个 GB 客户机内存，可能触发上限导致 App 被杀（`ApplicationExitInfo` 里 `REASON_OTHER` + `MemoryLimiter:AnonSwap`）。与 cgroup 冻结（H4）是两回事：冻结是暂停后自愈，内存上限是直接杀掉。先在 Android 17 真机上跑满内存的 VM 验证，`adb shell am memory-limiter status` 可查。
+
+## 数据层（P2，2026-11-12，未验证）
+
+- **Room 2.7.2 + KSP 2.2.10-2.0.2**（KSP 第一段必须与 Kotlin 2.2.10 一致；room-ktx 自 2.7.0 起已并入 room-runtime，不要再引）。库 `pocketvm.db` v1，只有 `vm_configs` + `meta` 两张表；`exportSchema=false`，无 `fallbackToDestructiveMigration`——将来改表必须写 `Migration`，绝不能清库。
+- **一次性迁移**：首次启动把 `vms/<id>/config.json` 导进 Room（`VmConfigRepository.ensureMigrated`），数据 + 完成标记在同一个事务里；旧文件之后只读，不再写；`VmConfigStore.save/delete` 已删。读不出的 config.json 会被跳过（与旧版列表行为一致），文件留磁盘可手动恢复，跳过的 id 记 AgentFeed `room.migration_skipped`。诊断包里的 `config.json` 改写 Room 的 live 配置，不再拷磁盘旧文件。
+- **DataStore Preferences**：应用偏好是独立实例 `app_prefs`（主题：跟随系统/浅色/深色；新建默认值：上次新建的 CPU/内存/磁盘），与导航状态的 `nav_state` 分开。电池白名单提示仍是运行时状态，不进偏好。
+- **网络**：`NetworkMonitor`（ConnectivityManager + NetworkCallback，跟 App 走）是唯一网络状态源；`NetworkInfo.localIpv4()` 先走 ConnectivityManager 再回退枚举网卡；不做 Ping/Socket 检测。连接信息页新增「本机网络」卡。权限加了 `ACCESS_NETWORK_STATE`（普通权限）。
+- **SAF 已合规，无需改**：5 个文件选择器（ISO/驱动盘/固件/Android 磁盘/iOS 还原包）早就是 `ActivityResultContracts.OpenDocument()`，`IsoImporter` 早就把 `content://` 拷进应用私有目录再给 QEMU 真实路径。P2 只核对了这一点，没动代码。
+- **前台服务已合规，无需改**：`VmKeepAliveService` 已是 `specialUse` + `PROPERTY_SPECIAL_USE_FGS_SUBTYPE`、通知渠道、12h 唤醒锁、`START_NOT_STICKY`、`startForeground` 带类型、启动失败只记事件不崩 App；manifest 权限齐全。P2 只核对了规范，没动代码。
+- **没进 Room 的**：运行清单、诊断事件、AgentFeed 是追加型日志，仍走文件。
+- **P2 的头号构建风险**：KSP 插件与 AGP 9.1.1 内置 Kotlin 的配合未经验证——CI 若报 KSP 找不到 Kotlin 编译任务，备选是 kapt（已废弃但 Kotlin 2.2.10 仍可用）。其次是 Room 2.7.2（2025-06）与 Kotlin 2.2.10（2026）的组合未经官方对照表背书；当前最新稳定是 2.8.5，方案定 2.7.x，升 2.8.x 另议。
+- 验证（小米 14 Pro 真机）：首次启动后旧虚拟机全在、能正常启动；改一次配置、杀进程重进，配置还在；诊断包里的 config.json 与当前配置一致；ISO 导入流程不变；主题切换后重启还在；新建虚拟机默认沿用上次的 CPU/内存/磁盘；断网/切 Wi-Fi 后连接信息页的网络状态跟着变；前台服务保活如常。
+
+## 性能调度（2026-11-12，未验证）
+
+- 启动时 taskset 把整个 QEMU 进程绑到性能核（`CpuTopology`：`cpu_capacity` 优先读，任一核读不到整体回退 `cpuinfo_max_freq`；容量阈值 60%/40%，频率阈值 80%；顶档只有一颗核或没有大小核时不绑核）。启动参数（档位/磁盘/内存/核数）不受影响。
+- 启动后 `VmPerformanceScheduler`（QMP 握手 + 稳定窗口之后才绑，vCPU 线程在机器初始化完成前不存在）按 `query-cpus-fast` 的 vCPU 线程号逐个 `taskset -p` 绑核，并把优先级提到 -4（`THREAD_PRIORITY_DISPLAY`；Android 的 RLIMIT_NICE=40 允许无 Root 提权到 -20）。主线程不动，留在启动掩码上。失败只记事件，绝不影响已跑起来的 VM。
+- 温控：`PowerManager` 温控监听；MODERATE 及以上把 vCPU 切到能效核、优先级回 0，降温后恢复；SEVERE 及以上发 `perf.thermal_warning` 并在诊断页警告。绝不自动暂停 VM（中途停 Windows 有损坏磁盘的风险，停不停由用户决定）。没有可区分的能效核时降无可降，只警告。
+- 持续性能模式：`MainActivity` 在 VM 运行时开 `Window.setSustainedPerformanceMode`（仅 `isSustainedPerformanceModeSupported()` 为真时），峰值可能略降、换长时间稳定；Activity 不可见时失效，回到前台后重新按运行状态设置。
+- H4 缓解：诊断页健康卡「去设置电池无限制」按钮，一键打开 `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`（manifest 已声明该权限；MIUI 上仍要手动点「无限制」）。
+- 不可行（别再试）：Kotlin 直接调 `sched_setaffinity`（`android.system.Os` 没有这个公开 API；隐藏 API 反射在 Android 16 上被拦）、实时调度（要 CAP_SYS_NICE）、改 cgroup/cpuset（要 root）、读 `cgroup.freeze`（SELinux 拒绝）、`HardwarePropertiesManager` 温度（要 DEVICE_POWER 签名权限）、运行时改 vCPU 数/TCG 线程数（QEMU 不支持，需重启）。
+- 验证（小米 14 Pro 真机）：绑核后 `taskset -p <tid>` / `Cpus_allowed_list` 看 vCPU 是否在性能核，`/proc/<tid>/stat` 第 19 字段 nice 应为 -4；温控降档看 logcat `perf.mode_changed` 与诊断页「温控」行；长时间跑看是否更稳；电池按钮点开后确认能进系统白名单页。
+
+## 依赖注入与定时任务（P3，2026-11-12，未验证）
+
+- **Hilt 2.57.2 + androidx.hilt 1.3.0**。手写的 AppContainer 已删，依赖图由 Hilt 在编译期生成：`@HiltAndroidApp`（PocketVmApp）、`@AndroidEntryPoint`（MainActivity）、`@HiltViewModel`（VmViewModel，构造函数注入全部依赖）、`@HiltViewModel(assistedFactory=…)` + `@AssistedInject`（CreateVmViewModel——Hilt 不能直接注入另一个 ViewModel，vm 用 @Assisted 在 PocketVmRoot 的 `hiltViewModel { factory -> factory.create(vm) }` 里传）、`@Module`（di/AppModule，只放构造函数注入不够用的两处：Room databaseBuilder、NetworkMonitor 建完要 start）。其余依赖直接在类上写 `@Inject constructor`；VmSession 是 `@Singleton`（同时只能跑一台 VM，全局唯一是硬要求）。版本选择：2.57 解开 Kotlinx Metadata 支持 Kotlin 2.2.0，2.57.1/2.57.2 修了 Gradle 插件在 Gradle 9.0.0 上的 transform 注册与 AGP 检测；androidx.hilt 用 1.3.0——**1.4.0 要求 AGP 9.2.0+（官方 release notes：Compose compileSdk 升到 37），本项目 AGP 9.1.1 不能用**，与 P0 的 navigation 2.10.2 是同一个坑；1.3.0 起 `hiltViewModel()` 搬到 `hilt-lifecycle-viewmodel-compose`（包名 `androidx.hilt.lifecycle.viewmodel.compose`）。代码生成走 KSP，与 Room 共用 KSP 2.2.10-2.0.2。
+- **VmKeepAliveService 没进 Hilt**：它没有可注入的依赖（只用系统服务），加 `@AndroidEntryPoint` 是空转，不加。
+- **WorkManager 2.12.0**（最新稳定版，2026-09-23；2.12.0 起 minSdk 24，本项目 minSdk 30 不受影响）。只迁了一个任务：**日志清理**（`work/LogCleanupWorker`，每天一次，`setRequiresBatteryNotLow(true)`，KEEP）：删 `vms/<id>/logs/` 里 90 天前、且不在最近 20 次里的旧运行日志组（整组删），顺带清中断导入留下的 `*.part` / `*.tmp`（24 小时没动过）；绝不碰磁盘、vars.fd、config.json、镜像库、固件、AgentFeed、QMP socket。清理逻辑是纯函数（`LogCleanup.planRunSets` / `planTempFiles`），有纯 JVM 测试 `LogCleanupPolicyTest`；Worker 本身（@HiltWorker，注入 VmStorageLayout）与调度（`LogCleanupScheduler.enqueue`，PocketVmApp.onCreate 里排队一次）要真机验证。配置走 Hilt 的 HiltWorkerFactory：manifest 里用 `tools:node="remove"` 关掉 WorkManager 默认的 androidx.startup 初始化，PocketVmApp 实现 `Configuration.Provider`。
+- **没迁的（有意为之）**：VmSession 的健康/性能采样（5 秒/7 秒）、VmViewModel 的 1 秒日志轮询、控制台与诊断页的轮询——全是「VM 在跑 / 页面可见时才有意义」的实时循环，WorkManager 的可延后、能杀进程重跑的语义与它们完全不合，动了就是错。AgentFeed 与看门狗日志的轮转是写时单文件轮转（`.1`），有界，不用定时任务。导入复制、SSH 会话是用户当场发起的前台操作，不进 WorkManager。
+- **P3 的头号构建风险**：Hilt Gradle 插件与 AGP 9.1.1 内置 Kotlin 的配合未经验证——AGP 9 不再单独应用 kotlin-android 插件，Hilt 插件能否挂上内置的 Kotlin 编译任务，要 CI 跑了才知道；2.57.1/2.57.2 虽然修了 AGP 9 的检测与 Gradle 9 的 transform，但「能应用插件」不等于「能生成代码」。如果 CI 报插件应用失败，备选是放弃 Hilt、把 AppContainer 恢复回来（P3 是可选优化，不值得为它升 AGP）。其次是 androidx.hilt 1.3.0 与 Dagger 2.57.2 的配对未经官方对照表背书；再次是 Hilt 生成的 Application 注入时序（字段在 `super.onCreate()` 之前可用，AgentFeed 的 attach 与定时任务排队都依赖它）。
+- 顺手修的一个旧问题：P1 加的 `ViewModelProvider(this)[VmViewModel::class.java]` 漏了 VmViewModel 的 import，之前那版 MainActivity 是编不过的，P3 接线时补上了。
+- 验证（小米 14 Pro 真机）：App 能正常启动；列表/启动/停止/VNC/QMP/SSH、诊断页一切如常；杀进程重进后注入与导航恢复都正常；`adb shell dumpsys jobscheduler` 能看到 log-cleanup 的周期任务（或等一天看 AgentFeed 的 `work.log_cleanup` 事件）；跑满 20 次以上的 VM、等一天，确认 90 天前的旧运行日志组被删、最近 20 组还在、正在跑的 VM 的日志没动、诊断包里的运行历史只剩最近的。
 
 ## 从文件名看不出来的约定
 

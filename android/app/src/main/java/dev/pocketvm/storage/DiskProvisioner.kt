@@ -2,6 +2,7 @@ package dev.pocketvm.storage
 
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.runtime.QemuEnvironment
+import javax.inject.Inject
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -35,7 +36,7 @@ data class CheckResult(val outcome: CheckOutcome, val detail: String? = null)
  * preserved — the file can silently occupy the full virtual size. qcow2 stays
  * small no matter which filesystem it lands on.
  */
-class DiskProvisioner(
+class DiskProvisioner @Inject constructor(
     private val qemu: QemuEnvironment,
     private val layout: VmStorageLayout,
 ) {

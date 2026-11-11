@@ -2,12 +2,16 @@ package dev.pocketvm.diagnostics
 
 import android.app.ActivityManager
 import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import android.content.Intent
 import android.os.Build
 import androidx.core.content.FileProvider
+import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.storage.VmStorageLayout
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.text.SimpleDateFormat
+import javax.inject.Inject
 import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
@@ -17,18 +21,33 @@ import java.util.zip.ZipOutputStream
  * One file that answers "why did it fail?" without asking the user to run adb.
  * Contains: config, every run manifest, every log, device facts, QEMU probe.
  */
-class DiagnosticsExporter(
-    context: Context,
+class DiagnosticsExporter @Inject constructor(
+    @ApplicationContext context: Context,
     private val layout: VmStorageLayout,
 ) {
 
     private val appContext = context.applicationContext
 
+    private val json = Json {
+        prettyPrint = true
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
+
     private companion object {
         const val MAX_WHOLE_FILE_BYTES = 4L * 1024 * 1024
     }
 
-    fun export(vmId: String, environmentSummary: String? = null): Result<File> = runCatching {
+    /**
+     * [config] 是调用方从 Room 读到的当前配置：P2 起磁盘上的 config.json
+     * 不再更新（只读迁移源），包里的 config.json 必须写 live 配置才可信。
+     * 传 null 时回退到磁盘文件（虚拟机已删、或旧版调用）。
+     */
+    fun export(
+        vmId: String,
+        environmentSummary: String? = null,
+        config: VmConfig? = null,
+    ): Result<File> = runCatching {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val outDir = File(appContext.cacheDir, "diagnostics").apply { mkdirs() }
         val out = File(outDir, "pocketvm-$vmId-$stamp.zip")
@@ -59,7 +78,11 @@ class DiagnosticsExporter(
             addFile("debug", layout.agentFeedFile())
 
             val vmDir = layout.vmDir(vmId)
-            addFile("vm", File(vmDir, "config.json"))
+            if (config != null) {
+                add("vm/config.json", json.encodeToString(VmConfig.serializer(), config).toByteArray())
+            } else {
+                addFile("vm", File(vmDir, "config.json"))
+            }
             val logs = layout.logDir(vmId).listFiles()
                 ?.sortedBy { it.name }
                 ?: emptyList()

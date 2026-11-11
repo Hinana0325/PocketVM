@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,10 +18,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.pocketvm.data.ThemeMode
 
 @Composable
 fun EnvironmentScreen(
     state: UiState,
+    themeMode: ThemeMode = ThemeMode.SYSTEM,
+    onThemeMode: (ThemeMode) -> Unit = {},
     modifier: Modifier = Modifier,
     onProbe: () -> Unit,
 ) {
@@ -107,6 +111,22 @@ fun EnvironmentScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            }
+        }
+        item {
+            // P2：主题偏好（DataStore app_prefs）。以前只跟系统，现在可固定。
+            SectionCard(title = "外观", subtitle = "主题存在偏好里，重启后还在") {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ThemeMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = themeMode == mode,
+                            onClick = { onThemeMode(mode) },
+                            label = { Text(mode.label) },
+                        )
+                    }
                 }
             }
         }

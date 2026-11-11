@@ -5,13 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.calculateEndPadding
@@ -21,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
@@ -32,7 +26,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -40,19 +38,97 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavDestination.Companion.hasRoute
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
 import dev.pocketvm.core.model.VmRuntimeState
+import dev.pocketvm.data.AppPreferences
+import dev.pocketvm.data.ThemeMode
+import dev.pocketvm.navigation.About
+import dev.pocketvm.navigation.AppNavHost
+import dev.pocketvm.navigation.CreateBasic
+import dev.pocketvm.navigation.Environment
+import dev.pocketvm.navigation.Home
+import dev.pocketvm.navigation.LastRouteStore
+import dev.pocketvm.navigation.routeForKey
+import dev.pocketvm.navigation.routeKey
 import java.io.File
+import kotlinx.coroutines.launch
 
+/**
+ * P1 导航：官方 Navigation Compose 是唯一的导航。
+ *
+ * 旧的 sealed interface Screen、AnimatedContent（LegacyScreenContent）、
+ * USE_NAV_HOST 开关、VmViewModel 的 navigate/back 状态机已全部拆掉——
+ * 导航状态只在 NavController 的回退栈里；VmViewModel 只剩业务状态
+ * （虚拟机、QEMU 进程、VNC 连接、日志、诊断数据）。
+ *
+ * 顶层判定、顶栏、底部栏、FAB 全部从当前路由读（hasRoute），不再读
+ * state.screen。系统返回键交给 NavController 自己处理（逐级 pop）；
+ * 各屏自己的 BackHandler（向导弃稿确认、配置页弃稿确认）优先于它。
+ *
+ * 杀进程恢复：启动时从 DataStore（nav_state）读上次的路由 key，
+ * 恢复到用户正在看的页面（向导步骤不持久化，恢复时一定落在列表或
+ * 详情/控制台/配置/诊断页）。读到之前显示加载态，不先挂一个假首页。
+ */
 @Composable
-fun PocketVmRoot(vm: VmViewModel = viewModel()) {
+fun PocketVmRoot(
+    vm: VmViewModel = hiltViewModel(),
+    // CreateVmViewModel 需要 VmViewModel（辅助注入）：Hilt 不能直接注入
+    // 另一个 ViewModel，所以 vm 在这里由 creationCallback 传给工厂；
+    // 其余依赖由 Hilt 注入。手写的 Factory 已删（见 CreateVmViewModel）。
+    createVm: CreateVmViewModel = hiltViewModel<CreateVmViewModel, CreateVmViewModel.Factory> { factory ->
+        factory.create(vm)
+    },
+    // 偏好与上次路由由 MainActivity 从 Hilt 图里注入后传进来；Composable
+    // 本身不是 Hilt 入口，不能直接 @Inject。
+    appPreferences: AppPreferences,
+    lastRouteStore: LastRouteStore,
+) {
     val state by vm.ui.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    // P2：主题偏好（DataStore app_prefs）在这里读、下传给环境页的选择器；
+    // 真正换主题在 MainActivity（PocketVmTheme 包在 Root 外面）。
+    val themeMode by appPreferences.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.SYSTEM)
+    val prefsScope = rememberCoroutineScope()
+    val onThemeMode: (ThemeMode) -> Unit = { mode ->
+        prefsScope.launch { appPreferences.setThemeMode(mode) }
+    }
     val snackbar = remember { SnackbarHostState() }
     val notificationPermission = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
     ) { }
+
+    // 杀进程恢复：DataStore 里读上次页面；null = 还没读到，先显示加载态。
+    var startDestination by remember { mutableStateOf<Any?>(null) }
+    LaunchedEffect(Unit) {
+        startDestination = routeForKey(lastRouteStore.readLastRouteKey()) ?: Home
+    }
+
+    val navController = rememberNavController()
+    val currentEntry by navController.currentBackStackEntryAsState()
+    val destination = currentEntry?.destination
+    val isHome = destination?.hasRoute<Home>() == true
+    val isTopLevel = isHome ||
+        destination?.hasRoute<Environment>() == true ||
+        destination?.hasRoute<About>() == true
+    val showTopBar = destination?.hasRoute<Environment>() == true ||
+        destination?.hasRoute<About>() == true
+    val topTitle = when {
+        destination?.hasRoute<Environment>() == true -> "执行环境"
+        destination?.hasRoute<About>() == true -> "关于"
+        else -> ""
+    }
+
+    // 每次切页都把当前路由 key 存进 DataStore，供下次启动恢复。
+    // 向导步骤的 routeKey() 返回 null，不存——恢复时不会落回向导。
+    LaunchedEffect(currentEntry) {
+        currentEntry?.let { entry ->
+            lastRouteStore.saveLastRouteKey(entry.routeKey())
+        }
+    }
 
     LaunchedEffect(state.notice) {
         val notice = state.notice ?: return@LaunchedEffect
@@ -82,20 +158,6 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
         vm.consumeShare()
     }
 
-    // Top-level destinations get a top app bar; the list screen leads with its
-    // hero header instead, so it stays clean. Create/Console paint their own
-    // header inside the scroll area.
-    val showTopBar = when (state.screen) {
-        Screen.Environment, Screen.About -> true
-        else -> false
-    }
-    val topTitle = when (state.screen) {
-        Screen.Environment -> "执行环境"
-        Screen.About -> "关于"
-        else -> ""
-    }
-    val isTopLevel = state.screen.isTopLevel
-
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             containerColor = Color.Transparent,
@@ -104,12 +166,33 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
                 if (showTopBar) PocketTopBar(title = topTitle)
             },
             bottomBar = {
-                if (isTopLevel) PocketNavBar(current = state.screen, onSelect = { vm.navigate(it) })
+                if (isTopLevel) PocketNavBar(
+                    current = when {
+                        isHome -> TopLevelDestination.HOME
+                        destination?.hasRoute<Environment>() == true -> TopLevelDestination.ENVIRONMENT
+                        destination?.hasRoute<About>() == true -> TopLevelDestination.ABOUT
+                        else -> TopLevelDestination.HOME
+                    },
+                    onSelect = { dest ->
+                        val route = when (dest) {
+                            TopLevelDestination.HOME -> Home
+                            TopLevelDestination.ENVIRONMENT -> Environment
+                            TopLevelDestination.ABOUT -> About
+                        }
+                        navController.navigate(route) {
+                            popUpTo(Home) { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                )
             },
             floatingActionButton = {
-                if (state.screen is Screen.List) {
+                if (isHome) {
                     ExtendedFloatingActionButton(
-                        onClick = vm::newVm,
+                        onClick = {
+                            createVm.startNew()
+                            navController.navigate(CreateBasic) { launchSingleTop = true }
+                        },
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
                         shape = RoundedCornerShape(18.dp),
@@ -135,87 +218,31 @@ fun PocketVmRoot(vm: VmViewModel = viewModel()) {
         Box(
             modifier = Modifier.fillMaxSize(),
         ) {
-            AnimatedContent(
-                targetState = state.screen,
-                transitionSpec = {
-                    val forward = targetState is Screen.Console || targetState is Screen.Create
-                    (fadeIn(tween(240)) + slideInHorizontally { if (forward) it / 8 else -it / 8 })
-                        .togetherWith(
-                            fadeOut(tween(160)) + slideOutHorizontally { if (forward) -it / 12 else it / 12 },
-                        )
-                },
-                label = "screen",
-            ) { screen ->
-            when (screen) {
-                Screen.List -> VmListScreen(
-                    state = state,
-                    contentPadding = padding,
-                    onNew = vm::newVm,
-                    onOpen = vm::openConsole,
-                    onEdit = vm::editVm,
-                    onStart = vm::start,
-                    onStop = vm::stop,
-                    onDelete = vm::deleteVm,
-                    onProbe = vm::probeEnvironment,
-                )
-
-                Screen.Create -> CreateVmScreen(
-                    state = state,
-                    onUpdate = vm::updateDraft,
-                    onSave = vm::saveDraft,
-                    onBack = vm::back,
-                    onImportIso = vm::importIso,
-                    onImportDriverIso = vm::importDriverIso,
-                    onImportFirmware = vm::importFirmware,
-                    onSetPlatform = vm::setPlatform,
-                    onImportApple = vm::importAppleBundle,
-                    onImportAndroidDisk = vm::importAndroidDisk,
-                    onCancelImport = vm::cancelImport,
-                    contentPadding = topBarScreenPadding,
-                )
-
-                is Screen.Console -> {
-                    val target = state.vms.firstOrNull { it.id == screen.vmId }
-                    if (target == null) {
-                        Text("虚拟机已删除", modifier = Modifier.padding(24.dp))
-                    } else {
-                        ConsoleScreen(
-                            state = state,
-                            vm = target,
-                            contentPadding = topBarScreenPadding,
-                            onStart = { vm.start(target.id) },
-                            onStop = { vm.stop(target.id) },
-                            onRefresh = vm::refreshLog,
-                            onExport = { vm.exportDiagnostics(target.id) },
-                            onEject = { vm.ejectIso(target.id) },
-                            onGuestKey = { code, label -> vm.sendGuestKey(target.id, code, label) },
-                            onGuestCombo = { codes -> vm.sendGuestCombo(target.id, codes) },
-                            onGuestText = { text -> vm.typeGuestText(target.id, text) },
-                            onBootFromShell = { vm.bootFromShell(target.id) },
-                            onSshConnect = vm::sshConnect,
-                            onSshDisconnect = vm::sshDisconnect,
-                            onSshRun = vm::sshRun,
-                            onSshClear = vm::sshClearOutput,
-                            onSshOpenShell = vm::sshOpenShell,
-                            onSshCloseShell = vm::sshCloseShell,
-                            onSshShellSend = vm::sshShellSend,
-                            onSshShellCtrlC = vm::sshShellCtrlC,
-                            onBack = vm::back,
-                        )
+            when (val start = startDestination) {
+                null -> {
+                    // 还没读到上次页面：先显示加载态，读到再挂 NavHost。
+                    // 不先挂一个假首页——否则恢复时会先闪一下列表。
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator()
                     }
                 }
-
-                Screen.Environment -> EnvironmentScreen(
-                    state = state,
-                    modifier = Modifier.padding(padding),
-                    onProbe = vm::probeEnvironment,
-                )
-
-                Screen.About -> AboutScreen(
-                    state = state,
-                    modifier = Modifier.padding(padding),
-                )
-            }
+                else -> {
+                    AppNavHost(
+                        navController = navController,
+                        startDestination = start,
+                        state = state,
+                        vm = vm,
+                        createVm = createVm,
+                        padding = padding,
+                        topBarScreenPadding = topBarScreenPadding,
+                        themeMode = themeMode,
+                        onThemeMode = onThemeMode,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
     }

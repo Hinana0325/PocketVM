@@ -4,8 +4,9 @@ import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.storage.VmStorageLayout
 import kotlinx.serialization.json.Json
 import java.io.File
+import javax.inject.Inject
 
-class RunManifestStore(private val layout: VmStorageLayout) {
+class RunManifestStore @Inject constructor(private val layout: VmStorageLayout) {
 
     private val json = Json {
         prettyPrint = true

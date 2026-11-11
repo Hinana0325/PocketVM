@@ -1,7 +1,9 @@
 package dev.pocketvm.storage
 
 import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import javax.inject.Inject
 
 /**
  * Single source of truth for on-device paths.
@@ -13,7 +15,7 @@ import java.io.File
  * files/                       ← getExternalFilesDir(), FUSE
  *   vms/<vmId>/disk.qcow2
  *   vms/<vmId>/vars.fd           UEFI variable store, one per VM
- *   vms/<vmId>/config.json
+ *   vms/<vmId>/config.json       旧版配置（P2 起只读迁移源，一手存储是 Room）
  *   vms/<vmId>/logs/run-<id>.log
  *   vms/<vmId>/logs/run-<id>.json
  *   vms/<vmId>/logs/run-<id>.watchdog.jsonl   运行看门狗时间线（5 秒一拍）
@@ -27,7 +29,7 @@ import java.io.File
  *   tmp/                         TMPDIR for the child process
  * ```
  */
-class VmStorageLayout(context: Context) {
+class VmStorageLayout @Inject constructor(@ApplicationContext context: Context) {
 
     private val appContext = context.applicationContext
 
@@ -62,6 +64,11 @@ class VmStorageLayout(context: Context) {
 
     fun varsFile(vmId: String): File = File(vmDir(vmId), "vars.fd")
 
+    /**
+     * 旧版 config.json 的位置。P2 起只读迁移源（Room 是一手存储）：
+     * 首次启动把这里读进 Room，之后不再写入；文件留在磁盘上，
+     * 一是迁移失败时可手动恢复，二是删虚拟机时整目录一起删。
+     */
     fun configFile(vmId: String): File = File(vmDir(vmId), "config.json")
 
     fun qmpSocket(vmId: String): File = File(runDir, "${safeVmId(vmId)}.sock")

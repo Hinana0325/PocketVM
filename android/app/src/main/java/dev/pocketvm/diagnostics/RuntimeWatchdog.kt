@@ -310,6 +310,12 @@ data class DiagSnapshot(
     val processSuspendGapMs: Long? = null,
     val procReadable: Boolean,
     val unavailableSignals: List<String>,
+    /** PowerManager 温控状态码（THERMAL_STATUS_*）；调度器未启用时为 null。 */
+    val thermalStatusCode: Int? = null,
+    /** vCPU 亲和性档位中文（性能核 / 能效核 / 未绑核）；未启用时为 null。 */
+    val affinityMode: String? = null,
+    /** 实际生效的 taskset 掩码（十六进制，不带 0x）；未绑核时为 null。 */
+    val affinityMaskHex: String? = null,
 )
 
 /** UI 事件（T6 §5）：新→旧最多 20 条，由 VmSession 的 StateFlow 提供。 */
@@ -644,6 +650,9 @@ object DiagContract {
         processAlive: Boolean = true,
         processUptimeMs: Long? = null,
         processCpuPercent: Float? = null,
+        thermalStatusCode: Int? = null,
+        affinityMode: String? = null,
+        affinityMaskHex: String? = null,
     ): DiagSnapshot {
         val vnc = sample.vnc
         return DiagSnapshot(
@@ -678,6 +687,9 @@ object DiagContract {
                 ?.filter { it.role == ThreadRole.VCPU }?.map { it.syscall } ?: emptyList(),
             processSuspendGapMs = suspendGapMs(sample),
             procReadable = sample.procReadable,
+            thermalStatusCode = thermalStatusCode,
+            affinityMode = affinityMode,
+            affinityMaskHex = affinityMaskHex,
             unavailableSignals = buildList {
                 if (!sample.procReadable) add("proc-main-thread")
                 if (!sample.qmp.responded) add("qmp")
