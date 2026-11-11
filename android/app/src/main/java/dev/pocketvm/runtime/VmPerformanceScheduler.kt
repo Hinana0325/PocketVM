@@ -42,10 +42,11 @@ class PowerManagerThermalSource(
 
     override fun register(onStatus: (Int) -> Unit): (() -> Unit)? {
         val listener = PowerManager.OnThermalStatusChangedListener { status -> onStatus(status) }
-        return runCatching {
+        val registered = runCatching {
             powerManager.addThermalStatusListener(executor, listener)
-            { runCatching { powerManager.removeThermalStatusListener(listener) } }
-        }.getOrNull()
+        }.isSuccess
+        if (!registered) return null
+        return { runCatching { powerManager.removeThermalStatusListener(listener) } }
     }
 }
 
@@ -231,14 +232,21 @@ class VmPerformanceScheduler(
             val taskset = CpuTopology.tasksetPath() ?: return false
             return runCatching {
                 val proc = ProcessBuilder(taskset, "-p", maskHex, tid.toString())
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    // Redirect.DISCARD 在 Android SDK 的 ProcessBuilder 里不存在；
+                    // 按仓库惯例（DiskProvisioner）把 stderr 并进 stdout 再并发排空，
+                    // taskset 最多输出一行，2 秒超时内一定能读完。
+                    .redirectErrorStream(true)
                     .start()
+                val drain = java.util.concurrent.CompletableFuture.supplyAsync {
+                    runCatching { proc.inputStream.bufferedReader().use { it.readText() } }
+                        .getOrDefault("")
+                }
                 val finished = proc.waitFor(2, TimeUnit.SECONDS)
                 if (!finished) {
                     runCatching { proc.destroyForcibly() }
                     return false
                 }
+                runCatching { drain.get(1, TimeUnit.SECONDS) }
                 proc.exitValue() == 0
             }.getOrDefault(false)
         }

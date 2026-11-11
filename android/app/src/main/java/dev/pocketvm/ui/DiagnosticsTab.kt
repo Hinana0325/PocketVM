@@ -295,8 +295,6 @@ internal fun RawSnapshotCard(snapshot: DiagSnapshot) {
     }
 }
 
-@Composable
-
 // ---- 启动 / 停止 / 首窗口 ----
 
 @Composable
@@ -695,7 +693,7 @@ internal fun rememberNowMs(active: Boolean): Long {
     return now
 }
 
-private fun DiagTone.toTone(): Tone = when (this) {
+internal fun DiagTone.toTone(): Tone = when (this) {
     DiagTone.IDLE -> Tone.Idle
     DiagTone.OK -> Tone.Ok
     DiagTone.ERROR -> Tone.Error
