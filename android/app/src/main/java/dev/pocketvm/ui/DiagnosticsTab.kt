@@ -43,6 +43,8 @@ import dev.pocketvm.diagnostics.DiagEvent
 import dev.pocketvm.diagnostics.DiagSnapshot
 import dev.pocketvm.diagnostics.DiagVerdict
 import dev.pocketvm.diagnostics.DiagVncBanner
+import dev.pocketvm.diagnostics.SessionReport
+import dev.pocketvm.diagnostics.StallHypothesis
 import dev.pocketvm.ui.theme.MonoTextStyle
 import dev.pocketvm.ui.theme.PocketVmTheme
 import kotlinx.coroutines.delay
@@ -60,6 +62,8 @@ fun DiagnosticsTab(
     runtime: VmRuntimeState,
     otherRunning: VmRuntimeState.Running?,
     lastManifest: RunManifest?,
+    /** 全部 run manifest 的会话级聚合；只读展示，不参与停摆判定。 */
+    report: SessionReport?,
     diag: WatchdogUiState,
     canStart: Boolean,
     onStart: () -> Unit,
@@ -93,6 +97,7 @@ fun DiagnosticsTab(
                 vm = vm,
                 diag = diag,
                 snapshot = snapshot,
+                report = report,
                 nowMs = nowMs,
                 copied = copied,
                 onCopySummary = copySummary,
@@ -107,6 +112,7 @@ fun DiagnosticsTab(
                 manifest = lastManifest,
                 snapshot = snapshot,
                 events = if (snapshot != null) diag.events else emptyList(),
+                report = report,
                 copied = copied,
                 onCopySummary = copySummary,
                 onExport = onExport,
@@ -119,6 +125,7 @@ fun DiagnosticsTab(
                 manifest = lastManifest,
                 snapshot = null,
                 events = emptyList(),
+                report = report,
                 copied = copied,
                 onCopySummary = copySummary,
                 onExport = onExport,
@@ -146,6 +153,7 @@ private fun DashboardPanel(
     vm: VmConfig,
     diag: WatchdogUiState,
     snapshot: DiagSnapshot,
+    report: SessionReport?,
     nowMs: Long,
     copied: Boolean,
     onCopySummary: (String) -> Unit,
@@ -157,6 +165,7 @@ private fun DashboardPanel(
     val displayed = DiagnosticsFormat.displayVerdict(snapshot, nowMs)
     val verdict = DiagnosticsFormat.verdictUi(displayed)
     val conclusion = DiagnosticsFormat.staleNote(snapshot, nowMs) ?: verdict.conclusion
+    val attribution = DiagnosticsFormat.stallAttribution(snapshot)
     var showThreads by remember(vm.id) { mutableStateOf(false) }
     var showNotes by remember(vm.id) { mutableStateOf(false) }
     var showRaw by remember(vm.id) { mutableStateOf(false) }
@@ -251,6 +260,33 @@ private fun DashboardPanel(
                 }
             }
         }
+        if (attribution != null) {
+            val freeze = attribution.hypothesis == StallHypothesis.H4_SYSTEM_FREEZE
+            item {
+                SectionCard(
+                    title = if (freeze) "系统冻结归因" else "停摆归因",
+                    subtitle = if (freeze) {
+                        "只读判读 · 来自采样间隔异常"
+                    } else {
+                        "只读判读 · 来自本次采样的线程状态"
+                    },
+                ) {
+                    StatusChip(text = attribution.label, tone = DiagTone.ERROR.toTone())
+                    Text(attribution.conclusion, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "建议：${attribution.suggestion}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "主线程状态 ${attribution.mainState ?: "不可读"}" +
+                            (attribution.mainSyscallName?.let { " · syscall $it" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
         item {
             SectionCard(title = "关键信号") {
                 DiagnosticsFormat.signals(snapshot).forEach { signal ->
@@ -302,6 +338,9 @@ private fun DashboardPanel(
         }
         item {
             EventsCard(events = diag.events, emptyText = "本次运行没有记录到异常窗口。")
+        }
+        report?.takeIf { it.sessions.isNotEmpty() }?.let { history ->
+            item { SessionReportCard(history) }
         }
         item {
             CollapsibleSection(
@@ -469,6 +508,7 @@ private fun RecentRunPanel(
     manifest: RunManifest?,
     snapshot: DiagSnapshot?,
     events: List<DiagEvent>,
+    report: SessionReport?,
     copied: Boolean,
     onCopySummary: (String) -> Unit,
     onExport: () -> Unit,
@@ -543,6 +583,9 @@ private fun RecentRunPanel(
             }
         }
         item { EventsCard(events = events, emptyText = emptyEvents) }
+        report?.takeIf { it.sessions.isNotEmpty() }?.let { history ->
+            item { SessionReportCard(history) }
+        }
     }
 }
 
@@ -657,6 +700,71 @@ private fun EventsCard(events: List<DiagEvent>, emptyText: String) {
 }
 
 @Composable
+private fun SessionReportCard(report: SessionReport) {
+    var expanded by remember { mutableStateOf(false) }
+    val totals = report.totals
+    CollapsibleSection(
+        title = "启动报表",
+        subtitle = "按启动会话聚合 · ${totals.sessionCount} 次启动 / ${totals.attemptCount} 次尝试",
+        expanded = expanded,
+        onToggle = { expanded = !expanded },
+    ) {
+        totals.successRate?.let { rate ->
+            NumberRow(
+                "成功率",
+                "${Math.round(rate * 100)}%（${totals.successCount}/${totals.sessionCount}）",
+            )
+        }
+        NumberRow("QMP 握手中位数", DiagnosticsFormat.formatDurationMs(totals.medianTimeToQmpMs))
+        NumberRow("到 RUNNING 中位数", DiagnosticsFormat.formatDurationMs(totals.medianTimeToRunningMs))
+        if (totals.profileDistribution.isNotEmpty()) {
+            Text(
+                "最终档位",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                totals.profileDistribution.entries.joinToString(" · ") {
+                    "${DiagnosticsFormat.profileLabel(it.key)}×${it.value}"
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (totals.exitHistogram.isNotEmpty()) {
+            Text(
+                "exit 分布",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                totals.exitHistogram.entries.joinToString(" · ") { "${it.key}×${it.value}" },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Text(
+            "最近 ${minOf(report.sessions.size, SESSION_REPORT_LIMIT)} 次启动",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        report.sessions.take(SESSION_REPORT_LIMIT).forEach { session ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    DiagnosticsFormat.sessionHeadline(session),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    DiagnosticsFormat.sessionDetail(session),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private const val SESSION_REPORT_LIMIT = 5
+
+@Composable
 private fun rememberNowMs(active: Boolean): Long {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     val inPreview = LocalInspectionMode.current
@@ -690,6 +798,10 @@ vCPU 空转本来就很耗 CPU。
 客户机在动，不保证主循环健康。
 
 读不到 /proc（部分系统 SELinux 限制）时显示「不可用」，看板不会把缺失数据当成 0。
+
+采样中断（间隔远超 5 秒）说明 App 进程自身被系统挂起过：MIUI/HyperOS 的省电冻结
+会把 App 与 QEMU 一起冻住，表现为 VNC/QMP 失联、解冻后自愈。这不是 QEMU 故障；
+到系统电池设置把 PocketVM 设为「无限制」可解，看板会给出「系统冻结归因」卡。
 """.trimIndent()
 
 // ---- Preview 夹具（T6 §12.3） ----
@@ -713,6 +825,7 @@ private fun previewSnapshot(
     procReadable: Boolean = true,
     sampledAtEpochMs: Long = System.currentTimeMillis(),
     unavailableSignals: List<String> = emptyList(),
+    processSuspendGapMs: Long? = null,
 ): DiagSnapshot = DiagSnapshot(
     vmId = PREVIEW_VM_ID,
     runId = PREVIEW_RUN_ID,
@@ -733,6 +846,7 @@ private fun previewSnapshot(
     vcpuPercents = vcpuPercents,
     procReadable = procReadable,
     unavailableSignals = unavailableSignals,
+    processSuspendGapMs = processSuspendGapMs,
 )
 
 private fun previewEvent(
@@ -771,11 +885,58 @@ private fun previewManifest(): RunManifest = RunManifest(
     attempt = 1,
 )
 
+private fun previewReport(): SessionReport {
+    val base = previewManifest()
+    return SessionReport.build(
+        listOf(
+            base.copy(
+                runId = "run-preview-a1",
+                sessionId = "sess-preview",
+                attempt = 1,
+                profile = "STANDARD",
+                outcome = RunManifest.Outcome.LAUNCH_FAILED,
+                exitCode = 132,
+                qmpConfirmedAtEpochMs = base.startedAtEpochMs + 2_000,
+                runningAtEpochMs = null,
+            ),
+            base.copy(
+                runId = "run-preview-b2",
+                sessionId = "sess-preview",
+                attempt = 2,
+                profile = "COMPAT",
+                outcome = RunManifest.Outcome.RUNNING,
+                exitCode = null,
+                qmpConfirmedAtEpochMs = base.startedAtEpochMs + 3_000,
+                runningAtEpochMs = base.startedAtEpochMs + 12_000,
+                cdTransport = "VIRTIO_SCSI",
+                usbInput = false,
+                serialEnabled = true,
+            ),
+            base.copy(
+                runId = "run-preview-old",
+                sessionId = null,
+                attempt = 1,
+                profile = "standard",
+                outcome = RunManifest.Outcome.EXITED_OK,
+                exitCode = 0,
+                startedAtEpochMs = base.startedAtEpochMs - 86_400_000,
+                finishedAtEpochMs = base.startedAtEpochMs - 86_000_000,
+                qmpConfirmedAtEpochMs = base.startedAtEpochMs - 86_398_000,
+                runningAtEpochMs = base.startedAtEpochMs - 86_388_000,
+                cdTransport = "USB",
+                usbInput = true,
+                serialEnabled = false,
+            ),
+        ),
+    )
+}
+
 @Composable
 private fun PreviewDiagnostics(
     diag: WatchdogUiState,
     runtime: VmRuntimeState,
     lastManifest: RunManifest? = null,
+    report: SessionReport? = null,
     canStart: Boolean = false,
     darkTheme: Boolean = false,
 ) {
@@ -785,6 +946,7 @@ private fun PreviewDiagnostics(
             runtime = runtime,
             otherRunning = null,
             lastManifest = lastManifest,
+            report = report,
             diag = diag,
             canStart = canStart,
             onStart = {},
@@ -801,6 +963,7 @@ private fun PreviewDiagnosticsHealthy() {
     PreviewDiagnostics(
         diag = WatchdogUiState(snapshot = previewSnapshot(DiagVerdict.HEALTHY)),
         runtime = previewRunning(),
+        report = previewReport(),
     )
 }
 
@@ -878,6 +1041,27 @@ private fun PreviewDiagnosticsStalled() {
     )
 }
 
+@Preview(name = "系统冻结后恢复", showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+private fun PreviewDiagnosticsFrozen() {
+    PreviewDiagnostics(
+        diag = WatchdogUiState(
+            snapshot = previewSnapshot(
+                verdict = DiagVerdict.HEALTHY,
+                processSuspendGapMs = 62_000,
+            ),
+            events = listOf(
+                previewEvent(
+                    kind = "SAMPLE_GAP",
+                    consecutive = 0,
+                    evidence = "采样间隔 62000 ms（期望 5000 ms），进程曾被整体挂起，疑似被系统冻结",
+                ),
+            ),
+        ),
+        runtime = previewRunning(),
+    )
+}
+
 @Preview(name = "无法判定", showBackground = true, widthDp = 360, heightDp = 800)
 @Composable
 private fun PreviewDiagnosticsUnknown() {
@@ -933,6 +1117,7 @@ private fun PreviewDiagnosticsExitedError() {
             hint = "执行层被 SIGILL 杀死（exit=132）：检查 PAC 补丁与 USB 存储栈。",
         ),
         lastManifest = previewManifest(),
+        report = previewReport(),
     )
 }
 

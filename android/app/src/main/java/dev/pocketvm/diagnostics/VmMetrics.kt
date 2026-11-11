@@ -104,6 +104,21 @@ object ProcStats {
     }
 
     /**
+     * `/proc/<pid|tid>/stat` 第 3 字段：线程状态字符（R 运行 / S 可中断睡眠 /
+     * D 不可中断 I/O 睡眠 / Z 僵尸 / t 追踪停 / T 停止）。comm 解析约定同
+     * [cpuTicks]：从最后一个 ')' 之后切，状态就是第 0 个字段。
+     *
+     * 停摆归因的第一手判别量：主线程 D ⇒ 阻塞在同步 I/O（FUSE 上的块设备）；
+     * S ⇒ 阻塞在 futex（BQL/锁）或 poll。读不到为 null，不是空串。
+     */
+    fun stateChar(stat: String): String? {
+        val close = stat.lastIndexOf(')')
+        if (close < 0) return null
+        val fields = stat.substring(close + 1).trim().split(' ')
+        return fields.firstOrNull()?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
      * `/proc/<tid>/schedstat` 第一字段：该线程累计在 CPU 上运行的纳秒数。
      *
      * 不能用 `/proc/<tid>/stat` 的 utime/stime 做每 vCPU 占用：这台 Android 16

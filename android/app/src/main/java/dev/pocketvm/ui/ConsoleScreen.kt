@@ -321,6 +321,7 @@ fun ConsoleScreen(
                 runtime = runtime,
                 otherRunning = otherRunning,
                 lastManifest = state.lastRuns[vm.id],
+                report = state.sessionReports[vm.id],
                 diag = state.diagnostics,
                 canStart = !state.busy && otherRunning == null &&
                     (runtime is VmRuntimeState.Idle ||

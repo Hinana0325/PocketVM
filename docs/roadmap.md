@@ -19,8 +19,10 @@ PocketVM 不只是一个“在手机上运行 Windows 的 QEMU 启动器”，�
   `QmpClient` / `DiskProvisioner` / `FirmwareManager` / `IsoImporter` 已有，QMP 优雅关机、
   SSH 控制台、运行日志（manifest 快照）已有。**同时只能跑一台 VM**（`VmSession` 单例），
   多虚拟机管理是 P3 要打破的约束。
-- Windows 11 安装程序窗口已在真机上到达（0.10.10，ramfb），但完整安装流程尚未端到端跑通；
-  主循环停摆是最大的未决问题（真机可复现，QMP/VNC 无响应，vCPU 线程空转）。
+- Windows 11 安装已在真机端到端跑通到 OOBE（2026-11-08：Win11 从磁盘引导进「请稍等」+
+  中文语言栏，看门狗 HEALTHY）；此前的「主循环停摆」已定位为 MIUI/HyperOS 的 cgroup
+  冻结（非 QEMU 故障），电池设「无限制」后持续解冻，App 已加 H4 采样间隙检测。桌面尚未
+  到达，P1 验收（含 minor 升版）仍是人类 owner 的决策（D4）。
 - VNC 局域网访问被挡在校验层（`VNC_LAN_UNAVAILABLE`，DES 后端缺失），只有“仅本机 +
   `adb forward`”是通的。2026-10-31 决策 D1=B：下线/隐藏局域网入口并文档化，
   执行层不重建，DES 留到未来重建 QEMU 时再补。
@@ -108,7 +110,7 @@ Vectras VM（GitHub 开源，QEMU 安卓前端，多系统、多架构、VNC）�
 
 ## 9. 未决事项
 
-- 主循环停摆、Windows 11 完整安装：需真机验证，QEMU-only 范围内无法确认；设备未接入前 P1 只能停在「可构建 + 待验证」。
+- Windows 11 完整安装：已到 OOBE（2026-11-08 真机），桌面与首次设置尚未走完；P1 验收与 minor 升版由人类 owner 拍板（D4）。主循环停摆已定位为系统冻结（H4，非 QEMU 故障），不再是未决问题；真正的 QEMU 内部停摆（H1/H2/H3）尚未在真机复现。
 - VNC 局域网恢复：需在重建执行层时补 DES 后端（nettle/gnutls），暂无排期（D1=B 已下线入口）。
 - KVM 可用性：以只读探测结果为准，未探测前不承诺。
 - 发布签名：当前只有 debug/perf（debug 签名）包，生产签名与发布流水线未落地。

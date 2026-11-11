@@ -7,7 +7,7 @@
 
 | 能力 | 状态 |
 | --- | --- |
-| QEMU 11.1.2 aarch64 静态二进制（TCG + VNC + slirp + pixman） | **已编入 APK**（32 MB，零未解析符号） |
+| QEMU 11.1.2 aarch64 动态 PIE（TCG + VNC + slirp + pixman） | **已编入 APK**（依赖库随包，`RUNPATH=$ORIGIN`） |
 | QEMU 可执行文件探测（真跑 `--version`，不只看文件存在） | 已实现 |
 | 配置校验 + 可操作的中文错误 | 已实现 |
 | QCOW2 磁盘创建（无 `qemu-img` 时用内置写入器，始终精简置备） | 已实现 |
@@ -17,10 +17,11 @@
 | 每次启动的 manifest（argv/固件/磁盘/退出码） | 已实现 |
 | 日志尾部读取 + 失败归因 + 诊断包 zip | 已实现 |
 | 性能占用仪表（CPU / 每 vCPU / 内存 / I/O，1 Hz 宿主机侧采样） | 已实现，含单测 |
+| 启动报表（按 session 聚合启动耗时 / 阶梯命中 / exit 分布） | 已实现，含单测 |
 | VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`，P1 决策已下线该入口） |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.34 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.10.36 / QEMU 11.1.2 / edk2 2026.08）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -63,6 +64,8 @@
 | 0.10.32 | **manifest 观测字段（T14）**：新增 sessionId（一次启动跨降级阶梯稳定）、qmpConfirmedAt / runningAt 时间戳，以及 cdTransport / usbInput / serialEnabled 的生效值；旧 manifest 仍可解码；新增 4 个单测。为 P1 报表按 session 聚合启动耗时、阶梯命中与 exit 分布提供数据基础 |
 | 0.10.33 | **P0-A 批次 1（操作体验）**：CD 安装介质提示卡与一键「发送 Enter」、Windows ISO 版本/驱动盘提示（22589 / 25226 / 26300）、ISO 导入离页保护（确认 / 取消 / 保留文件并清 `.part`）、平台选择 320dp 布局；新增 11 个单测 |
 | 0.10.34 | **A3a 修复 + 25226 二次确认**：CD 提示卡覆盖 FIRMWARE / LOADING / BOOT_PROMPT，不再随阶段前进消失，保留手动关闭与 180s 安全窗口；选择 25226 时二次确认（不硬阻断）；新增 7 个单测 |
+| 0.10.35 | **灰白中性色重设计（Stitch）**：虚拟机列表、创建向导、控制台改用灰白中性配色，亮/暗两套主题同步；整理卡片层级与间距 |
+| 0.10.36 | **界面细节收敛**：统一间距与文本截断，修复换行/溢出 |
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
 
@@ -191,6 +194,26 @@ Linux 内核自带，装上即可上网。
 反射方法 → 反射字段 → `/proc` 扫描（`diagnostics/ChildProcess.kt`：
 ppid 等于本进程、cmdline 含 qemu 的直接子进程）。扫描这条路有假 /proc
 夹具测试，也有真内核集成测试（见 `VmMetricsRealProcTest`）。
+
+## 启动报表
+
+控制台页「诊断」Tab 里的「启动报表」卡片把一台 VM 的全部 `run-*.json` 按
+**一次用户启动操作**（`sessionId`）聚合——不用翻几十个清单文件就能回答
+「这台机器启动成功过几次、降级阶梯命中哪一档、exit 都长什么样」：
+
+| 字段 | 含义 |
+| --- | --- |
+| 成功率 | 进入过 RUNNING 的会话 / 全部会话；停在引导器阶段的不算成功 |
+| QMP 握手中位数 | `startedAt → qmpConfirmedAt`，所有拿到时间戳的会话 |
+| 到 RUNNING 中位数 | `startedAt → runningAt`，只统计成功启动的会话 |
+| 最终档位 | 每个会话最后一个 attempt 的档位（标准 / 兼容 / 最小 / 最小（不挂介质））→ 会话数 |
+| exit 分布 | 每个已退出 attempt 的 exit code 计数（例如 `0×3 · 132×1`） |
+| 最近会话 | 时间、档位、第几次尝试、成功/失败、到 RUNNING 耗时、exit；附生效的 CD 总线、USB 输入、串口开关 |
+
+聚合器是纯 Kotlin（`diagnostics/SessionReport.kt`），判定与统计都有单测；
+UI 只展示，不重算。0.10.32 之前的旧清单没有 `sessionId`，退回按 `runId`
+分组：每次 attempt 各自成会话，exit 分布与启动耗时仍可统计，只是看不出
+同一次启动里的降级阶梯。中位数用整数运算，样本为偶数时取中间两值平均。
 
 ## 装 Windows 11 ARM64（社区验证路径）
 
@@ -359,11 +382,11 @@ docs/                       架构、排障、打包与推送、第三方许可�
 
 | 项 | 结论 |
 | --- | --- |
-| 编译（aarch64 动态 PIE） | 通过（0.10.34）；20 个测试文件 / 205 个用例实跑全绿（2026-10-31，failures=0 / errors=0 / skipped=0） |
+| 编译（aarch64 动态 PIE） | 通过；单元测试以 `:app:testDebugUnitTest` 实跑为准（2026-11-08 实跑 252 用例：failures=0 / errors=0，6 个 `qemu-img`/`qemu-io` 交叉校验用例因宿主机未装而 `assumeTrue` 跳过） |
 | APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
 | 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
 | 安装介质启动 | **通过**：固件从 USB 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。USB 崩溃回退 virtio-scsi 后：无驱动盘时同一 ISO 双挂（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`）；挂驱动盘时只走 virtio-cd（两个 ISO 设备同屏会冻结安装） |
-| Windows 安装全流程 | **进行中**：0.10.10 已修掉两个拦路问题——① 显示设备：`virtio-gpu-pci` 的 GOP 没有线性帧缓冲（`Mode->FrameBufferBase=0`、`FrameBufferSize=0`），bootmgfw 把 NULL 存成目标表面，首次清屏 memcpy 写地址 0，触发 Data Abort（ESR `0x96000047`、FAR `0x0`），默认改为 `ramfb`；② 随机消失：ARMv9 PAC 使跨线程 `siglongjmp` 的 `autiasp` 失败（exit=132，libc `longjmp+460`），执行层已打无签名协程切换补丁。真机同配置跑到 **Windows 11 安装程序窗口**并稳定 11 分钟以上；安装尚未完成，下一步按上方配方挂 VirtIO 驱动盘，让 WinPE 读到 `install.wim` |
+| Windows 安装全流程 | **安装已完成，首次启动/OOBE 进行中**（2026-11-08 真机）：Win11 已从磁盘引导进 OOBE（「请稍等」+ 中文语言栏），看门狗 HEALTHY；桌面尚未到达。此前两个拦路问题已修——① 显示设备：`virtio-gpu-pci` 的 GOP 没有线性帧缓冲（`Mode->FrameBufferBase=0`、`FrameBufferSize=0`），bootmgfw 把 NULL 存成目标表面，首次清屏 memcpy 写地址 0 触发 Data Abort（ESR `0x96000047`、FAR `0x0`），默认改为 `ramfb`；② 随机消失：ARMv9 PAC 使跨线程 `siglongjmp` 的 `autiasp` 失败（exit=132，libc `longjmp+460`），执行层已打无签名协程切换补丁。此前复现的「主循环停摆」均为 MIUI/HyperOS 的 cgroup 冻结（非 QEMU 故障），电池设「无限制」后持续解冻，App 已加 H4 采样间隙检测（详见 `docs/troubleshooting.md`） |
 
 第一次上机时最值得盯的三件事：`QemuEnvironment` 是否报 `QEMU_MISSING`（找不到 .so）、
 日志里有没有 `Could not read keymap`、以及 VNC 端口是否真的在监听。

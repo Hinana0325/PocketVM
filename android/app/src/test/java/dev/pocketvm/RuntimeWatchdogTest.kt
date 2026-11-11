@@ -43,8 +43,8 @@ class RuntimeWatchdogTest {
     private val pid = 42
 
     /** `/proc/<pid>/task/<tid>/stat`：comm 之后第 11/12 个字段是 utime/stime。 */
-    private fun stat(tid: Int, utime: Long, stime: Long): String =
-        "$tid (qemu-system-aarch64) S 1 1 1 0 -1 4194560 100 0 0 0 $utime $stime 0 0 20 0 1 0 12345"
+    private fun stat(tid: Int, utime: Long, stime: Long, state: String = "S"): String =
+        "$tid (qemu-system-aarch64) $state 1 1 1 0 -1 4194560 100 0 0 0 $utime $stime 0 0 20 0 1 0 12345"
 
     private fun baseFiles(): MutableMap<String, String> = mutableMapOf(
         "/proc/42/task/42/stat" to stat(42, 10, 5),
@@ -173,6 +173,37 @@ class RuntimeWatchdogTest {
         val third = sampler.sample(nowMs = 11_000)
         assertEquals(1L, third.serial!!.bytes)
         assertNull(third.serial!!.deltaBytes)
+    }
+
+    @Test
+    fun `sampler captures thread state and syscall as stall evidence`() {
+        val files = baseFiles()
+        // H1 形态：主线程睡在 futex（S，抢 BQL），vCPU0 卡在不可中断 I/O（D，
+        // 持锁者写 FUSE），vCPU1 仍在跑（R）。arm64：futex=98、pwrite64=68。
+        files["/proc/42/task/42/stat"] = stat(42, 10, 5, state = "S")
+        files["/proc/42/task/42/syscall"] = "98 0x0 0x0 0x0 0x0 0x0 0x0 0x7fff 0x7abc"
+        files["/proc/42/task/700/stat"] = stat(700, 0, 0, state = "D")
+        files["/proc/42/task/700/syscall"] = "68 0x3 0x1000 0x200 0x0 0x0 0x0 0x7fff 0x7def"
+        files["/proc/42/task/701/stat"] = stat(701, 500, 0, state = "R")
+        // 701 没有 syscall 文件 ⇒ null（SELinux 拒绝的形态）
+
+        val threads = sampler(files).sample(nowMs = 1_000).threads!!
+
+        assertEquals("S", threads.mainState)
+        assertTrue(threads.mainSyscall!!.startsWith("98 "))
+        val vcpus = threads.threads.filter { it.role == ThreadRole.VCPU }
+        assertEquals(listOf("D", "R"), vcpus.map { it.state })
+        assertTrue(vcpus[0].syscall!!.startsWith("68 "))
+        assertNull("读不到 syscall 就是 null，不是空串", vcpus[1].syscall)
+    }
+
+    @Test
+    fun `unreadable stat leaves state and syscall null without faking a value`() {
+        val files = baseFiles()
+        files.remove("/proc/42/task/42/stat")
+        val threads = sampler(files).sample(nowMs = 1_000).threads!!
+        assertNull(threads.mainState)
+        assertNull(threads.mainSyscall)
     }
 
     // --------------------------------------------------------------- detector
@@ -344,6 +375,63 @@ class RuntimeWatchdogTest {
     }
 
     @Test
+    fun `watchdog json carries main and vcpu state plus syscall evidence`() {
+        val threads = ThreadDistribution(
+            mainCpuPercent = 0.4f,
+            vcpuCpuPercents = listOf(100f, 0f),
+            vcpuSumPercent = 100f,
+            threads = listOf(
+                ThreadCpu(pid, ThreadRole.MAIN, 0.4f, 10, 50L, 500_000_000, "S", "98 0x0 0x7fff 0x7abc"),
+                ThreadCpu(700, ThreadRole.VCPU, 100f, 0, 500L, 5_000_000_000, "R", null),
+                ThreadCpu(701, ThreadRole.VCPU, 0f, 0L, 0L, 0L, "D", "68 0x3 0x1000"),
+            ),
+            mainState = "S",
+            mainSyscall = "98 0x0 0x7fff 0x7abc",
+        )
+        val s = WatchdogSample(
+            epochMs = 0, dtMs = 5_000, intervalMs = 5_000,
+            qmp = qmpOk(), vnc = vncOk(), serial = null,
+            threads = threads, procReadable = true,
+        )
+        val verdict = WatchdogDetector().evaluate(s)
+        val line = WatchdogJson.line(s, verdict, seq = 1, vmId = "vm-a", runId = "run-b", pid = pid)
+
+        assertTrue(line.contains("\"main_state\":\"S\""))
+        assertTrue(line.contains("\"vcpu_states\":[\"R\",\"D\"]"))
+        assertTrue(line.contains("\"main_syscall\":\"98 0x0 0x7fff 0x7abc\""))
+        assertTrue(line.contains("\"vcpu_syscalls\":[null,\"68 0x3 0x1000\"]"))
+    }
+
+    @Test
+    fun `diag snapshot carries state and syscall evidence for attribution`() {
+        val threads = ThreadDistribution(
+            mainCpuPercent = 0.4f,
+            vcpuCpuPercents = listOf(100f, 0f),
+            vcpuSumPercent = 100f,
+            threads = listOf(
+                ThreadCpu(pid, ThreadRole.MAIN, 0.4f, 10, 50L, 500_000_000, "S", "98 0x0 0x7fff"),
+                ThreadCpu(700, ThreadRole.VCPU, 100f, 0, 500L, 5_000_000_000, "R", null),
+                ThreadCpu(701, ThreadRole.VCPU, 0f, 0L, 0L, 0L, "D", "68 0x3 0x1000"),
+            ),
+            mainState = "S",
+            mainSyscall = "98 0x0 0x7fff",
+        )
+        val s = WatchdogSample(
+            epochMs = 0, dtMs = 5_000, intervalMs = 5_000,
+            qmp = qmpOk(), vnc = vncOk(), serial = null,
+            threads = threads, procReadable = true,
+        )
+        val verdict = WatchdogDetector().evaluate(s)
+
+        val snapshot = DiagContract.snapshot("vm-a", "run-b", s, verdict)
+
+        assertEquals("S", snapshot.mainState)
+        assertEquals("98 0x0 0x7fff", snapshot.mainSyscall)
+        assertEquals(listOf("R", "D"), snapshot.vcpuStates)
+        assertEquals(listOf(null, "68 0x3 0x1000"), snapshot.vcpuSyscalls)
+    }
+
+    @Test
     fun `watchdog log rotates at the byte cap and keeps the newest lines`() {
         val file = temp.newFile("run-a.watchdog.jsonl")
         val log = WatchdogLog(file, maxBytes = 80)
@@ -443,6 +531,55 @@ class RuntimeWatchdogTest {
         val verdict = WatchdogDetector().evaluate(gap)
         val events = DiagContract.eventsOnSample(gap, verdict)
         assertTrue(events.any { it.kind == "SAMPLE_GAP" })
+    }
+
+    // ---------------------------------------------- 系统冻结（采样间隙）
+
+    @Test
+    fun `snapshot records suspension gap only beyond three windows`() {
+        val detector = WatchdogDetector()
+        fun gapOf(dt: Long?): Long? {
+            val s = sample(dtMs = dt)
+            return DiagContract.snapshot("vm-a", "run-b", s, detector.evaluate(s)).processSuspendGapMs
+        }
+        assertNull(gapOf(null))
+        assertNull(gapOf(5_000))
+        assertNull("恰好 3 倍不算异常", gapOf(15_000))
+        assertEquals(20_000L, gapOf(20_000))
+        assertEquals(300_000L, gapOf(300_000))
+    }
+
+    @Test
+    fun `a long sampling gap alone never opens a qemu anomaly window`() {
+        val detector = WatchdogDetector()
+        val thawed = sample(dtMs = 300_000)
+        repeat(3) {
+            val verdict = detector.evaluate(thawed)
+            assertFalse("冻结不是 QEMU 故障，不该开停摆窗口", verdict.inWindow)
+            assertEquals(DiagVerdict.HEALTHY, verdict.diagnosis)
+        }
+    }
+
+    @Test
+    fun `json line marks process suspended on long gap`() {
+        val detector = WatchdogDetector()
+        val gap = sample(dtMs = 62_000)
+        val line = WatchdogJson.line(gap, detector.evaluate(gap), seq = 1, vmId = "vm-a", runId = "run-b", pid = pid)
+        assertTrue(line.contains("\"dt_ms\":62000"))
+        assertTrue(line.contains("\"process_suspended\":true"))
+
+        val normal = sample(dtMs = 5_000)
+        val normalLine = WatchdogJson.line(normal, detector.evaluate(normal), seq = 2, vmId = "vm-a", runId = "run-b", pid = pid)
+        assertTrue(normalLine.contains("\"process_suspended\":false"))
+    }
+
+    @Test
+    fun `sample gap event evidence names suspension and freeze`() {
+        val gap = sample(dtMs = 62_000)
+        val events = DiagContract.eventsOnSample(gap, WatchdogDetector().evaluate(gap))
+        val event = events.first { it.kind == "SAMPLE_GAP" }
+        assertTrue(event.evidence.contains("挂起"))
+        assertTrue(event.evidence.contains("冻结"))
     }
 
     // -------------------------------------------------------------- VNC probe

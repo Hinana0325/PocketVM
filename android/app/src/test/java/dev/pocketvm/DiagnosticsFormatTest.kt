@@ -5,6 +5,8 @@ import dev.pocketvm.diagnostics.DiagEvent
 import dev.pocketvm.diagnostics.DiagSnapshot
 import dev.pocketvm.diagnostics.DiagVerdict
 import dev.pocketvm.diagnostics.DiagVncBanner
+import dev.pocketvm.diagnostics.SessionReport
+import dev.pocketvm.diagnostics.StallHypothesis
 import dev.pocketvm.ui.DiagTone
 import dev.pocketvm.ui.DiagnosticsFormat
 import org.junit.Assert.assertEquals
@@ -44,6 +46,11 @@ class DiagnosticsFormatTest {
         sampledAtEpochMs: Long = epoch(2026, 10, 31, 14, 33, 12),
         windowMs: Int = 5_000,
         unavailableSignals: List<String> = emptyList(),
+        mainState: String? = null,
+        mainSyscall: String? = null,
+        vcpuStates: List<String?> = emptyList(),
+        vcpuSyscalls: List<String?> = emptyList(),
+        processSuspendGapMs: Long? = null,
     ): DiagSnapshot = DiagSnapshot(
         vmId = "vm-1",
         runId = "run-1",
@@ -64,6 +71,11 @@ class DiagnosticsFormatTest {
         vcpuPercents = vcpuPercents,
         procReadable = procReadable,
         unavailableSignals = unavailableSignals,
+        mainState = mainState,
+        mainSyscall = mainSyscall,
+        vcpuStates = vcpuStates,
+        vcpuSyscalls = vcpuSyscalls,
+        processSuspendGapMs = processSuspendGapMs,
     )
 
     private fun event(
@@ -333,6 +345,99 @@ class DiagnosticsFormatTest {
         assertTrue(text.length <= 8_192)
     }
 
+    // ---- 停摆归因（P1 归因半侧） ----
+
+    @Test
+    fun `只有停摆判定才给出归因 健康样本不强行解释`() {
+        assertNull(DiagnosticsFormat.stallAttribution(snapshot(verdict = DiagVerdict.HEALTHY)))
+        assertNull(DiagnosticsFormat.stallAttribution(snapshot(verdict = DiagVerdict.WATCH)))
+        val stalled = snapshot(verdict = DiagVerdict.STALLED, mainState = "D", mainSyscall = "82 0x3")
+        assertEquals(StallHypothesis.H2_MAIN_FUSE_IO, DiagnosticsFormat.stallAttribution(stalled)?.hypothesis)
+    }
+
+    @Test
+    fun `判读摘要在停摆时带上归因结论与建议`() {
+        val s = snapshot(
+            verdict = DiagVerdict.STALLED,
+            mainState = "D",
+            mainSyscall = "68 0x3 0x1000",
+            vcpuStates = listOf("R", "D"),
+        )
+        val text = DiagnosticsFormat.summaryText(
+            vmName = "Win11 ARM64",
+            vmId = "vm-1",
+            snapshot = s,
+            latestEvent = null,
+            nowMs = s.sampledAtEpochMs + 2_000,
+            zone = zone,
+        )
+        assertTrue(text.contains("停摆归因：H2 · 主线程卡 I/O"))
+        assertTrue(text.contains("pwrite64"))
+        assertTrue(text.contains("建议："))
+    }
+
+    @Test
+    fun `健康摘要不含停摆归因`() {
+        val s = snapshot(verdict = DiagVerdict.HEALTHY, mainState = "S", mainSyscall = "73 0x0")
+        val text = DiagnosticsFormat.summaryText(
+            vmName = "Win11 ARM64",
+            vmId = "vm-1",
+            snapshot = s,
+            latestEvent = null,
+            nowMs = s.sampledAtEpochMs + 2_000,
+            zone = zone,
+        )
+        assertFalse(text.contains("停摆归因"))
+    }
+
+    @Test
+    fun `原始快照列出状态与 syscall 证据`() {
+        val text = DiagnosticsFormat.rawSnapshotText(
+            snapshot(mainState = "S", mainSyscall = "98 0x0", vcpuStates = listOf("R", "D"), vcpuSyscalls = listOf(null, "68 0x3")),
+        )
+        assertTrue(text.contains("mainState=S"))
+        assertTrue(text.contains("mainSyscall=98 0x0"))
+        assertTrue(text.contains("vcpuStates=R,D"))
+        assertTrue(text.contains("vcpuSyscalls=null,68 0x3"))
+    }
+
+    // ---- 系统冻结归因（H4，采样间隙触发，不要求停摆判定） ----
+
+    @Test
+    fun `健康样本带采样间隙时给出冻结归因`() {
+        val s = snapshot(verdict = DiagVerdict.HEALTHY, processSuspendGapMs = 62_000)
+        val a = DiagnosticsFormat.stallAttribution(s)!!
+        assertEquals(StallHypothesis.H4_SYSTEM_FREEZE, a.hypothesis)
+        assertTrue(a.suggestion.contains("无限制"))
+    }
+
+    @Test
+    fun `冻结归因进入复制摘要 前缀区别于停摆归因`() {
+        val s = snapshot(verdict = DiagVerdict.HEALTHY, processSuspendGapMs = 62_000)
+        val text = DiagnosticsFormat.summaryText(
+            vmName = "Win11 ARM64",
+            vmId = "vm-1",
+            snapshot = s,
+            latestEvent = null,
+            nowMs = s.sampledAtEpochMs + 2_000,
+            zone = zone,
+        )
+        assertTrue(text.contains("冻结归因：H4 · 系统冻结进程"))
+        assertTrue(text.contains("无限制"))
+        assertFalse(text.contains("停摆归因"))
+    }
+
+    @Test
+    fun `原始快照列出采样间隙`() {
+        assertTrue(
+            DiagnosticsFormat.rawSnapshotText(snapshot(processSuspendGapMs = 62_000))
+                .contains("processSuspendGapMs=62000"),
+        )
+        assertTrue(
+            DiagnosticsFormat.rawSnapshotText(snapshot()).contains("processSuspendGapMs=null"),
+        )
+    }
+
     @Test
     fun `运行清单摘要与结果映射`() {
         val started = epoch(2026, 10, 31, 14, 0, 0)
@@ -371,5 +476,95 @@ class DiagnosticsFormatTest {
         assertTrue(text.contains("最近一次运行：启动失败"))
         assertTrue(text.contains("失败原因：无法启动 QEMU 进程"))
         assertTrue(text.contains("失败归因：检查执行层是否完整"))
+    }
+
+    @Test
+    fun `启动档位标签映射`() {
+        assertEquals("标准", DiagnosticsFormat.profileLabel("STANDARD"))
+        assertEquals("兼容", DiagnosticsFormat.profileLabel("compat"))
+        assertEquals("最小（不挂介质）", DiagnosticsFormat.profileLabel("MINIMAL_NO_MEDIA"))
+        assertEquals("iPhone 11", DiagnosticsFormat.profileLabel("APPLE_T8030"))
+        assertEquals("—", DiagnosticsFormat.profileLabel(null))
+        assertEquals("—", DiagnosticsFormat.profileLabel(""))
+        assertEquals("CUSTOM", DiagnosticsFormat.profileLabel("CUSTOM"))
+    }
+
+    @Test
+    fun `会话标题区分成功失败与启动耗时`() {
+        val started = epoch(2026, 10, 31, 14, 0, 0)
+        val failed = RunManifest(
+            runId = "run-1",
+            vmId = "vm-1",
+            vmName = "Win11 ARM64",
+            appVersion = "0.10.36",
+            startedAtEpochMs = started,
+            executablePath = "/x/libqemu-system-aarch64.so",
+            sessionId = "sess-1",
+            attempt = 1,
+            profile = "STANDARD",
+            outcome = RunManifest.Outcome.LAUNCH_FAILED,
+            exitCode = 132,
+        )
+        val failedSession = SessionReport.build(listOf(failed)).sessions.single()
+        val failedHeadline = DiagnosticsFormat.sessionHeadline(failedSession, zone)
+        assertTrue(failedHeadline.contains("10-31 14:00"))
+        assertTrue(failedHeadline.contains("标准"))
+        assertTrue(failedHeadline.contains("失败"))
+        assertTrue(failedHeadline.contains("exit 132"))
+
+        val running = failed.copy(
+            runId = "run-2",
+            attempt = 2,
+            profile = "COMPAT",
+            outcome = RunManifest.Outcome.RUNNING,
+            exitCode = null,
+            qmpConfirmedAtEpochMs = started + 2_000,
+            runningAtEpochMs = started + 12_000,
+        )
+        val successSession = SessionReport.build(listOf(failed, running)).sessions.single()
+        val successHeadline = DiagnosticsFormat.sessionHeadline(successSession, zone)
+        assertTrue(successHeadline.contains("兼容"))
+        assertTrue(successHeadline.contains("第 2 次尝试"))
+        assertTrue(successHeadline.contains("成功"))
+        assertTrue(successHeadline.contains("到 RUNNING 12.0 s"))
+        assertFalse(successHeadline.contains("exit"))
+    }
+
+    @Test
+    fun `启动耗时按量级选择单位`() {
+        assertEquals("不可用", DiagnosticsFormat.formatDurationMs(null))
+        assertEquals("214 ms", DiagnosticsFormat.formatDurationMs(214))
+        assertEquals("999 ms", DiagnosticsFormat.formatDurationMs(999))
+        assertEquals("1.0 s", DiagnosticsFormat.formatDurationMs(1_000))
+        assertEquals("2.7 s", DiagnosticsFormat.formatDurationMs(2_720))
+        assertEquals("1 分 30 秒", DiagnosticsFormat.formatDurationMs(90_000))
+    }
+
+    @Test
+    fun `会话明细显示生效的设备开关`() {
+        val manifest = RunManifest(
+            runId = "run-1",
+            vmId = "vm-1",
+            vmName = "Win11 ARM64",
+            appVersion = "0.10.36",
+            startedAtEpochMs = 1_000,
+            executablePath = "/x/libqemu-system-aarch64.so",
+            sessionId = "sess-1",
+            runningAtEpochMs = 2_000,
+            outcome = RunManifest.Outcome.RUNNING,
+            cdTransport = "VIRTIO_SCSI",
+            usbInput = false,
+            serialEnabled = true,
+        )
+        val session = SessionReport.build(listOf(manifest)).sessions.single()
+        assertEquals(
+            "CD VIRTIO_SCSI · USB 输入 关 · 串口 开",
+            DiagnosticsFormat.sessionDetail(session),
+        )
+
+        val unknown = SessionReport.build(
+            listOf(manifest.copy(cdTransport = null, usbInput = null, serialEnabled = null)),
+        ).sessions.single()
+        assertEquals("CD — · USB 输入 — · 串口 —", DiagnosticsFormat.sessionDetail(unknown))
     }
 }

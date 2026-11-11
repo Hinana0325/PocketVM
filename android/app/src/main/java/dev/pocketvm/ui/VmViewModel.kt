@@ -18,6 +18,7 @@ import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmPlatform
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.core.model.VncAccess
+import dev.pocketvm.diagnostics.SessionReport
 import dev.pocketvm.storage.AppleAssets
 import dev.pocketvm.storage.Qcow2Creator
 import dev.pocketvm.runtime.AnsiText
@@ -123,6 +124,8 @@ data class UiState(
     val diskUsage: kotlin.collections.Map<String, Long> = emptyMap(),
     /** vmId -> manifest of the most recent launch, for "last time it crashed" hints. */
     val lastRuns: kotlin.collections.Map<String, RunManifest> = emptyMap(),
+    /** vmId -> 启动报表（按 session 聚合全部 run manifest）；UI 只展示，不重算。 */
+    val sessionReports: kotlin.collections.Map<String, SessionReport> = emptyMap(),
     /** Phone's Wi-Fi/USB-tether IPv4, shown as the VNC endpoint hint. */
     val localIp: String? = null,
     /** Latest performance sample of the running VM; null when nothing runs. */
@@ -936,6 +939,11 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
             val lastRuns = withContext(Dispatchers.IO) {
                 data.first.mapNotNull { vm -> container.manifests.latest(vm.id)?.let { vm.id to it } }.toMap()
             }
+            val sessionReports = withContext(Dispatchers.IO) {
+                data.first.associate { vm ->
+                    vm.id to SessionReport.build(container.manifests.listAll(vm.id))
+                }
+            }
             val appleAssets = withContext(Dispatchers.IO) {
                 data.first.filter { it.platform == VmPlatform.APPLE_T8030 }
                     .associate { vm -> vm.id to AppleAssets.status(container.layout, vm.id) }
@@ -958,6 +966,7 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                     firmwareOptions = data.third,
                     imageOptions = images,
                     lastRuns = lastRuns,
+                    sessionReports = sessionReports,
                     appleAssets = appleAssets,
                     androidDisks = androidDisks,
                     androidFormats = androidFormats,
@@ -1087,6 +1096,10 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun collectRuntime() {
         viewModelScope.launch {
+            // 运行结束时清单会被重写（outcome / exitCode / finishedAt），
+            // 「最近一次运行」与启动报表必须重读；只在离开运行态的那一拍
+            // refresh，避免每个状态帧都做磁盘 IO。
+            var wasLive = false
             container.session.state.collect { state ->
                 _ui.update { it.copy(runtime = state) }
                 // Keep the wakelock through the whole shutdown: dropping it while
@@ -1094,6 +1107,9 @@ class VmViewModel(app: Application) : AndroidViewModel(app) {
                 val keepAlive = state is VmRuntimeState.Running ||
                     state is VmRuntimeState.Preparing ||
                     state is VmRuntimeState.Stopping
+                val terminal = state is VmRuntimeState.Exited || state is VmRuntimeState.Failed
+                if (wasLive && terminal) refresh()
+                wasLive = keepAlive
                 if (!keepAlive) {
                     // 前台服务由 VmSession 收尾；这里只处理 UI 侧的 SSH 状态。
                     if (sshConsole.state.value !is SshState.Disconnected) {

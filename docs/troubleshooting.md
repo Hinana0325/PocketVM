@@ -85,6 +85,24 @@ qcow2 删掉文件即完全回收；guest 内删除文件不会自动缩小镜�
 先确认 VM 处于「运行中」——VNC 端口只在 QEMU 进程活着时存在。仅本机模式必须
 `adb forward`。局域网模式暂不可用：选了它会在启动前被校验器以 `VNC_LAN_UNAVAILABLE` 拦下。
 
+**「虚拟机卡死几分钟又自己恢复」（系统冻结，2026-11-08 真机证实）**
+形态：VNC/QMP 失联、画面定格，但 QEMU 进程活着；过一会儿不操作也自行恢复。
+这不是 QEMU 主循环停摆，而是 **MIUI/HyperOS 的 cgroup freezer 把 App 与 QEMU
+所在进程组整体冻结**（`cgroup.freeze=1`）。冻结期间所有线程 parked（`main_state=S`、
+`syscall=-1`），App 自己的看门狗也同窗停采；解冻即恢复。屏幕亮着、App 有前台
+服务（FGS）也可能被冻——PowerKeeper 的省电策略不看这些。
+
+- **App 内检测**：App 的 SELinux 域读不到 `cgroup.freeze`（实测 Permission denied），
+  所以看板用**采样间隙**推断：`dt_ms > 3×interval_ms` 记 `process_suspended=true`，
+  归因卡显示「H4 · 系统冻结进程」并提示去电池设置设「无限制」。间隙本身不开
+  QEMU 异常窗口（冻结不是 QEMU 故障）。
+- **shell 侧确认**（adb shell 可读 cgroup，但跨 UID 读不了 `/proc/.../syscall`）：
+  `cat /sys/fs/cgroup/apps/uid_<uid>/pid_<appPid>/cgroup.freeze`，`1`=冻结中；
+  `cgroup.events` 里 `frozen 1` 同义。uid 看 `ps -A -o UID` 或 `dumpsys package`。
+- **修复**：设置 → 应用设置 → 电池 → 把 PocketVM 设为「无限制」（MIUI/HyperOS）。
+  实测设完后 `cgroup.freeze` 持续为 0、VNC 常活、看门狗连续增长。`adb shell` 侧
+  的 doze/appops 调整拦不住 PowerKeeper 反复冻结，只有 per-app 电池白名单有效。
+
 **VNC 连上但黑屏**
 固件还没初始化显卡（启动前 10–30 秒正常），或 `virtio-gpu` 未被 edk2 驱动。
 日志里出现 `Display output` 相关字样前不要判断为故障。
@@ -119,7 +137,11 @@ App 也可能还显示「运行中」。看门狗每 5 秒采一拍，把这一�
 | `serial_total_bytes` / `serial_delta_bytes` | 串口日志字节数与本窗口增量；无串口捕获时为 null |
 | `main_thread_dticks` / `vcpu_dticks[]` | `/proc/<pid>/task/<tid>/stat` 的 utime+stime 增量（100 Hz 下满核≈500 tick/5 s 窗口）；读不到为 null |
 | `main_cpu` / `vcpu_cpu[]` / `vcpu_sum` | 每线程 CPU 占比（单核=100）；优先 schedstat，stat 回退 |
+| `main_state` / `vcpu_states[]` | 主线程与各 vCPU 的 stat 第 3 字段状态字符（`R` 运行 / `S` 可中断睡眠 / `D` 不可中断 I/O 睡眠 / `Z` 僵尸）；读不到为 null |
+| `main_syscall` / `vcpu_syscalls[]` | `/proc/<pid>/task/<tid>/syscall` 原始行（syscall 号 + 参数 + sp + pc，或 `running`）；SELinux 拒绝时为 null |
 | `proc_readable` / `proc_error` | 主线程 /proc 是否可读及失败原因 |
+| `dt_ms` / `interval_ms` | 与上一拍的实际间隔 / 期望采样间隔；首拍 `dt_ms=null` |
+| `process_suspended` | `dt_ms > 3×interval_ms` 时为 true：进程曾被系统整体挂起（冻结的间接证据，见「系统冻结」条目） |
 | `window_anomaly` / `window_id` / `window_samples` | 是否处于异常窗口、第几个窗口、窗口内第几拍 |
 | `signals` | 本拍硬信号：`qmp_timeout` / `vnc_no_banner` / `proc_unreadable` / `qmp_status_<状态>` |
 | `stall_profile` | `main_idle_vcpu_busy` 表示主线程空闲而 vCPU 仍繁忙（归因线索，不是单独异常） |
@@ -147,6 +169,46 @@ App 也可能还显示「运行中」。看门狗每 5 秒采一拍，把这一�
    （同一数值）；此时以 `main_cpu`/`vcpu_cpu`（schedstat）为准。
 6. 采样故障一律是显式字段（`qmp_error` / `vnc_error` / `proc_error`）或 null，
    不会写成 0。
+7. **先排除系统冻结**：`process_suspended=true`（或 `dt_ms` 远超 `interval_ms`）
+   说明 App 进程自己都被挂起过，该窗口的 VNC/QMP 失联是冻结的结果——直接按
+   「系统冻结」条目处理，不要往 QEMU 内部阻塞归因。
+8. **阻塞类型判别（停摆归因第一手量）**：确认停摆后看 `main_state` 与 `main_syscall`——
+   - `main_state=D`（不可中断 I/O 睡眠）⇒ 主线程卡在同步块 I/O，多半是 FUSE 上的
+     qcow2 写/flush；`main_syscall` 通常以 `68`（pwrite64）/`82`（fsync）开头（arm64 号）。
+   - `main_state=S` 且 `main_syscall` 以 `98`（futex）开头 ⇒ 卡在锁（MTTCG 的 BQL）；
+     再看 `vcpu_states[]` 里是否恰有一个 vCPU 是 `D`——那就是持 BQL 却卡在 FUSE I/O
+     的线程，主线程抢不到 BQL 因而永不 accept。
+   - `main_state=S` 且 `main_syscall` 是 `73`（ppoll）/`22`（epoll_pwait）⇒ 主线程其实
+     在正常 poll，需另查监听 fd 是否还在 poll 集（不是经典停摆）。
+   - `main_syscall=null` 表示该设备 SELinux 不放行 `/proc/.../syscall`；此时仅凭
+     `main_state` 的 `D`/`S` 也能粗分「I/O 阻塞」与「锁/poll 阻塞」两类。
+   异常窗口打开时，`mainState` / `mainSyscall` / `vcpuStates` 也会进 `agent.jsonl`
+   的 `watchdog.window_open` 事件，外部不读 zip 即可看到。
+
+**停摆归因结论（App 自动判读，只读）**
+
+确认停摆（`SUSPECTED_STALL` / `STALLED`）后，App 把上面第 8 条的人工判读固化成
+`StallAttributor`（`diagnostics/StallAttribution.kt`）的纯函数结论，显示在「控制台 →
+诊断」的「停摆归因」卡，并写进「复制判读摘要」。它**只解释已采集的证据**，不重算
+窗口阈值、不替代真机复现；建议一律是只读对照或后续实验方向，不在 App 内执行动作。
+采样间隙触发的 H4 不要求停摆判定——解冻后信号常已恢复 HEALTHY，看板仍会显示
+「系统冻结归因」卡。
+
+| 结论标签 | 触发证据 | 含义 / 只读建议 |
+| --- | --- | --- |
+| `H1 · vCPU 持锁卡 I/O` | 主线程 `S`+futex(98)，且某 vCPU=`D` | vCPU 持 BQL 后卡在 FUSE 同步 I/O，主线程抢不到锁；结论会点名该 vCPU 的 syscall（pwrite64/fsync）。Track B 用 `thread=single` 复现对照 |
+| `H2 · 主线程卡 I/O` | 主线程=`D` | 主线程自身阻塞在同步块 I/O（FUSE 上的 qcow2 写/flush）；对照磁盘位置（内部 ext4 vs 外部 FUSE）与 cache 模式 |
+| `H3 · 主线程等锁` | 主线程 `S`+futex(98)，无 vCPU=`D` | MTTCG/BQL 锁等待，PAC 协程 shim 也可能 park 主循环；`thread=single` 对照区分锁反转，仍停摆则需 QEMU backtrace（Track C） |
+| `H4 · 系统冻结进程` | `process_suspended=true`（采样间隙 >3×窗口），优先于线程证据 | MIUI/HyperOS cgroup freezer 把 App 与 QEMU 同组冻结，非 QEMU 故障（2026-11-08 真机证实）；电池设置设「无限制」，shell 侧查 `cgroup.freeze` 确认 |
+| `正常 poll 等待` | 主线程 `S`+ppoll(73)/epoll_pwait(22) | 本拍主线程在正常等事件，未捕获阻塞点；对照异常窗口连续多拍 |
+| `主线程在 CPU 上` | 主线程=`R` 或 syscall=`running` | 非阻塞型停摆，可能主循环死循环；需 QEMU 内部 backtrace |
+| `主线程其他睡眠` | 主线程 `S`+其他 syscall | 非典型阻塞点；对照完整时间线 |
+| `证据不足` | `main_state=null`（SELinux 拒绝）或非常规态 | 无法归因；在能读 /proc 的环境复现 |
+
+`H1`/`H2`/`H3` 是假设编号，不是已证实的根因——收敛仍要在真机复现停摆时读到这些
+证据，并按建议做 Track B/C 对照。`H4` 已在真机证实（见「系统冻结」条目）。
+syscall 号是 arm64 通用号（`StallAttributor.syscallName`
+解码：98=futex、73=ppoll、22=epoll_pwait、68=pwrite64、82=fsync…）。
 
 **停摆时点「停止」**
 

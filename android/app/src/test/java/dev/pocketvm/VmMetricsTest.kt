@@ -37,6 +37,16 @@ class VmMetricsTest {
     }
 
     @Test
+    fun `state char is the first field after comm and distinguishes D from S`() {
+        // comm 里含 ") "：状态字符仍取最后一个 ')' 之后的第 0 个字段。
+        assertEquals("S", ProcStats.stateChar(stat(0, 0)))
+        assertEquals("D", ProcStats.stateChar("42 (qemu-system-aarch64) D 1 1 1"))
+        assertEquals("R", ProcStats.stateChar("42 (qemu) R 1"))
+        assertNull(ProcStats.stateChar("42 (no close paren here"))
+        assertNull("空状态读不到就是 null，不是空串", ProcStats.stateChar("42 () "))
+    }
+
+    @Test
     fun `schedstat runtime is the first field`() {
         assertEquals(123_456_789L, ProcStats.schedRuntimeNs("123456789 42 7"))
         assertNull(ProcStats.schedRuntimeNs("not-a-number 0 0"))

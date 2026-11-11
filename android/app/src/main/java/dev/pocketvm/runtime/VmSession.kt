@@ -28,6 +28,7 @@ import dev.pocketvm.diagnostics.QmpProbe
 import dev.pocketvm.diagnostics.RunManifestStore
 import dev.pocketvm.diagnostics.RuntimeWatchdog
 import dev.pocketvm.diagnostics.RuntimeWatchdogSampler
+import dev.pocketvm.diagnostics.ThreadRole
 import dev.pocketvm.diagnostics.VmMetrics
 import dev.pocketvm.diagnostics.VmMetricsSampler
 import dev.pocketvm.diagnostics.VncBannerProbe
@@ -1373,6 +1374,12 @@ class VmSession(
                             "mainCpu" to sample.threads?.mainCpuPercent,
                             "vcpuSum" to sample.threads?.vcpuSumPercent,
                             "stallProfile" to verdict.stallProfile,
+                            // 停摆归因第一手量：主线程 D=同步 I/O，S+futex=锁；
+                            // vcpuStates 里若有 D 则是持 BQL 者卡在 FUSE。
+                            "mainState" to sample.threads?.mainState,
+                            "mainSyscall" to sample.threads?.mainSyscall,
+                            "vcpuStates" to sample.threads?.threads
+                                ?.filter { it.role == ThreadRole.VCPU }?.map { it.state },
                         )
                     },
                     onWindowClose = { verdict, _ ->

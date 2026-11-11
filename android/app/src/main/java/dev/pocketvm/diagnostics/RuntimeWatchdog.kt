@@ -77,6 +77,13 @@ data class ThreadCpu(
     val statTicks: Long?,
     val statTicksDelta: Long?,
     val schedRuntimeNs: Long?,
+    /** stat 第 3 字段的状态字符（R/S/D/…）；读不到为 null。停摆归因判别量。 */
+    val state: String? = null,
+    /**
+     * `/proc/<pid>/task/<tid>/syscall` 原始内容（syscall 号 + 参数 + sp + pc，
+     * 或 "running"）；SELinux 拒绝或不可读为 null，不是空串。
+     */
+    val syscall: String? = null,
 )
 
 /**
@@ -88,6 +95,10 @@ data class ThreadDistribution(
     val vcpuCpuPercents: List<Float?>,
     val vcpuSumPercent: Float?,
     val threads: List<ThreadCpu>,
+    /** 主线程状态字符（D/S/R…），便于直接判读阻塞类型；未知为 null。 */
+    val mainState: String? = null,
+    /** 主线程当前 syscall 原始行；未知为 null。 */
+    val mainSyscall: String? = null,
 )
 
 /** 看门狗的一拍。 */
@@ -127,7 +138,12 @@ class RuntimeWatchdogSampler(
     /** 去重并排除主线程，避免 QMP 意外把 pid 也报进来时重复计数。 */
     private val cpuTids: List<Int> = vcpuTids.filter { it > 0 && it != pid }.distinct()
 
-    private data class ThreadSnapshot(val statTicks: Long?, val schedRuntimeNs: Long?)
+    private data class ThreadSnapshot(
+        val statTicks: Long?,
+        val schedRuntimeNs: Long?,
+        val state: String?,
+        val syscall: String?,
+    )
 
     private var prevEpochMs: Long? = null
     private var prevThreads: Map<Int, ThreadSnapshot> = emptyMap()
@@ -160,11 +176,13 @@ class RuntimeWatchdogSampler(
             vcpuCpuPercents = vcpuPercents,
             vcpuSumPercent = vcpuPercents.filterNotNull().takeIf { it.isNotEmpty() }?.sum(),
             threads = buildList {
-                add(ThreadCpu(pid, ThreadRole.MAIN, mainPercent, mainSnapshot.statTicks, mainDelta, mainSnapshot.schedRuntimeNs))
+                add(ThreadCpu(pid, ThreadRole.MAIN, mainPercent, mainSnapshot.statTicks, mainDelta, mainSnapshot.schedRuntimeNs, mainSnapshot.state, mainSnapshot.syscall))
                 vcpuSnapshots.forEachIndexed { index, (tid, snapshot) ->
-                    add(ThreadCpu(tid, ThreadRole.VCPU, vcpuPercents[index], snapshot.statTicks, vcpuDeltas[index], snapshot.schedRuntimeNs))
+                    add(ThreadCpu(tid, ThreadRole.VCPU, vcpuPercents[index], snapshot.statTicks, vcpuDeltas[index], snapshot.schedRuntimeNs, snapshot.state, snapshot.syscall))
                 }
             },
+            mainState = mainSnapshot.state,
+            mainSyscall = mainSnapshot.syscall,
         )
 
         prevEpochMs = nowMs
@@ -188,9 +206,12 @@ class RuntimeWatchdogSampler(
     private fun readThread(tid: Int): ThreadSnapshot {
         val stat = readFile("/proc/$pid/task/$tid/stat")
         val sched = readFile("/proc/$pid/task/$tid/schedstat")
+        val syscall = readFile("/proc/$pid/task/$tid/syscall")
         return ThreadSnapshot(
             statTicks = stat?.let { ProcStats.cpuTicks(it) },
             schedRuntimeNs = sched?.let { ProcStats.schedRuntimeNs(it) },
+            state = stat?.let { ProcStats.stateChar(it) },
+            syscall = syscall?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
 
@@ -274,6 +295,19 @@ data class DiagSnapshot(
     val processCpuPercent: Float?,
     val mainThreadCpuPercent: Float?,
     val vcpuPercents: List<Float>?,
+    /** 主线程 stat 状态字符（R/S/D…）；停摆归因判别量，读不到为 null。 */
+    val mainState: String? = null,
+    /** 主线程 /proc syscall 原始行；归因用，读不到为 null。 */
+    val mainSyscall: String? = null,
+    /** 各 vCPU 的状态字符，与 [vcpuSyscalls] 同序；缺测为 null。 */
+    val vcpuStates: List<String?> = emptyList(),
+    val vcpuSyscalls: List<String?> = emptyList(),
+    /**
+     * 采样间隔超过 3×窗口时记录实际间隔（ms），作为进程被系统整体挂起（冻结）
+     * 的间接证据；正常节拍为 null。App 的 SELinux 域读不到 cgroup.freeze，
+     * 只能靠采样间隙推断；shell 侧确认命令见 docs/troubleshooting.md。
+     */
+    val processSuspendGapMs: Long? = null,
     val procReadable: Boolean,
     val unavailableSignals: List<String>,
 )
@@ -478,8 +512,10 @@ object VncBannerProbe {
  * 字段契约以 T4 §6.2 为准（至少含 ts_utc / vm_id / run_id / qemu_pid /
  * qmp_rtt_ms / qmp_ok / vnc_connect_ok / vnc_banner / serial_total_bytes /
  * main_thread_dticks / vcpu_dticks[] / window_anomaly）；其余字段是补充证据。
- * 采样失败一律写显式错误字段（qmp_error / vnc_error / proc_error），
- * 缺测的数值是 null 而不是 0。
+ * `main_state` / `vcpu_states[]`（stat 状态字符）与 `main_syscall` /
+ * `vcpu_syscalls[]`（/proc syscall 原始行）是停摆归因的第一手判别量：
+ * 主线程 D ⇒ 同步 I/O 阻塞，S+futex ⇒ 锁阻塞。采样失败一律写显式错误字段
+ * （qmp_error / vnc_error / proc_error），缺测的数值是 null 而不是 0。
  *
  * 这里手写序列化而不用 [AgentFeed.line]：契约要求 `vcpu_dticks` 是真正的 JSON
  * 数组，而 AgentFeed 的通用字段只接受标量或逗号分隔字符串。
@@ -501,6 +537,9 @@ object WatchdogJson {
             ?.map { it.statTicksDelta }
             ?: emptyList()
         val vcpuCpu = threads?.vcpuCpuPercents ?: emptyList()
+        val vcpuThreads = threads?.threads?.filter { it.role == ThreadRole.VCPU } ?: emptyList()
+        val vcpuStates = vcpuThreads.map { it.state }
+        val vcpuSyscalls = vcpuThreads.map { it.syscall }
 
         val fields = listOf(
             "ts_utc" to quote(Instant.ofEpochMilli(sample.epochMs).toString()),
@@ -522,10 +561,15 @@ object WatchdogJson {
             "main_cpu" to number(threads?.mainCpuPercent?.let { round1(it) }),
             "vcpu_cpu" to array(vcpuCpu.map { number(it?.let { v -> round1(v) }) }),
             "vcpu_sum" to number(threads?.vcpuSumPercent?.let { round1(it) }),
+            "main_state" to quote(threads?.mainState),
+            "vcpu_states" to array(vcpuStates.map { quote(it) }),
+            "main_syscall" to quote(threads?.mainSyscall),
+            "vcpu_syscalls" to array(vcpuSyscalls.map { quote(it) }),
             "proc_readable" to sample.procReadable.toString(),
             "proc_error" to quote(if (sample.procReadable) null else "main thread /proc unreadable"),
             "dt_ms" to number(sample.dtMs),
             "interval_ms" to sample.intervalMs.toString(),
+            "process_suspended" to (DiagContract.suspendGapMs(sample) != null).toString(),
             "seq" to seq.toString(),
             "window_anomaly" to verdict.inWindow.toString(),
             "window_id" to number(if (verdict.inWindow) verdict.windowId else null),
@@ -584,6 +628,14 @@ object DiagContract {
     private const val MAIN_STALL_THRESHOLD = 1f
     private const val SAMPLE_GAP_FACTOR = 3L
 
+    /**
+     * 采样间隔超过 3×窗口 ⇒ 进程曾被整体挂起（系统冻结的在 App 内唯一可观测
+     * 证据）；正常节拍返回 null。注意它**不是** QEMU 异常硬信号——冻结期间
+     * App 与 QEMU 同组被冻，解冻即恢复，不该据此开停摆窗口。
+     */
+    fun suspendGapMs(sample: WatchdogSample): Long? =
+        sample.dtMs?.takeIf { it > sample.intervalMs * SAMPLE_GAP_FACTOR }
+
     fun snapshot(
         vmId: String,
         runId: String,
@@ -618,6 +670,13 @@ object DiagContract {
             processCpuPercent = processCpuPercent,
             mainThreadCpuPercent = sample.threads?.mainCpuPercent,
             vcpuPercents = sample.threads?.vcpuCpuPercents?.filterNotNull()?.takeIf { it.isNotEmpty() },
+            mainState = sample.threads?.mainState,
+            mainSyscall = sample.threads?.mainSyscall,
+            vcpuStates = sample.threads?.threads
+                ?.filter { it.role == ThreadRole.VCPU }?.map { it.state } ?: emptyList(),
+            vcpuSyscalls = sample.threads?.threads
+                ?.filter { it.role == ThreadRole.VCPU }?.map { it.syscall } ?: emptyList(),
+            processSuspendGapMs = suspendGapMs(sample),
             procReadable = sample.procReadable,
             unavailableSignals = buildList {
                 if (!sample.procReadable) add("proc-main-thread")
@@ -678,14 +737,14 @@ object DiagContract {
                 }
             }
         }
-        val dt = sample.dtMs
-        if (dt != null && dt > sample.intervalMs * SAMPLE_GAP_FACTOR) {
+        val gap = suspendGapMs(sample)
+        if (gap != null) {
             events += DiagEvent(
                 epochMs = sample.epochMs,
                 kind = "SAMPLE_GAP",
                 windowMs = sample.intervalMs.toInt(),
                 consecutive = 0,
-                evidence = "采样间隔 ${dt} ms（期望 ${sample.intervalMs} ms）",
+                evidence = "采样间隔 ${gap} ms（期望 ${sample.intervalMs} ms），进程曾被整体挂起，疑似被系统冻结",
             )
         }
         return events

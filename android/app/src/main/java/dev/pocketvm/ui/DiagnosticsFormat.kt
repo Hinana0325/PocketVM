@@ -5,6 +5,10 @@ import dev.pocketvm.diagnostics.DiagEvent
 import dev.pocketvm.diagnostics.DiagSnapshot
 import dev.pocketvm.diagnostics.DiagVerdict
 import dev.pocketvm.diagnostics.DiagVncBanner
+import dev.pocketvm.diagnostics.SessionReport
+import dev.pocketvm.diagnostics.StallAttribution
+import dev.pocketvm.diagnostics.StallAttributor
+import dev.pocketvm.diagnostics.StallHypothesis
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -120,6 +124,11 @@ object DiagnosticsFormat {
         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.US)
             .format(Instant.ofEpochMilli(epochMs).atZone(zone))
 
+    /** 报表列表用的短时间；完整日期在清单、诊断包里都有。 */
+    fun formatShortDateTime(epochMs: Long, zone: ZoneId = ZoneId.systemDefault()): String =
+        DateTimeFormatter.ofPattern("MM-dd HH:mm", Locale.US)
+            .format(Instant.ofEpochMilli(epochMs).atZone(zone))
+
     fun formatQmpRtt(ms: Int?): String = when {
         ms == null -> "不可用"
         ms < 1_000 -> "$ms ms"
@@ -165,6 +174,17 @@ object DiagnosticsFormat {
             )
         } else {
             String.format(Locale.US, "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+        }
+    }
+
+    /** 启动耗时的量级跨度很大（毫秒级 QMP 握手 → 分钟级 TCG 启动），不能都按 mm:ss 显示。 */
+    fun formatDurationMs(ms: Long?): String {
+        if (ms == null) return "不可用"
+        val safe = ms.coerceAtLeast(0L)
+        return when {
+            safe < 1_000 -> "$safe ms"
+            safe < 60_000 -> String.format(Locale.US, "%.1f s", safe / 1_000.0)
+            else -> "${safe / 60_000} 分 ${(safe % 60_000) / 1_000} 秒"
         }
     }
 
@@ -250,6 +270,26 @@ object DiagnosticsFormat {
             null
         }
 
+    // ---- 停摆归因（P1 归因半侧；只读解释 Track A 证据，不重算阈值） ----
+
+    /**
+     * 停摆判定或检测到进程被挂起（采样中断）时给出归因；其余返回 null，
+     * 不强行解释正常样本。冻结归因不要求停摆判定——解冻后信号往往已恢复
+     * HEALTHY，但采样间隙仍是「刚才被冻过」的证据。
+     */
+    fun stallAttribution(snapshot: DiagSnapshot): StallAttribution? =
+        if (isStallVerdict(snapshot.verdict) || snapshot.processSuspendGapMs != null) {
+            StallAttributor.attribute(
+                mainState = snapshot.mainState,
+                mainSyscall = snapshot.mainSyscall,
+                vcpuStates = snapshot.vcpuStates,
+                vcpuSyscalls = snapshot.vcpuSyscalls,
+                suspendGapMs = snapshot.processSuspendGapMs,
+            )
+        } else {
+            null
+        }
+
     // ---- 事件（T6 §5.3 / §7.5） ----
 
     fun eventLabel(kind: String?): String = when (kind) {
@@ -303,6 +343,11 @@ object DiagnosticsFormat {
             appendLine("VNC：${vnc.state}（${vnc.value}）")
             appendLine("串口：${serial.value}（${serial.state}）")
             appendLine("主线程：${main.value}")
+            stallAttribution(snapshot)?.let {
+                val prefix = if (it.hypothesis == StallHypothesis.H4_SYSTEM_FREEZE) "冻结归因" else "停摆归因"
+                appendLine("$prefix：${it.label}——${it.conclusion}")
+                appendLine("建议：${it.suggestion}")
+            }
             appendLine("运行时长：${formatUptimeMs(snapshot.processUptimeMs)}")
             latestEvent?.let { appendLine("最近事件：${eventHeadline(it, zone)}") }
             staleNote(snapshot, nowMs)?.let { appendLine(it) }
@@ -327,6 +372,11 @@ object DiagnosticsFormat {
         appendLine("processCpuPercent=${snapshot.processCpuPercent}")
         appendLine("mainThreadCpuPercent=${snapshot.mainThreadCpuPercent}")
         appendLine("vcpuPercents=${snapshot.vcpuPercents?.joinToString(",") ?: "null"}")
+        appendLine("mainState=${snapshot.mainState}")
+        appendLine("mainSyscall=${snapshot.mainSyscall}")
+        appendLine("vcpuStates=${snapshot.vcpuStates.joinToString(",") { it ?: "null" }}")
+        appendLine("vcpuSyscalls=${snapshot.vcpuSyscalls.joinToString(",") { it ?: "null" }}")
+        appendLine("processSuspendGapMs=${snapshot.processSuspendGapMs}")
         appendLine("procReadable=${snapshot.procReadable}")
         appendLine("unavailableSignals=${snapshot.unavailableSignals.joinToString(",")}")
     }.let { if (it.length > RAW_SNAPSHOT_LIMIT) it.takeLast(RAW_SNAPSHOT_LIMIT) else it }.trimEnd()
@@ -360,6 +410,44 @@ object DiagnosticsFormat {
         manifest.failureHint?.let { appendLine("失败归因：$it") }
         appendLine("说明：本摘要来自运行清单；实时信号与事件只在 App 进程内保留，完整时间线见诊断包 watchdog.jsonl。")
     }.trimEnd()
+
+    // ---- 启动报表（聚合与成功判定都在 SessionReport，这里只做中文映射） ----
+
+    /** 启动档位原文（LaunchProfile.name；旧清单可能是小写）→ 中文标签。 */
+    fun profileLabel(raw: String?): String {
+        val key = raw?.uppercase(Locale.US) ?: return "—"
+        return when (key) {
+            "" -> "—"
+            "STANDARD" -> "标准"
+            "COMPAT" -> "兼容"
+            "MINIMAL" -> "最小"
+            "MINIMAL_NO_MEDIA" -> "最小（不挂介质）"
+            "APPLE_T8030" -> "iPhone 11"
+            else -> raw
+        }
+    }
+
+    fun sessionHeadline(
+        session: SessionReport.SessionSummary,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): String {
+        val result = if (session.succeeded) "成功" else "失败"
+        val attempt = if (session.attempts > 1) " · 第 ${session.attempts} 次尝试" else " · 首次尝试"
+        val boot = session.timeToRunningMs?.let { " · 到 RUNNING ${formatDurationMs(it)}" }.orEmpty()
+        val exit = session.finalExitCode?.let { " · exit $it" }.orEmpty()
+        return "${formatShortDateTime(session.startedAtEpochMs, zone)} · " +
+            "${profileLabel(session.finalProfile)}$attempt · $result$boot$exit"
+    }
+
+    fun sessionDetail(session: SessionReport.SessionSummary): String =
+        "CD ${session.cdTransport ?: "—"} · USB 输入 ${onOffLabel(session.usbInput)}" +
+            " · 串口 ${onOffLabel(session.serialEnabled)}"
+
+    private fun onOffLabel(value: Boolean?): String = when (value) {
+        true -> "开"
+        false -> "关"
+        null -> "—"
+    }
 
     /** 启动失败、没有运行清单时的摘要（T6 §8.3）。 */
     fun failureSummaryText(

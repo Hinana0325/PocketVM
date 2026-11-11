@@ -61,7 +61,7 @@ cd android
 
 ## 测试
 
-20 个文件共 205 个用例（2026-10-31 合并 A3a 修复后实跑：failures=0 / errors=0 / skipped=0），全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。本机无 JDK/SDK 时不要当成已通过。
+测试数量以 `:app:testDebugUnitTest` 实跑为准（2026-11-08：22 个文件 / 252 用例，failures=0 / errors=0，6 个 `qemu-img`/`qemu-io` 交叉校验用例因宿主机未装而 `assumeTrue` 跳过），全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。本机无 JDK/SDK 时不要当成已通过。
 
 `Qcow2CreatorTest` 里两个用例通过 `assumeTrue` 依赖宿主机的 `/usr/bin/qemu-img`（还有一个要求 `qemu-io`）：宿主机没装就**静默跳过**。所以「测试全绿」不等于 qcow2 格式真的被交叉校验过。
 
@@ -96,14 +96,14 @@ cd android
 - **VNC 密码不可用**：这个 QEMU 构建的加密后端不支持 DES（RFB 3.8 的 VNC 密码就是 DES），所以 `password=on` 会在启动前 exit=1；而 `ConfigValidator` 以 `VNC_LAN_UNAVAILABLE` 在启动前拦下局域网配置 ⇒ **局域网模式不可用**，只有「仅本机 + `adb forward`」是通的。要恢复局域网，得在重建执行层时编入支持 DES 的加密后端。
 - **两个很省事的工具链事实**：① shell 能直接执行 APK 里的 `libqemu-system-aarch64.so`（`/data/app/**/lib/arm64/` 是只读+可执行路径，`LD_LIBRARY_PATH` 指过去即可），不用过 App 就能验 QEMU 参数；② 每次重装 APK 都会换掉 `/data/app/~~<hash>/<pkg>-<hash>` 里的哈希，写死的路径立刻过期。
 
-**最大的未决问题：主循环停摆（可复现）**。客户机跑几分钟后，主线程睡眠、TCG 的 vCPU 线程仍在满核转，而 VNC/QMP 不再响应（监听套接字的 `Recv-Q` 堆着没人 accept 的连接）。判读工具上有个坑：**跨 UID 读 `/proc/<pid>/stat` 的 utime/stime 不可靠**（Android 对别的 UID 的聚合值会冻结或为零），要读就逐个读 `/proc/<pid>/task/<tid>/stat`。`wchan` 全是 0、`/proc/<pid>/io`、`/proc/<pid>/stack`、`debuggerd -b` 都被 SELinux/权限拒绝，所以卡死点只能靠 App 内部采。
+**主循环停摆已定位（2026-11-08 真机证实）：系统冻结，不是 QEMU 故障**。MIUI/HyperOS 的 cgroup freezer 把 App 与 QEMU 所在进程组整体冻结（`/sys/fs/cgroup/apps/uid_<uid>/pid_<pid>/cgroup.freeze=1`）：所有线程 parked（S、syscall=-1）、VNC/QMP 失联、App 看门狗同窗停采，解冻后自愈。屏幕亮着 + 前台服务也会被冻。修复：系统电池设置把 PocketVM 设「无限制」（实测持续 `freeze=0`）；App 内以采样间隙（`dtMs > 3×intervalMs`）检测并归因 H4——App 的 SELinux 域读不到 `cgroup.freeze`，只能靠间隙推断，shell 侧可 `cat` 确认。详见 `docs/troubleshooting.md`。判读工具上的坑仍在：**跨 UID 读 `/proc/<pid>/stat` 的 utime/stime 不可靠**（Android 对别的 UID 的聚合值会冻结或为零），要读就逐个读 `/proc/<pid>/task/<tid>/stat`；`wchan`/`io`/`stack`/`debuggerd -b` 被 SELinux 拒绝，卡死点只能靠 App 内部采。真正的 QEMU 内部停摆（H1/H2/H3）尚未在真机复现过——此前两次「停摆」都是冻结。
 
 ## 源码比 prose 新（别被过时说明带跑）
 
 - `docs/architecture.md` 的分层图和 ADR-004 已经改成「只产 qcow2，没有 raw 回退」；`QemuEnvironment.resolveQemuImg()` 的注释仍残留「qcow2 失败回退 raw」的旧说法（仅是注释，实现不产 raw）。以代码为准。
 - README 的「已知限制」说 VNC 只监听 `127.0.0.1`，实际存在 `VncAccess.LAN`，但校验器以 `VNC_LAN_UNAVAILABLE` 拦下它（缺少 DES 后端），所以只有「仅本机」是通的。
 - 测试数量会随分支变化；文档统一写「以 `:app:testDebugUnitTest` 实跑为准」，不要引用历史记录里的旧数字（37/67、14 文件/133 均已作废）。
-- README 的「验证状态」记录：真机启动 **已通过**（小米 14 Pro / Android 16），Windows 安装全流程 **进行中**。只认有会话证据的结论，不要把沙箱结论当成真机结论，也不要把「进行中」写成通过。
+- README 的「验证状态」记录：真机启动 **已通过**（小米 14 Pro / Android 16），Windows 安装 **已完成、首次启动/OOBE 进行中**（2026-11-08 真机：Win11 已从磁盘引导进 OOBE）。只认有会话证据的结论，不要把沙箱结论当成真机结论，也不要把「进行中」写成通过；P1 验收与 minor 升版是人类 owner 的决策（D4）。
 
 ## 仓库状态与发布
 

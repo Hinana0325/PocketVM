@@ -35,4 +35,15 @@ class RunManifestStore(private val layout: VmStorageLayout) {
             ?.filter { it.name.endsWith(".json") }
             ?.maxByOrNull { it.lastModified() }
             ?.let { runCatching { json.decodeFromString<RunManifest>(it.readText()) }.getOrNull() }
+
+    /**
+     * 一台 VM 的全部 run-*.json，最新在前；读不出的文件跳过而不是让整份报表失败。
+     * 只收 `.json`（`.watchdog.jsonl` 以 `.jsonl` 结尾，天然被排除）。
+     */
+    fun listAll(vmId: String): List<RunManifest> =
+        layout.logDir(vmId).listFiles()
+            ?.filter { it.isFile && it.name.startsWith("run-") && it.name.endsWith(".json") }
+            ?.mapNotNull { runCatching { json.decodeFromString<RunManifest>(it.readText()) }.getOrNull() }
+            ?.sortedByDescending { it.startedAtEpochMs }
+            ?: emptyList()
 }
