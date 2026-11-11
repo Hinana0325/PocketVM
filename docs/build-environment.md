@@ -10,7 +10,7 @@ PocketVM 的构建只需要 JDK 17 与 Android SDK 37；QEMU 执行层已入库�
 | 安装根目录 | `~/.local/share/pocketvm-build`（可用 `PVM_BUILD_ROOT` 覆盖） |
 | JDK | Temurin 17.0.21+9（Adoptium，固定 URL + SHA256） |
 | Android 命令 | cmdline-tools `commandlinetools-linux-11076708_latest`（固定 SHA256） |
-| SDK 平台 | `platforms;android-37` |
+| SDK 平台 | `platforms;android-37`（Preview channel，需 `sdkmanager --channel=3`；stable channel 还没有它） |
 | 构建工具 | `build-tools;36.0.0` |
 | 平台工具 | `platform-tools`（sdkmanager 取当前最新，adb 37.0.1） |
 | Gradle | 9.3.1（wrapper 自带腾讯镜像） |

@@ -31,7 +31,14 @@ jobs:
       - name: Install Android platform 37
         run: |
           yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platforms;android-37" "build-tools;36.0.0"
+          # Android 17（API 37）目前只在 Preview channel（Android Studio 里是
+          # “Android Cinnamon Bun Preview”），stable channel 还没有
+          # platforms;android-37；--channel=3（Canary，含以下所有 channel）才能装到。
+          # 见 https://developer.android.com/about/versions/17/setup-sdk
+          sdkmanager --channel=3 "platforms;android-37"
+          sdkmanager "build-tools;36.0.0"
+          # AGP 9.1.1 默认 build-tools 若为 37.x 也一并装上；37.0.0 尚不存在时不致命。
+          sdkmanager --channel=3 "build-tools;37.0.0" || echo "build-tools 37.0.0 not yet published, continuing with 36.0.0"
 
       # Unit tests are pure JVM (no Robolectric, no androidTest source set),
       # so no emulator or device is needed.

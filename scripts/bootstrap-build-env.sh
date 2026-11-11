@@ -23,7 +23,10 @@ JDK_SHA256="${PVM_JDK_SHA256:-8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1
 CMDLINE_TOOLS_URL="${PVM_CMDLINE_TOOLS_URL:-https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip}"
 CMDLINE_TOOLS_SHA256="${PVM_CMDLINE_TOOLS_SHA256:-2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258}"
 
-SDK_PACKAGES=("platform-tools" "platforms;android-37" "build-tools;36.0.0")
+# Android 17（API 37）目前只在 Preview channel（Android Studio 里是
+# “Android Cinnamon Bun Preview”），stable channel 还没有 platforms;android-37，
+# 须用 --channel=3（Canary，含以下所有 channel）安装。
+SDK_PACKAGES=("platform-tools" "build-tools;36.0.0")
 
 log()  { printf '[bootstrap] %s\n' "$*"; }
 fail() { printf '[bootstrap] 错误：%s\n' "$*" >&2; exit 1; }
@@ -88,7 +91,11 @@ export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
 # 3) SDK 组件（platform-tools 由 sdkmanager 取最新可用版本）
 yes | "$SDKMGR" --sdk_root="$SDK_DIR" --licenses >/dev/null 2>&1 || true
+"$SDKMGR" --sdk_root="$SDK_DIR" --channel=3 "platforms;android-37"
 "$SDKMGR" --sdk_root="$SDK_DIR" "${SDK_PACKAGES[@]}"
+# AGP 9.1.1 默认 build-tools 若为 37.x 也一并装上；尚不存在时不致命。
+"$SDKMGR" --sdk_root="$SDK_DIR" --channel=3 "build-tools;37.0.0" \
+    || log "build-tools 37.0.0 尚不存在，继续用 36.0.0"
 
 # 4) 环境文件（不写 shell rc，显式 source）
 cat > "$ENV_FILE" <<EOF
