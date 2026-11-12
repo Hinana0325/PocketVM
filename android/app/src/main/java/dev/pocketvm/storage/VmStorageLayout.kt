@@ -109,6 +109,8 @@ class VmStorageLayout @Inject constructor(@ApplicationContext context: Context) 
 
     fun deleteVm(vmId: String): Boolean {
         File(runDir, "${safeVmId(vmId)}.sock").delete()
+        // TPM 控制 socket 也在这里：状态目录随整目录删，不用单独删。
+        File(runDir, "${safeVmId(vmId)}.tpm.sock").delete()
         val dir = File(vmsDir, safeVmId(vmId))
         return dir.exists() && dir.deleteRecursively()
     }

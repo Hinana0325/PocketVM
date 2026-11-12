@@ -8,6 +8,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dev.pocketvm.data.VmDatabase
 import dev.pocketvm.runtime.NetworkMonitor
+import dev.pocketvm.storage.VmStorageLayout
+import dev.pocketvm.tpm.SoftwareTpmManager
+import dev.pocketvm.tpm.SoftwareTpmManagerImpl
+import dev.pocketvm.tpm.TpmStateStore
 import javax.inject.Singleton
 
 /**
@@ -22,10 +26,15 @@ import javax.inject.Singleton
  * 其余的（VmStorageLayout / VmConfigRepository / AppPreferences /
  * LastRouteStore / QemuEnvironment / FirmwareManager / IsoImporter /
  * RunManifestStore / DiagnosticsExporter / ConfigValidator /
- * DiskProvisioner / VmSession / QemuCommandBuilder / AppleCommandBuilder）
+ * DiskProvisioner / VmSession / QemuCommandBuilder / AppleCommandBuilder /
+ * TpmStateStore / TpmProcessMonitor / SoftwareTpmManagerImpl）
  * 全部是 @Inject 构造函数 + @Singleton（VmSession 是单例，其余默认
  * 未加作用域、每次注入新建——它们都是无状态的工具类，只有 VmSession
  * 持有 QEMU 进程，必须全局唯一）。
+ *
+ * [SoftwareTpmManager] 是接口：Hilt 不能凭空实例化接口，[provideTpmManager]
+ * 把 @Inject 构造的 [SoftwareTpmManagerImpl] 转成接口绑定。
+ * [TpmStateStore] 也要走 @Provides：它的两个根目录要从 [VmStorageLayout] 取。
  *
  * WorkManager 的 Configuration 不在这里提供：PocketVmApp 直接注入
  * HiltWorkerFactory 再组装（见 [dev.pocketvm.PocketVmApp]），少一层转发。
@@ -47,4 +56,17 @@ object AppModule {
     @Singleton
     fun provideNetworkMonitor(@ApplicationContext context: Context): NetworkMonitor =
         NetworkMonitor(context).also { it.start() }
+
+    /**
+     * TPM 状态目录与 socket 路径：状态落外部存储 `vms/<id>/tpm/state`，
+     * socket 落内部存储 `filesDir/internal/run/`（FUSE 建不了 unix socket）。
+     */
+    @Provides
+    @Singleton
+    fun provideTpmStateStore(layout: VmStorageLayout): TpmStateStore =
+        TpmStateStore(layout.vmsDir, layout.runDir)
+
+    @Provides
+    @Singleton
+    fun provideTpmManager(impl: SoftwareTpmManagerImpl): SoftwareTpmManager = impl
 }

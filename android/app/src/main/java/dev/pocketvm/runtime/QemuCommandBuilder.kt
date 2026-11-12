@@ -80,6 +80,15 @@ data class LaunchRequest(
     val dataDir: String? = null,
     val tmpDir: String? = null,
     val extraArgs: List<String> = emptyList(),
+    /**
+     * 是否启用软件 TPM 2.0（swtpm，阶段 2）。默认关：edk2 的 TCG2 审计是
+     * 阶段 4，没做完之前 Windows 未必认得出 TPM；Room 加列 + 设置页开关
+     * 是后续事，不要顺手做 Room migration。
+     * 只在 [tpmSocketPath] 同时具备时才生效（见 [QemuCommandBuilder.build]）。
+     */
+    val enableTpm: Boolean = false,
+    /** swtpm 控制 socket 的绝对路径；由 VmSession 在启动 swtpm 后填入。 */
+    val tpmSocketPath: String? = null,
 )
 
 /**
@@ -297,6 +306,18 @@ class QemuCommandBuilder @Inject constructor() {
         }
         args += listOf("-vnc", vncSpec)
         args += listOf("-qmp", "unix:${escapeOption(request.qmpSocketPath)},server=on,wait=off")
+
+        // 软件 TPM 2.0（阶段 2）：QEMU 连已经启动的 swtpm。两个条件缺一不可——
+        // 开关关着、或 socket 还没拿到，都不加参数，QEMU 按无 TPM 启动。
+        // 机器是 virt,highmem=on,gic-version=3，ACPI 开着（无 acpi=off），
+        // 固件才能通过 ACPI 发现 TPM 设备与 TPM2 表。
+        if (request.enableTpm && request.tpmSocketPath != null) {
+            args += listOf("-chardev", "socket,id=chrtpm,path=${escapeOption(request.tpmSocketPath)}")
+            args += listOf("-tpmdev", "emulator,id=tpm0,chardev=chrtpm")
+            // ppi=on：Windows 11 ARM64 会查 TPM Physical Presence，缺了它
+            // 会在 ACPI 里记错；ARM virt 固定用 tpm-tis-device（不是 x86 的 tpm-tis）。
+            args += listOf("-device", "tpm-tis-device,tpmdev=tpm0,ppi=on")
+        }
 
         // Serial console: lets PocketVM see (and recover from) a UEFI Shell drop.
         // The chardev is a Unix socket on internal ext4 storage, like QMP.

@@ -45,6 +45,8 @@ import dev.pocketvm.storage.FirmwareManager
 import dev.pocketvm.storage.FirmwareResult
 import dev.pocketvm.storage.QemuAssets
 import dev.pocketvm.storage.VmStorageLayout
+import dev.pocketvm.tpm.SoftwareTpmManager
+import dev.pocketvm.tpm.SoftwareTpmSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -122,6 +124,7 @@ class VmSession @Inject constructor(
     private val validator: ConfigValidator = ConfigValidator(),
     private val commandBuilder: QemuCommandBuilder = QemuCommandBuilder(),
     private val appleCommandBuilder: AppleCommandBuilder = AppleCommandBuilder(),
+    private val tpmManager: SoftwareTpmManager,
 ) {
 
     private val appContext = context.applicationContext
@@ -161,6 +164,13 @@ class VmSession @Inject constructor(
     private var watchdogJob: Job? = null
     /** 运行期性能调度器（绑核 + 温控降档）；与看门狗同生同死。 */
     private var perfScheduler: VmPerformanceScheduler? = null
+
+    /**
+     * 活动的 swtpm 会话（TPM 启用时才有）。随 VmSession 单例持有——同时
+     * 只能跑一台 VM，TPM 会话也只能有一个。赋值与取走由 [stateLock] 保护，
+     * 停止与 QEMU 退出两条路径都可能先到。
+     */
+    private var tpmSession: SoftwareTpmSession? = null
 
     /** Last CPU-tick sample; the only way to tell "running" from "wedged". */
     private var lastHealth: ProcessHealth.Sample? = null
@@ -248,7 +258,11 @@ class VmSession @Inject constructor(
         val outcome = try {
             startLocked(config)
         } catch (t: Throwable) {
-            if (!isRunning()) VmKeepAliveService.stop(appContext)
+            if (!isRunning()) {
+                // 启动半路抛错：QEMU 没跑起来时 swtpm 也不能留着。
+                runCatching { stopTpmSession() }
+                VmKeepAliveService.stop(appContext)
+            }
             throw t
         }
         if (outcome !is LaunchOutcome.Started && !isRunning()) {
@@ -484,6 +498,28 @@ class VmSession @Inject constructor(
             return@withLock fail(config.id, fileProblem, "路径位于外部存储时，请确认应用仍有存储访问权限。")
         }
 
+        // TPM（阶段 2）：默认关闭（TPM_ENABLED_BY_DEFAULT）。启用时先起 swtpm、
+        // 拿到控制 socket 再进降级阶梯；swtpm 起不来则整个启动失败，QEMU 绝不启动。
+        var tpmSocketPath: String? = null
+        if (TPM_ENABLED_BY_DEFAULT) {
+            _state.value = VmRuntimeState.Preparing(config.id, "启动 TPM（swtpm）")
+            val session = try {
+                withContext(Dispatchers.IO) { tpmManager.recover(config.id) }
+                withContext(Dispatchers.IO) { tpmManager.start(config.id) }
+            } catch (t: Throwable) {
+                AgentFeed.event("tpm.start_failed", "vm" to config.id, "error" to t.toString())
+                return@withLock fail(
+                    config.id,
+                    "TPM 启动失败：${t.message}",
+                    "swtpm 未就绪，QEMU 未启动；详见 vms/${config.id}/tpm/swtpm.log。",
+                )
+            }
+            synchronized(stateLock) { tpmSession = session }
+            tpmSocketPath = session.socketPath
+            AgentFeed.event("tpm.ready", "vm" to config.id, "socket" to session.socketPath)
+            notes += "TPM 2.0 已启用（swtpm）"
+        }
+
         // A busy VNC port fails every profile identically, which looks exactly
         // like "the emulator cannot start". Pick a free one and carry it through
         // the whole launch so the manifest and UI tell the truth.
@@ -587,6 +623,10 @@ class VmSession @Inject constructor(
                     dataDir = dataDir,
                     serialSocketPath = attemptSerial,
                     extraArgs = config.extraArgs,
+                    // TPM 默认关闭（TPM_ENABLED_BY_DEFAULT）；启用时 socket 已在
+                    // 降级阶梯之前拿到，见 startLocked 开头的 TPM 段。
+                    enableTpm = TPM_ENABLED_BY_DEFAULT,
+                    tpmSocketPath = tpmSocketPath,
                 ),
             )
 
@@ -665,6 +705,8 @@ class VmSession @Inject constructor(
                         failureHint = t.message,
                     ),
                 )
+                // QEMU 连 fork 都没起来，swtpm 也不能留着。
+                stopTpmSession()
                 // Exec failure (EACCES, ENOEXEC) will not be fixed by a smaller
                 // tb-size; stop the ladder instead of retrying it three times.
                 return@withLock fail(config.id, "无法启动 QEMU：${t.message}", t.message)
@@ -904,6 +946,8 @@ class VmSession @Inject constructor(
             "hint" to lastHint,
         )
         _state.value = VmRuntimeState.Failed(config.id, summary, lastHint ?: representativeDetail)
+        // 阶梯全败：QEMU 没跑起来，swtpm 也不能留着。
+        stopTpmSession()
         return@withLock LaunchOutcome.Failed(summary, lastHint ?: representativeDetail, cdTransport = cdTransport)
     }
 
@@ -965,6 +1009,9 @@ class VmSession @Inject constructor(
             if (monitor != null) {
                 kotlinx.coroutines.withTimeoutOrNull(10_000) { monitor.join() }
             }
+            // 停止顺序：QEMU 正常退出 → 超时强制杀（上面已做）→ 停 swtpm →
+            // 确认退出 → 删 socket → 保留状态。
+            stopTpmSession()
             // Activity 可能已经销毁，它的 collector 不会再来停服务。
             VmKeepAliveService.stop(appContext)
         }
@@ -1335,6 +1382,18 @@ class VmSession @Inject constructor(
     }
 
     /**
+     * 停 swtpm 并清掉会话引用：QEMU 退出后（正常停止或意外退出）都要走这里。
+     * 删 socket、保留状态文件；重复调用是空操作。停止与 QEMU 退出两条路径
+     * 都可能先到，取走会话引用由 [stateLock] 保护。
+     */
+    private suspend fun stopTpmSession() {
+        val session = synchronized(stateLock) { tpmSession.also { tpmSession = null } } ?: return
+        runCatching { tpmManager.stop(session) }.onFailure {
+            AgentFeed.event("tpm.stop_failed", "vm" to session.vmId, "error" to it.toString())
+        }
+    }
+
+    /**
      * 运行期看门狗：每 5 秒采一拍 QMP / VNC / 串口 / 线程 CPU 分布。
      *
      * 只观测，不重启、不改状态、不碰 argv。真机上的停摆形态是「进程活着、
@@ -1695,6 +1754,8 @@ class VmSession @Inject constructor(
             }
         }
         if (ownsSession) {
+            // QEMU 意外退出也要停 swtpm：TPM 后端没人连了，留着只是占着状态锁。
+            stopTpmSession()
             // VM 已经退出，但前台服务/唤醒锁不能等 UI 来收：Activity 被销毁时
             // collector 已经不在了，通知和 12h wakelock 会一直挂着。
             VmKeepAliveService.stop(appContext)
@@ -1912,6 +1973,13 @@ class VmSession @Inject constructor(
     }
 
     private companion object {
+        /**
+         * TPM 默认关闭：edk2 的 TCG2 审计是阶段 4，没做完之前不默认开启；
+         * Room 加列 + 设置页开关是后续事，不要顺手做 Room migration。
+         * VmSession 传 enableTpm 时用这个常量，别在调用处写死 true/false。
+         */
+        const val TPM_ENABLED_BY_DEFAULT = false
+
         /** Must exceed the floor in [ProcessHealth.stalled] or no verdict is ever reached. */
         const val HEALTH_INTERVAL_MS = 10_000L
 
