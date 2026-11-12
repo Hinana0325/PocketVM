@@ -43,7 +43,31 @@ PocketVM 自有代码（Kotlin/Compose 管理层、脚本、文档）采用 **MI
 对 Inferno 源码的本地修改与构建步骤见 [docs/inferno-android.md](docs/inferno-android.md)；
 PAT 补丁文件为 `scripts/inferno-pvm-pac-shim.S` / `.c`。
 
-### 1.3 固件：edk2 / AAVMF
+### 1.3 执行层：swtpm 0.10.2 + libtpms 0.10.2（TPM 2.0，阶段 2）
+
+| 组件 | 版本 | 许可证 | 在仓库中的形态 |
+| --- | --- | --- | --- |
+| swtpm | 0.10.2 | BSD-3-Clause | `jniLibs/arm64-v8a/libswtpm.so`（POC 的 `bin/swtpm` 改名） |
+| libtpms | 0.10.2 | BSD-3-Clause | `jniLibs/arm64-v8a/libtpms.so` |
+| libswtpm_libtpms | 0.10.2（随 swtpm） | BSD-3-Clause | `jniLibs/arm64-v8a/libswtpm_libtpms.so` |
+| GLib | 2.80.5 | LGPL-2.1-or-later | 静态嵌进 `libswtpm_libtpms.so` |
+| json-glib | 1.8.0 | LGPL-2.1-or-later | 静态嵌进 `libswtpm_libtpms.so` |
+| libtasn1 | 4.19.0 | LGPL-2.1-or-later | 静态嵌进 `libswtpm_libtpms.so` |
+| pcre2 | 10.44 | BSD-3-Clause | 静态嵌进 `libswtpm_libtpms.so` |
+| libffi | 3.4.6 | MIT | 静态嵌进 `libswtpm_libtpms.so` |
+| GMP | 6.3.0 | LGPL-3.0-or-later OR GPL-2.0-or-later | 静态嵌进 `libswtpm_libtpms.so` |
+| OpenSSL | 3.5.9 | Apache-2.0 | 静态嵌进 `libtpms.so` |
+
+构建见 [docs/third-party-sources.md](docs/third-party-sources.md) 第 3 节；Bionic 适配补丁
+（`index()`/`rindex()` 改 `strchr()`）在仓库外的 POC 目录 `patches/` 下。
+
+**待人类 owner 确认的合规疑问（不要自行下结论）：** GLib（LGPL-2.1）这次是
+静态嵌进 `libswtpm_libtpms.so` 的，不是动态链接。LGPL 对静态链接有额外义务
+（通常要提供目标文件或等效方式，让下游能重新链接修改过的库版本），本次分发
+是否满足、以及用何种方式满足，尚未定论。公开发布前须由 owner/法务确认，
+在确认之前不要把这份声明当成已合规。
+
+### 1.4 固件：edk2 / AAVMF
 
 | 组件 | 版本 | 许可证 | 在仓库中的形态 |
 | --- | --- | --- | --- |
@@ -52,7 +76,7 @@ PAT 补丁文件为 `scripts/inferno-pvm-pac-shim.S` / `.c`。
 
 随包为 64 MiB pflash 镜像；若替换固件，需同时保留上游版权与许可声明。
 
-### 1.4 Android 侧依赖
+### 1.5 Android 侧依赖
 
 | 组件 | 许可证 | 说明 |
 | --- | --- | --- |
@@ -60,7 +84,7 @@ PAT 补丁文件为 `scripts/inferno-pvm-pac-shim.S` / `.c`。
 | mwiede JSch | BSD 风格（上游声明） | SSH 控制台依赖 |
 | 其他 Maven/Gradle 依赖 | 各自上游许可证 | 完整清单可用 `./gradlew :app:dependencies` 生成，发布前补齐 |
 
-### 1.5 不分发的资源
+### 1.6 不分发的资源
 
 - Apple iOS 还原资产（kernelcache / DeviceTree / SEP / trustcache / ticket / nvram / NVMe 镜像）
   **不进仓库、不进 APK**，由用户自行导入，PocketVM 不分发。

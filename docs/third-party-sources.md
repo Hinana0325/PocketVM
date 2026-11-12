@@ -1,6 +1,6 @@
 # 第三方源码获取与重建说明
 
-本文回答一个问题：**APK 里的 QEMU / Inferno / 固件到底来自哪份源码，怎么重建**。
+本文回答一个问题：**APK 里的 QEMU / Inferno / swtpm / 固件到底来自哪份源码，怎么重建**。
 许可证清单见 [../THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
 ## 1. QEMU 11.1.2（主执行层）
@@ -67,7 +67,33 @@ libfdt/dtc 由 QEMU 源码内置；proxy-libintl 为 PocketVM 构建的 libintl 
 - 依赖源码：libtasn1 4.19.0、nettle 3.10.2、gmp 6.3.0、lzfse（构建时快照）、
   libpng 1.6.50 —— 均从各自上游发布归档获取，版本以 `docs/inferno-android.md` 为准。
 
-## 3. edk2 / AAVMF 固件
+## 3. swtpm 0.10.2 + libtpms 0.10.2（TPM 2.0，阶段 2）
+
+- 上游：swtpm <https://github.com/stefanberger/swtpm>（正式标签 `v0.10.2`），
+  libtpms <https://github.com/stefanberger/libtpms>（正式标签 `v0.10.2`）。
+  许可证均为 BSD-3-Clause（以各自源码树内的 LICENSE 为准）。
+- 构建：NDK r27c、API 30、arm64-v8a，构建脚本在仓库外
+  `~/workspace/pocketvm-swtpm-poc/build-android.sh`（阶段 1 Native POC 的产物，
+  未随仓库分发；重建前先确认它已在干净目录从头跑通过——截至阶段 2 尚未跑过）。
+  构建顺序：OpenSSL 3.5.9 → libtpms 0.10.2 → GLib 2.80.5 / json-glib 1.8.0 /
+  libtasn1 4.19.0 / pcre2 10.44 / libffi 3.4.6 / GMP 6.3.0 → swtpm 0.10.2。
+  Bionic 适配补丁（`index()`/`rindex()` 不存在，改 `strchr()`）在 POC 目录的
+  `patches/` 下。
+- 随包三文件（`android/app/src/main/jniLibs/arm64-v8a/`）：
+  `libswtpm.so`（POC 的 `bin/swtpm` 改名）、`libtpms.so`、
+  `libswtpm_libtpms.so`。三者 PT_LOAD 均按 `0x4000` 对齐，均无 RUNPATH；
+  swtpm 的 NEEDED 只有 `libswtpm_libtpms.so`、`libtpms.so` 与系统库，
+  `libswtpm_libtpms.so` 另要系统自带的 `libz.so`——运行时靠
+  `LD_LIBRARY_PATH=nativeLibraryDir` 解析。
+- 以下依赖是**静态嵌进**随包 `.so` 的（不是独立分发的文件）：
+  GLib 2.80.5（LGPL-2.1-or-later）与 json-glib 1.8.0、libtasn1 4.19.0、
+  pcre2 10.44、libffi 3.4.6、GMP 6.3.0 嵌进 `libswtpm_libtpms.so`；
+  OpenSSL 3.5.9（Apache-2.0）嵌进 `libtpms.so`。
+  静态嵌 LGPL 库的合规义务（是否需提供目标文件以便重新链接）尚未定论，
+  见 THIRD_PARTY_NOTICES.md 第 1.3 节末尾；最终法律文本由人类 owner 确认。
+- swtpm_setup / swtpm_localca 本阶段不用，未打包。
+
+## 4. edk2 / AAVMF 固件
 
 - 上游：TianoCore edk2 <https://github.com/tianocore/edk2>；平台为 ArmVirtQemu（AAVMF）。
 - 随包两份 64 MiB pflash：`QEMU_EFI-2026.08.fd.gz`（edk2 2026.08，默认）与
@@ -76,7 +102,7 @@ libfdt/dtc 由 QEMU 源码内置；proxy-libintl 为 PocketVM 构建的 libintl 
   按 ArmVirtQemu 平台构建 `QEMU_EFI.fd`。许可证为 BSD-2-Clause-Patent，
   再分发须保留版权与许可声明。
 
-## 4. 重建后的验证
+## 5. 重建后的验证
 
 ```bash
 # 1. 构建门禁（PAC 补丁、16KB 对齐）
@@ -89,7 +115,7 @@ bash scripts/verify.sh
 - 真机启动、VNC、Windows 安装等行为**以真机证据为准**，沙箱结论不等于设备结论。
 - 重建执行层是对外可见的重大变更：需 owner 确认，且不得跳过 PAC 补丁与 16 KB 对齐。
 
-## 5. 许可证文本
+## 6. 许可证文本
 
 完整许可证文本可在以下位置获取（公开发布前需随包附带全文，见 THIRD_PARTY_NOTICES 第 2 节）：
 
@@ -98,4 +124,5 @@ bash scripts/verify.sh
 - AGPL-3.0：<https://www.gnu.org/licenses/agpl-3.0.html>
 - LGPL-2.1：<https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html>
 - LGPL-3.0：<https://www.gnu.org/licenses/lgpl-3.0.html>
+- BSD-3-Clause：swtpm / libtpms 各自源码树内的 LICENSE
 - MIT：<https://opensource.org/licenses/MIT>
