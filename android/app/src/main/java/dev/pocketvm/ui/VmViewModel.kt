@@ -777,7 +777,12 @@ class VmViewModel @Inject constructor(
             }
             val appleAssets = withContext(Dispatchers.IO) {
                 data.first.filter { it.platform == VmPlatform.APPLE_T8030 }
-                    .associate { vm -> vm.id to AppleAssets.status(layout, vm.id) }
+                    .associate { vm ->
+                        // 旧版导入留下的 2 KiB sep_nvram 会在这里补到 64 KiB，
+                        // 否则列表一直显示「资源不完整」，而用户无从下手。
+                        AppleAssets.repair(layout, vm.id)
+                        vm.id to AppleAssets.status(layout, vm.id)
+                    }
             }
             val androidDisks = withContext(Dispatchers.IO) {
                 data.first.filter { it.platform == VmPlatform.ANDROID_ARM64 }

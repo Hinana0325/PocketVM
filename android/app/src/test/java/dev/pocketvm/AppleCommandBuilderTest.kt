@@ -2,31 +2,40 @@ package dev.pocketvm
 
 import dev.pocketvm.runtime.AppleCommandBuilder
 import dev.pocketvm.runtime.AppleLaunchRequest
+import dev.pocketvm.runtime.AppleRestore
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 class AppleCommandBuilderTest {
+
+    private fun request(
+        vncPort: Int = 5901,
+        cores: Int = 4,
+        memoryMb: Int = 3072,
+        extraArgs: List<String> = emptyList(),
+    ) = AppleLaunchRequest(
+        executable = "/data/app/lib/libqemu-inferno-system-aarch64.so",
+        assetDir = "/data/apple",
+        cpuCores = cores,
+        memoryMb = memoryMb,
+        vncPort = vncPort,
+        qmpSocketPath = "/data/run/vm.sock",
+        dataDir = "/data/share-ios",
+        vmName = "iPhone 11",
+        extraArgs = extraArgs,
+    )
 
     private fun args(
         vncPort: Int = 5901,
         cores: Int = 4,
         memoryMb: Int = 3072,
         extraArgs: List<String> = emptyList(),
-    ): List<String> {
-        val request = AppleLaunchRequest(
-            executable = "/data/app/lib/libqemu-inferno-system-aarch64.so",
-            assetDir = "/data/apple",
-            cpuCores = cores,
-            memoryMb = memoryMb,
-            vncPort = vncPort,
-            qmpSocketPath = "/data/run/vm.sock",
-            dataDir = "/data/share-ios",
-            vmName = "iPhone 11",
-            extraArgs = extraArgs,
-        )
-        return AppleCommandBuilder().build(request)
-    }
+    ): List<String> = AppleCommandBuilder().build(
+        request(vncPort, cores, memoryMb, extraArgs),
+    )
 
     @Test
     fun `t8030 machine carries every firmware path`() {
@@ -81,5 +90,71 @@ class AppleCommandBuilderTest {
         assertEquals("8", a[a.indexOf("-smp") + 1])
         assertEquals("1024", a[a.indexOf("-m") + 1])
         assertEquals(listOf("-d", "int"), a.takeLast(2))
+    }
+
+    @Test
+    fun `normal boot keeps the upstream command byte for byte`() {
+        val machine = args()[args().indexOf("-machine") + 1]
+        assertEquals("t8030", machine.substringBefore(','))
+        assertFalse(machine.contains("boot-mode"))
+        assertFalse(machine.contains("usb-conn"))
+        assertFalse(args().contains("-initrd"))
+        assertTrue(machine.endsWith(",kaslr-off=true"))
+    }
+
+    @Test
+    fun `restore mode adds initrd boot-mode and USBTCP redirection`() {
+        val a = AppleCommandBuilder().build(
+            request().copy(
+                restoreRamdisk = "/data/apple/038-44135-124.dmg",
+                bootMode = "enter_recovery",
+                usbConnType = "ipv4",
+                usbConnAddr = "127.0.0.1",
+                usbConnPort = 8030,
+            ),
+        )
+        val machine = a[a.indexOf("-machine") + 1]
+        assertTrue(machine.contains(",boot-mode=enter_recovery"))
+        assertTrue(machine.contains(",usb-conn-type=ipv4"))
+        assertTrue(machine.contains(",usb-conn-addr=127.0.0.1"))
+        assertTrue(machine.contains(",usb-conn-port=8030"))
+        assertTrue(machine.endsWith(",kaslr-off=true"))
+        assertEquals("/data/apple/038-44135-124.dmg", a[a.indexOf("-initrd") + 1])
+    }
+
+    @Test
+    fun `illegal boot mode and machine values are rejected`() {
+        try {
+            AppleCommandBuilder().build(request().copy(bootMode = "auto,sep-fw=/evil"))
+            fail("boot-mode 白名单没生效")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("boot-mode"))
+        }
+        try {
+            AppleCommandBuilder().build(request().copy(usbConnAddr = "127.0.0.1\nsep-fw=x"))
+            fail("机型参数没有过滤换行")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("机型参数"))
+        }
+    }
+
+    @Test
+    fun `restore usb flag parses address and port and rejects bad values`() {
+        assertEquals(
+            "192.168.31.5" to 8030,
+            AppleRestore.parseUsb("${AppleRestore.USB_PREFIX}192.168.31.5:8030"),
+        )
+        assertEquals(
+            "127.0.0.1" to 1,
+            AppleRestore.parseUsb("${AppleRestore.USB_PREFIX}127.0.0.1:1"),
+        )
+        listOf("127.0.0.1", "127.0.0.1:0", "127.0.0.1:70000", ":8030", "127.0.0.1:x")
+            .forEach { raw ->
+                assertEquals(
+                    "应该拒绝 $raw",
+                    null,
+                    AppleRestore.parseUsb(AppleRestore.USB_PREFIX + raw),
+                )
+            }
     }
 }

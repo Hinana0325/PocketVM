@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,6 +46,7 @@ import dev.pocketvm.core.model.StorageController
 import dev.pocketvm.core.model.VncAccess
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmPlatform
+import dev.pocketvm.runtime.AppleRestore
 import dev.pocketvm.storage.AppleAssets
 import dev.pocketvm.ui.theme.MonoTextStyle
 import java.io.File
@@ -207,12 +209,69 @@ fun AppleSection(draft: VmConfig, state: UiState, createVm: CreateVmViewModel) {
             onClick = { applePicker.launch(arrayOf("*/*")) },
             enabled = state.importing == null,
         ) { Text("导入还原包 zip") }
-        Text(
-            "已知限制：旧 restore 镜像与最新 Inferno 的 chip-id 补丁不兼容时，" +
-                "iOS 会在 data-protection 启动任务处 panic；需要按官方流程重新 restore。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        val restoreOn = draft.extraArgs.any { it == AppleRestore.FLAG }
+        var usbText by remember(draft.id) {
+            mutableStateOf(
+                draft.extraArgs.firstOrNull { it.startsWith(AppleRestore.USB_PREFIX) }
+                    ?.removePrefix(AppleRestore.USB_PREFIX) ?: "127.0.0.1:8030",
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("恢复模式（重做 restore）", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "挂在还原 ramdisk 上启动，等 companion 用 idevicerestore 刷机；" +
+                        "旧 restore 镜像与新版 Inferno 的 chip-id 补丁不兼容时，这是唯一解法。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = restoreOn,
+                onCheckedChange = { on ->
+                    createVm.updateDraft { cfg ->
+                        val kept = cfg.extraArgs.filterNot { it == AppleRestore.FLAG }
+                        cfg.copy(extraArgs = if (on) kept + AppleRestore.FLAG else kept)
+                    }
+                },
+            )
+        }
+        if (restoreOn) {
+            OutlinedTextField(
+                value = usbText,
+                onValueChange = { value ->
+                    usbText = value
+                    if (AppleRestore.parseUsb(AppleRestore.USB_PREFIX + value) != null) {
+                        createVm.updateDraft { cfg ->
+                            val kept = cfg.extraArgs.filterNot {
+                                it.startsWith(AppleRestore.USB_PREFIX)
+                            }
+                            cfg.copy(extraArgs = kept + AppleRestore.USB_PREFIX + value)
+                        }
+                    }
+                },
+                label = { Text("companion USB 地址（IP:端口）") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "Inferno 会用 usb-conn-type=ipv4 连这个地址；companion 端跑 " +
+                    "idevicerestore --erase --restore-mode -i 0x1122334455667788 <IPSW> -T root_ticket.der。" +
+                    "第一阶段结束后关掉虚拟机、按官方 wiki 打 InfernoFSPatcher，再关掉恢复模式启动。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                "正常启动若停在 data-protection，先看日志页的针对性诊断；" +
+                    "旧镜像需要重做 restore，偶发的 SEP 卡住则重启几次即可。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

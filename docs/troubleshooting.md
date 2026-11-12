@@ -247,6 +247,38 @@ syscall 号是 arm64 通用号（`StallAttributor.syscallName`
 IO 线程，不占主线程。用户停止前会先取消看门狗，关机过程中的 VNC/QMP 失联不会被
 记成异常窗口。
 
+## iOS / Inferno（t8030）
+
+iOS 的失败几乎都写在**串口内核日志**里，QEMU 自己常常还活着或以 0 退出。
+控制台「日志」页看 QEMU 输出，按下面第一列定位：
+
+| 日志特征 | 判读 | 处置 |
+| --- | --- | --- |
+| `boot task failure: data-protection` / `Boot task failed: data-protection` / `exited due to exit(2)` | 数据卷打不开：**旧 restore 镜像与当前 Inferno 的 chip-id 补丁不兼容**（上游 FAQ 第一条） | App 侧无解。按 `docs/inferno-android.md` 的流程重新 restore：编辑页开「恢复模式」→ companion 跑 idevicerestore → 打 InfernoFSPatcher → 关恢复模式重启。不是改启动参数能绕过的 |
+| `init_data_protection: Gigalocker file ... doesn't exist` / `Failed to initialize gigalocker: 2` | 还原的第二阶段（数据迁移）没做完，或 nvme.1 损坏（上游 issue #227/#230） | 重新 restore 或用完整镜像覆盖 nvme.1；先试重启 2–3 次排除偶发 |
+| `at24c-eeprom: Backing file size ...` | `sep_nvram` 不是精确 64 KiB | 重启一次虚拟机会自动补零（`AppleAssets.repair()`）；仍不行就重新导入还原包 |
+| `SEP Boot Failure` / `SEP ROM timeout` / `cannot find IOAESAccelerator` | SEP ROM/固件不匹配，或启动期偶发 | 先重启几次；持续失败则核对 `AppleSEPROM-Cebu-B1` 与 sep-firmware 是否来自 14.0b5 还原包 |
+| 卡在 `SEP accepted IMG4` / `skipping unencrypted volume` 附近 | 上游已知偶发（FAQ 第三条、issue #159） | 直接重启，直到过；不需要动镜像 |
+| `error: No such file or directory` 指向 `apple/` 下某个文件 | 资源不完整或过小 | 编辑页重新导入还原包 zip；状态卡片会列出缺哪几项 |
+
+**恢复模式（重做 restore）**：编辑页 → iOS 资源 → 打开开关。
+App 会额外挂 `-initrd <apple>/038-44135-124.dmg`（还原 ramdisk，导入 zip 时
+一并收下），并把 `boot-mode=enter_recovery` 与 `usb-conn-*` 加进 `-machine`。
+companion 地址默认 `127.0.0.1:8030`，可在开关下的输入框改。
+底层是 `VmConfig.extraArgs` 里的两个哨兵：
+
+```
+-pvm-apple-restore                    # 开关本体
+-pvm-apple-usb=192.168.31.5:8030     # 可选，覆盖 companion 地址
+```
+
+`startApple` 会把它们翻译成真正的 QEMU 参数，不会把哨兵透传给 QEMU。
+正常启动时命令行与官方脚本逐字一致，恢复模式是唯一的例外。
+
+> 口径：目前只做到「能进 iOS 内核、能定位到 data-protection」，
+> **没有到 SpringBoard / 桌面**。旧镜像的兼容问题属于上游 restore 流程，
+> 不是 Android 移植引入的，也不是 App 参数拼错。
+
 ## 抓诊断
 
 控制台 → 导出诊断包，得到 zip：`device.txt`、`qemu-probe.txt`、`config.json`、每次运行的

@@ -297,6 +297,7 @@ class CreateVmViewModel @AssistedInject constructor(
         if (config.platform == VmPlatform.APPLE_T8030) {
             viewModelScope.launch {
                 val status = withContext(Dispatchers.IO) {
+                    AppleAssets.repair(layout, config.id)
                     AppleAssets.status(layout, config.id)
                 }
                 val issues = buildList {

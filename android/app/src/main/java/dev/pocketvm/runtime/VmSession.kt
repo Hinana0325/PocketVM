@@ -1563,6 +1563,13 @@ class VmSession @Inject constructor(
         )
 
         _state.value = VmRuntimeState.Preparing(config.id, "检查 iOS 资源")
+        // 旧版导入 / 手工拷进来的 sep_nvram 只有 2 KiB，Inferno 的 at24c-eeprom
+        // 要求精确 64 KiB；启动前先自愈，避免用户被迫重新导入 24 GB 还原包。
+        val repairNote = withContext(Dispatchers.IO) { AppleAssets.repair(layout, config.id) }
+        if (repairNote != null) {
+            preflightNote = repairNote
+            AgentFeed.event("apple.repair", "vm" to config.id, "note" to repairNote)
+        }
         val assetProblems = withContext(Dispatchers.IO) { AppleAssets.validate(layout, config.id) }
         if (assetProblems.isNotEmpty()) {
             return fail(
@@ -1571,7 +1578,40 @@ class VmSession @Inject constructor(
                 "在编辑页点「导入 iOS 资源包」，选择包含 nvme.1 / kernelcache 的还原包 zip。",
             )
         }
+        val appleDir = AppleAssets.dir(layout, config.id)
         val rootDisk = AppleAssets.file(layout, config.id, AppleAssets.ROOT_DISK)
+
+        // 恢复模式：extraArgs 里的哨兵翻译成 -initrd / boot-mode / companion USB。
+        // 这是重做 restore 的入口（旧镜像与新版 Inferno 的 chip-id 补丁不兼容时唯一的正路）。
+        val restoreRequested = config.extraArgs.any { it == AppleRestore.FLAG }
+        val restoreRamdisk = File(appleDir, AppleAssets.RESTORE_RAMDISK)
+        if (restoreRequested && !restoreRamdisk.isFile) {
+            return fail(
+                config.id,
+                "恢复模式需要还原 ramdisk（${AppleAssets.RESTORE_RAMDISK}），但没有找到。",
+                "在编辑页重新导入还原包 zip；新版 App 会把还原 ramdisk 一并收进 apple/ 目录。",
+            )
+        }
+        val usbArg = config.extraArgs.firstOrNull { it.startsWith(AppleRestore.USB_PREFIX) }
+        val usb = usbArg?.let { AppleRestore.parseUsb(it) }
+        if (usbArg != null && usb == null) {
+            return fail(
+                config.id,
+                "companion 地址格式不对：$usbArg",
+                "应写成 ${AppleRestore.USB_PREFIX}<IP>:<端口>，例如 ${AppleRestore.USB_PREFIX}127.0.0.1:8030。",
+            )
+        }
+        val passedExtraArgs = config.extraArgs.filterNot {
+            it == AppleRestore.FLAG || it.startsWith(AppleRestore.USB_PREFIX)
+        }
+        if (restoreRequested) {
+            AgentFeed.event(
+                "apple.restore",
+                "vm" to config.id,
+                "ramdisk" to restoreRamdisk.absolutePath,
+                "usb" to "${usb?.first ?: "127.0.0.1"}:${usb?.second ?: 8030}",
+            )
+        }
         val share = withContext(Dispatchers.IO) { QemuAssets.ensureIosShare(appContext, layout) }
             ?: return fail(
                 config.id,
@@ -1600,7 +1640,12 @@ class VmSession @Inject constructor(
                 qmpSocketPath = socket.absolutePath,
                 dataDir = share.absolutePath,
                 vmName = config.name,
-                extraArgs = config.extraArgs,
+                restoreRamdisk = if (restoreRequested) restoreRamdisk.absolutePath else null,
+                bootMode = if (restoreRequested) "enter_recovery" else null,
+                usbConnType = if (restoreRequested) "ipv4" else null,
+                usbConnAddr = if (restoreRequested) (usb?.first ?: "127.0.0.1") else null,
+                usbConnPort = if (restoreRequested) (usb?.second ?: 8030) else null,
+                extraArgs = passedExtraArgs,
             ),
         )
         val manifest = RunManifest(
@@ -1857,9 +1902,35 @@ class VmSession @Inject constructor(
      */
     private fun applePanicHint(log: String): String? {
         val lines = log.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        lines.firstOrNull { it.contains("panic(", ignoreCase = true) }?.let { return it.take(300) }
-        lines.firstOrNull { it.contains("Boot task failed", ignoreCase = true) }?.let { return it.take(300) }
-        lines.firstOrNull { it.contains("Missing emulator branding") }?.let { return it.take(300) }
+        fun first(vararg needles: String): String? = lines.firstOrNull { line ->
+            needles.any { line.contains(it, ignoreCase = true) }
+        }
+
+        // 先按「能给出具体动作」的特征匹配，再退回落原始 panic 行。
+        first(
+            "boot task failure: data-protection",
+            "Boot task failed: data-protection",
+            "exited due to exit(2)",
+        )?.let { line ->
+            return "$line\n→ 数据卷打不开：旧 restore 镜像与当前 Inferno 的 chip-id 补丁不兼容。" +
+                "App 侧修不了，需按官方流程重新 restore（编辑页打开「恢复模式」+ companion idevicerestore，" +
+                "随后打 InfernoFSPatcher）。若日志里同时出现 Gigalocker / xarts，也可能是还原没做完或磁盘损坏。"
+        }
+        first("Gigalocker", "init_data_protection")?.let { line ->
+            return "$line\n→ /private/xarts 下的 Gigalocker 文件缺失，说明还原的第二阶段（数据迁移）没完成或系统盘损坏；" +
+                "重新 restore，或用完整镜像覆盖 nvme.1。"
+        }
+        first("at24c-eeprom", "Backing file size")?.let { line ->
+            return "$line\n→ sep_nvram 必须是精确 64 KiB。重启一次虚拟机会自动补零；" +
+                "仍不行就在编辑页重新导入还原包。"
+        }
+        first("SEP Boot Failure", "SEP ROM timeout", "cannot find IOAESAccelerator")?.let { line ->
+            return "$line\n→ SEP ROM / 固件不匹配，或只是启动期偶发。先重启几次；" +
+                "持续失败则检查 AppleSEPROM-Cebu-B1 与 sep-firmware 是否来自 14.0b5 还原包。"
+        }
+        first("panic(")?.let { return it.take(300) }
+        first("Boot task failed")?.let { return it.take(300) }
+        first("Missing emulator branding")?.let { return it.take(300) }
         return null
     }
 

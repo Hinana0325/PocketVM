@@ -105,8 +105,40 @@ Inferno 是 GPLv3（QEMU 衍生部分）+ AGPLv3（项目自有代码）的混�
 `nstype=8`）。iOS 资源（kernelcache/SEP/nvme.1）受 Apple EULA 约束，不进 APK，
 由用户在编辑页导入还原包 zip。
 
-**已知限制**：旧 restore 镜像与当前 Inferno 的 chip-id 补丁不兼容时，launchd 的
-`data-protection` 任务 exit(2)，内核打印
-`userspace panic: boot task failure: data-protection`。官方 FAQ 要求用最新代码
-重新 restore（companion VM + idevicerestore + 14.0b5 IPSW）并打
-InfernoFSPatcher；与 Android 移植无关。
+## 为什么旧镜像起不来（2026-11-12 复核）
+
+真机上稳定复现的失败点（0.10.26 起）：
+
+```
+com.apple.xpc.launchd[1] <Emergency>: Boot task failed: data-protection
+panic(cpu 1 caller 0xfffffff008128668): "userspace panic: boot task failure:
+data-protection - exited due to exit(2)"
+```
+
+上游 FAQ 第一条给出的原因：chip-id hack 被移除、换成一条指令补丁后，
+**数据卷与 chip identifier 绑定关系变了**，已有 restore 镜像因此打不开。
+同一族日志还有上游 issue #227/#230 的 `init_data_protection: Gigalocker file
+(/private/xarts/<UUID>.gl) doesn't exist`，指向还原第二阶段（数据迁移）没做完
+或系统盘损坏。维护者对 #230/#159 的答复都是「重启几次 + 看 FAQ」，说明
+**卡在 SEP accepted IMG4 / skipping unencrypted volume 附近属于偶发**，重启可解；
+但 `data-protection` 这种确定性 panic 不是 App 参数能修的。
+
+结论与口径：
+
+- 启动命令本身与官方 `iphone_startup.sh` 逐字对齐（7 个 namespace、
+  `apple-nvram` 挂 nsid=5、`nvme.7` 用 `nstype=8`），不是参数拼错。
+- **App 侧修不了旧镜像**。唯一正路是按官方 wiki 用最新代码重新 restore：
+  companion VM + `idevicerestore --erase --restore-mode -i 0x1122334455667788
+  <14.0b5 IPSW> -T root_ticket.der`，一阶段结束后关虚拟机、打
+  InfernoFSPatcher，再完成数据迁移。
+- 为此 App 在编辑页提供「恢复模式」开关：打开后 `startApple` 挂
+  `-initrd <apple>/038-44135-124.dmg`、加
+  `boot-mode=enter_recovery,usb-conn-type=ipv4,usb-conn-addr=<IP>,usb-conn-port=<端口>`。
+  开关走 `VmConfig.extraArgs` 的哨兵 `-pvm-apple-restore`（地址用
+  `-pvm-apple-usb=<IP>:<端口>` 覆盖，默认 `127.0.0.1:8030`），不改 Room 表结构。
+  正常启动时这些参数一个都不出现。
+- `sep_nvram` 必须**精确 64 KiB**：Inferno 的 `at24c-eeprom` 会按定值校验后盾文件，
+  旧还原包给的是 2 KiB。`AppleAssets` 在导入时补零、启动前再做一次幂等自愈
+  （`repair()`），否则用户得为 62 KiB 重新导入 24 GB 还原包。
+- 别把「能进 iOS 内核 / 能到 data-protection」写成「iOS 已经能启动」。
+  `docs/troubleshooting.md` 有按日志特征分流的排障表。
