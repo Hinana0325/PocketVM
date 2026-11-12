@@ -243,6 +243,7 @@ fun AppNavHost(
                     onGuestCombo = { codes -> vm.sendGuestCombo(target.id, codes) },
                     onGuestText = { text -> vm.typeGuestText(target.id, text) },
                     onBootFromShell = { vm.bootFromShell(target.id) },
+                    onSerialSend = { text, enter -> vm.sendSerial(target.id, text, enter) },
                     onSshConnect = vm::sshConnect,
                     onSshDisconnect = vm::sshDisconnect,
                     onSshRun = vm::sshRun,

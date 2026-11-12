@@ -10,6 +10,7 @@ import dev.pocketvm.data.VmConfigRepository
 import dev.pocketvm.diagnostics.RunManifestStore
 import dev.pocketvm.runtime.NetworkMonitor
 import dev.pocketvm.runtime.QemuEnvironment
+import dev.pocketvm.runtime.SerialConsoleInput
 import dev.pocketvm.runtime.VmSessionHost
 import dev.pocketvm.storage.DiskProvisioner
 import dev.pocketvm.storage.FirmwareManager
@@ -639,6 +640,23 @@ class VmViewModel @Inject constructor(
                     lastGuestKeyOk = ok,
                     lastGuestKeyAtEpochMs = System.currentTimeMillis(),
                 )
+            }
+        }
+    }
+
+    /** 串口终端输入：只在串口已连接时发送；失败给出可操作提示。 */
+    fun sendSerial(vmId: String, text: String, appendEnter: Boolean = true) {
+        val payload = SerialConsoleInput.payload(text, appendEnter) ?: return
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { sessions.serialSend(vmId, payload) }
+            if (ok) {
+                refreshLog(vmId)
+            } else {
+                _ui.update {
+                    it.copy(
+                        notice = "串口未连接：确认虚拟机在运行，且客户机把控制台放在串口（Linux: console=ttyAMA0；Windows 需开 EMS）",
+                    )
+                }
             }
         }
     }

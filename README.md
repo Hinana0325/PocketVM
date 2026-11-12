@@ -23,6 +23,7 @@
 | 快照与备份（qcow2 内部快照 + UEFI 变量 / TPM 副本，仅停止状态） | 已实现，含单测；真机验证待做 |
 | GSI 组件拼装（kernel/ramdisk/system/vendor → GPT 物理分区盘，实验） | 已实现，含单测；启动链与显示未打通 |
 | 多机同跑（每台独立 QEMU 进程 / 独立 VNC 端口 + 内存预算） | 已实现，含单测；真机验证待做 |
+| 客户机串口控制台（`-serial unix` 交互式读写；Linux `console=ttyAMA0` 可用，Windows 需开 EMS） | 已实现，含单测 |
 | VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`，P1 决策已下线该入口） |
 | GPU / KVM 加速 | 不在范围 |
 
@@ -410,6 +411,7 @@ docs/                       架构、排障、打包与推送、第三方许可�
   DES 支持留到未来重建 QEMU 时再做。校验器的 `VNC_LAN_UNAVAILABLE` 保留为兜底。
 - ISO 会被完整复制一份（`content://` 无法跨进程传给 QEMU），请预留 5–6 GB。
 - 多机同跑（第一版）：每台 VM 一个独立 QEMU 进程与 VNC 端口；同时启动受设备内存预算（系统保留 1 GB）约束；控制台与诊断页一次聚焦一台（进入页面即切换）。
+- **SPICE 控制台不可用**：执行层没有编入 spice-server（`DT_NEEDED` 只有 z / pixman / slirp / glib / m / libc，无 `spice_server_*` 符号），App 也没有 SPICE 客户端；要恢复需重建执行层并移植客户端。控制台可用通道是 VNC（仅本机）、SSH 与**客户机串口**（Linux 可用，Windows 需自行开 EMS）。
 - minSdk 30：执行层以 API 30 为目标编译（`memfd_create` 的下限）。
 - 未做快照/回滚；改配置前请自行备份 `disk.qcow2`。
 

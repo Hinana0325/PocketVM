@@ -100,6 +100,9 @@ class VmSessionHost @Inject constructor(
     fun readSerialTail(vmId: String, maxLines: Int = 120): String =
         sessionOrNull(vmId)?.readSerialTail(vmId, maxLines) ?: ""
 
+    fun serialSend(vmId: String, text: String): Boolean =
+        sessionOrNull(vmId)?.serialSend(text) == true
+
     suspend fun start(config: VmConfig): LaunchOutcome {
         if (isRunning(config.id)) {
             return LaunchOutcome.Failed("这台虚拟机已经在运行。")

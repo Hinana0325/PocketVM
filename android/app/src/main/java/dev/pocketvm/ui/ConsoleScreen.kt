@@ -111,6 +111,7 @@ fun ConsoleScreen(
     onGuestCombo: (List<String>) -> Unit,
     onGuestText: (String) -> Unit,
     onBootFromShell: () -> Unit,
+    onSerialSend: (String, Boolean) -> Unit,
     onSshConnect: (String, Int, String, String) -> Unit,
     onSshDisconnect: () -> Unit,
     onSshRun: (String) -> Unit,
@@ -289,6 +290,7 @@ fun ConsoleScreen(
                 serialScroll = serialScroll,
                 onToggleArgv = { showArgv = !showArgv },
                 onToggleFollow = { followLog = !followLog },
+                onSerialSend = onSerialSend,
             )
             2 -> PerformanceTab(state = state, running = running)
             3 -> SshTab(
@@ -1214,7 +1216,9 @@ private fun LogsTab(
     serialScroll: androidx.compose.foundation.ScrollState,
     onToggleArgv: () -> Unit,
     onToggleFollow: () -> Unit,
+    onSerialSend: (String, Boolean) -> Unit,
 ) {
+    var serialInput by remember { mutableStateOf("") }
     val clipboard = LocalClipboardManager.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1242,6 +1246,29 @@ private fun LogsTab(
                         .padding(10.dp)
                         .verticalScroll(serialScroll),
                 )
+                if (running) {
+                    OutlinedTextField(
+                        value = serialInput,
+                        onValueChange = { serialInput = it.take(500) },
+                        label = { Text("串口输入（Linux: console=ttyAMA0；Windows 需开 EMS）") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                onSerialSend(serialInput, true)
+                                serialInput = ""
+                            },
+                            enabled = serialInput.isNotEmpty(),
+                        ) { Text("发送 + 回车") }
+                        OutlinedButton(
+                            onClick = { onSerialSend(serialInput, false) },
+                            enabled = serialInput.isNotEmpty(),
+                        ) { Text("仅发送") }
+                        TextButton(onClick = { onSerialSend("", true) }) { Text("只发回车") }
+                    }
+                }
             }
         }
 

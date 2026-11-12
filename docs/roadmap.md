@@ -52,7 +52,7 @@ PocketVM 不只是一个“在手机上运行 Windows 的 QEMU 启动器”，�
 | Hardware Manager | CPU、内存、磁盘、网络、显示配置 | 已有配置与校验，需补多架构硬件模板 |
 | Acceleration | KVM、Hypervisor、Virtio、图形加速 | **只读探测已实现**（2026-11-12，`AccelerationProbe` + 诊断中心「硬件加速」卡 + 调试接口 `/diagnostics`）；KVM 接入未做，TCG 仍是唯一执行路径 |
 | Snapshot | 快照、恢复、备份 | **第一版已实现**（2026-11-12）：qcow2 内部快照（秒级，不复制整盘）+ vars.fd / TPM 副本，恢复前自动保险快照；仅 VM 停止时可用；真机验证待做 |
-| Console | VNC、SPICE、串口、远程桌面 | VNC（仅本机）与 SSH 已有；SPICE、串口未做；局域网 VNC 入口已下线（D1=B） |
+| Console | VNC、SPICE、串口、远程桌面 | VNC（仅本机）与 SSH 已有；**客户机串口控制台已实现**（2026-11-12：`-serial unix` 交互式读写，Linux `console=ttyAMA0` 可用，Windows 需开 EMS）；**SPICE 不可用**：执行层未编入 spice-server、App 无客户端，需重建执行层+移植客户端；局域网 VNC 入口已下线（D1=B） |
 | Debug API | 本机只读 HTTP：状态/日志/诊断/快照 | 已实现（`127.0.0.1:18080`，默认关，需 token；真机联调待做） |
 
 ## 5. 硬件抽象层（最值得做的部分）

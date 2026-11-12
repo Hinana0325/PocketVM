@@ -169,6 +169,10 @@ class VmSession @Inject constructor(
      */
     private var tpmSession: SoftwareTpmSession? = null
 
+    /** 串口交互控制台的输出流；由 serial watcher 持有，断开时清空。 */
+    @Volatile
+    private var serialOut: java.io.OutputStream? = null
+
     /** Last CPU-tick sample; the only way to tell "running" from "wedged". */
     private var lastHealth: ProcessHealth.Sample? = null
 
@@ -455,9 +459,10 @@ class VmSession @Inject constructor(
         // Control channel and file access are profile-independent: check once.
         val socket = layout.qmpSocket(config.id).also { it.delete() }
 
-        // Serial console (firmware + guest output). Only attached when a CD is in
-        // play, because it is what lets us auto-recover from a UEFI Shell drop.
-        val serialSocketPath = if (config.serialRecovery && config.bootFromCd && iso != null) {
+        // Serial console (firmware + guest output + 交互式控制台). 只要串口恢复
+        // 开着就挂 unix socket：除了 UEFI Shell 自愈，还供控制台的串口终端读写。
+        // 对 Windows 无副作用（客户机不往串口写）；Linux 用 console=ttyAMA0 即可用。
+        val serialSocketPath = if (config.serialRecovery) {
             layout.serialSocket(config.id).also { it.delete() }.absolutePath
         } else {
             null
@@ -1100,6 +1105,7 @@ class VmSession @Inject constructor(
 
             val input = socket.inputStream
             val output = socket.outputStream
+            serialOut = output
             serialWatcherLive.set(true)
             AgentFeed.event("serial.connected", "path" to path)
             runCatching { socket.soTimeout = 1500 }
@@ -1214,6 +1220,7 @@ class VmSession @Inject constructor(
                 // a FATAL EXCEPTION that takes the app down with it.
                 AgentFeed.event("serial.error", "path" to path, "error" to t.toString())
             } finally {
+                serialOut = null
                 serialWatcherLive.set(false)
                 // 0 bytes means the guest never wrote a single character to the
                 // console — the signature of a launch that died before firmware ran.
@@ -1228,6 +1235,21 @@ class VmSession @Inject constructor(
                 runCatching { socket.close() }
             }
         }
+    }
+
+    /** 串口终端是否已连上（QEMU 侧 socket 建立且 watcher 持有输出流）。 */
+    fun isSerialConnected(): Boolean = serialOut != null
+
+    /**
+     * 控制台串口输入：直接写进客户机串口（Linux console=ttyAMA0 可用；
+     * Windows 默认不消费串口，需自行开 EMS）。返回 false 表示串口未连接。
+     */
+    fun serialSend(text: String): Boolean {
+        val out = serialOut ?: return false
+        return runCatching {
+            out.write(text.toByteArray(Charsets.US_ASCII))
+            out.flush()
+        }.isSuccess
     }
 
     /** Writes [text] to the guest's serial input as keystrokes. */
