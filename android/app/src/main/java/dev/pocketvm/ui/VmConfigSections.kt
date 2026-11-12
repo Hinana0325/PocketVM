@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -21,16 +22,20 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.pocketvm.core.config.Issue
+import dev.pocketvm.gsi.GsiAssembler
 import dev.pocketvm.core.config.Severity
 import dev.pocketvm.core.model.CdTransport
 import dev.pocketvm.core.model.DisplayDevice
@@ -244,6 +249,80 @@ fun AndroidDiskSection(draft: VmConfig, state: UiState, createVm: CreateVmViewMo
                 "的拼装还在实验阶段，目前请优先使用可直接启动的完整镜像。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        GsiAssemblyCard(vmId = draft.id)
+    }
+}
+
+/**
+ * GSI 组件拼装（实验）：导入 kernel/ramdisk/system/vendor，拼一张 GPT 物理分区盘
+ * （metadata/system/vendor/userdata）并转换成 qcow2。只做拼装，不承诺启动成功。
+ */
+@Composable
+private fun GsiAssemblyCard(vmId: String, vm: GsiViewModel = hiltViewModel()) {
+    LaunchedEffect(vmId) { vm.attach(vmId) }
+    val st by vm.state.collectAsState()
+    var confirmReplace by remember { mutableStateOf(false) }
+
+    Text(
+        "GSI 拼装（实验）：只生成 GPT 物理分区盘（不做 dm-super）。" +
+            "启动链（first-stage fstab / boot_devices）与显示（goldfish HAL）尚未打通，结果主要用于实验与导出。",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    GsiAssembler.Component.entries.forEach { component ->
+        val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+            uri?.let { vm.import(component, it) }
+        }
+        val size = st.components[component] ?: 0L
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(component.label, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    if (size > 0) "${component.hint} · 已导入 ${size / (1024 * 1024)} MB"
+                    else "${component.hint} · 未导入",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedButton(
+                onClick = { picker.launch(arrayOf("*/*")) },
+                enabled = !st.busy,
+            ) { Text(if (size > 0) "重新导入" else "导入") }
+        }
+    }
+
+    Button(
+        onClick = { if (st.diskExists) confirmReplace = true else vm.assemble(2, false) },
+        enabled = !st.busy,
+    ) { Text(if (st.busy) "拼装中…" else "拼装系统盘（替换现有磁盘）") }
+
+    st.progress?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+    }
+    st.notice?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        TextButton(onClick = vm::clearNotice) { Text("知道了") }
+    }
+
+    if (confirmReplace) {
+        AlertDialog(
+            onDismissRequest = { confirmReplace = false },
+            title = { Text("替换现有磁盘？") },
+            text = { Text("这台虚拟机已有磁盘，拼装会覆盖为新的 GSI 分区盘（旧盘不可恢复）。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmReplace = false
+                    vm.assemble(2, true)
+                }) { Text("替换") }
+            },
+            dismissButton = { TextButton(onClick = { confirmReplace = false }) { Text("取消") } },
         )
     }
 }
