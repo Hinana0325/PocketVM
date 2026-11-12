@@ -1,0 +1,52 @@
+name: APK (branch)
+
+# 只给分支验证打 debug APK 用：跑完在 Actions 里留一个 artifact 供下载。
+# 不发 Release、不打 tag、不动 main。正式包只走 release.yml（打 tag v* 才触发）。
+
+on:
+  push:
+    branches:
+      - tpm-phase2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK 37
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android platform 37
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          # API 37 带 minor 版本：仓库里只有 android-37.0/37.1/37.2，没有裸的
+          # android-37，写错就报 "Failed to find package"（已踩两次）。AGP 9.1.1 的
+          # build-tools 仍钉在 36.0.0，不跟 compileSdk 走。
+          # --channel=3（Canary，含以下所有 channel）是保险：37.0 可能还在
+          # Preview channel，未进 stable。
+          sdkmanager --channel=3 "platforms;android-37.0" "build-tools;36.0.0"
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-tpm-phase2
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
