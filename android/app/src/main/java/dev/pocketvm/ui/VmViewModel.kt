@@ -156,6 +156,7 @@ class VmViewModel @Inject constructor(
     private val firmwareManager: FirmwareManager,
     private val layout: VmStorageLayout,
     private val diskProvisioner: DiskProvisioner,
+    private val cloner: dev.pocketvm.storage.VmCloner,
     private val manifests: RunManifestStore,
     private val networkMonitor: NetworkMonitor,
 ) : ViewModel() {
@@ -386,6 +387,26 @@ class VmViewModel @Inject constructor(
                 serial = vmId?.let { sessions.readSerialTail(it) } ?: "",
                 argv = vmId?.let { id -> sessions.currentRun(id)?.argv } ?: it.argv,
             )
+        }
+    }
+
+    /** 复制虚拟机：停止状态下复制磁盘/变量/TPM，新名称自动去重。 */
+    fun cloneVm(vmId: String) {
+        viewModelScope.launch {
+            val vm = configRepository.load(vmId) ?: return@launch
+            _ui.update { it.copy(busy = true, notice = "正在复制虚拟机（磁盘转换可能需要几分钟）…") }
+            val names = _ui.value.vms.map { it.name }
+            val result = cloner.clone(vm, names)
+            refresh()
+            _ui.update {
+                it.copy(
+                    busy = false,
+                    notice = result.fold(
+                        onSuccess = { copy -> "已复制为「${copy.name}」" },
+                        onFailure = { e -> "复制失败：${e.message}" },
+                    ),
+                )
+            }
         }
     }
 

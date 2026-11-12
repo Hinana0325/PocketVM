@@ -207,6 +207,7 @@ fun AppNavHost(
                     onOpenSnapshots = {
                         navController.navigate(VmSnapshots(vmId)) { launchSingleTop = true }
                     },
+                    onClone = { vm.cloneVm(vmId) },
                     onOpenDiagnostics = {
                         navController.navigate(VmDiagnostics(vmId)) { launchSingleTop = true }
                     },

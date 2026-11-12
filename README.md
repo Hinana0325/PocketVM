@@ -24,6 +24,7 @@
 | GSI 组件拼装（kernel/ramdisk/system/vendor → GPT 物理分区盘，实验） | 已实现，含单测；启动链与显示未打通 |
 | 多机同跑（每台独立 QEMU 进程 / 独立 VNC 端口 + 内存预算） | 已实现，含单测；真机验证待做 |
 | 客户机串口控制台（`-serial unix` 交互式读写；Linux `console=ttyAMA0` 可用，Windows 需开 EMS） | 已实现，含单测 |
+| VM 复制（停止状态：qemu-img 转干净 qcow2 + 变量/TPM 复制，名称自动去重） | 已实现，含单测；真机验证待做 |
 | VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`，P1 决策已下线该入口） |
 | GPU / KVM 加速 | 不在范围 |
 

@@ -56,6 +56,7 @@ fun VmDetailScreen(
     onOpenConsole: () -> Unit,
     onOpenConfig: () -> Unit,
     onOpenSnapshots: () -> Unit,
+    onClone: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenConnection: () -> Unit,
     onStart: () -> Unit,
@@ -69,6 +70,7 @@ fun VmDetailScreen(
         ?.value as? VmRuntimeState.Running
     val metrics = state.metricsByVm[vm.id]
     var confirmDelete by remember { mutableStateOf(false) }
+    var confirmClone by remember { mutableStateOf(false) }
 
     if (confirmDelete) {
         AlertDialog(
@@ -94,6 +96,23 @@ fun VmDetailScreen(
             dismissButton = {
                 TextButton(onClick = { confirmDelete = false }) { Text("取消") }
             },
+        )
+    }
+
+    if (confirmClone) {
+        AlertDialog(
+            onDismissRequest = { confirmClone = false },
+            title = { Text("复制「${vm.name}」？") },
+            text = {
+                Text(
+                    "会生成一台新虚拟机（名称自动加「副本」），复制系统盘、UEFI 变量与 TPM 状态；" +
+                        "磁盘转换可能需要几分钟，期间请不要退出。源虚拟机的运行历史与快照不复制。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmClone = false; onClone() }) { Text("复制") }
+            },
+            dismissButton = { TextButton(onClick = { confirmClone = false }) { Text("取消") } },
         )
     }
 
@@ -193,6 +212,11 @@ fun VmDetailScreen(
                     label = "配置",
                     summary = "处理器 / 内存 / 存储 / 设备 / 运行环境",
                     onClick = onOpenConfig,
+                )
+                DetailEntry(
+                    label = "复制虚拟机",
+                    summary = "复制系统盘 / 变量存储 / TPM（需停止；磁盘转换需几分钟）",
+                    onClick = { confirmClone = true },
                 )
                 DetailEntry(
                     label = "快照与备份",
