@@ -25,13 +25,16 @@ PocketVM：在未 Root 的 arm64 Android 手机上用 QEMU TCG 跑 Windows ARM64
 - Inferno 的 Android 构建在 WSL Alpine：NDK r27c，依赖 glib 2.80.5 / pixman 0.44.2 / libslirp 4.8.0 / libtasn1 4.19 / nettle 3.10.2 + gmp 6.3.0 / lzfse / libpng16。bionic 的 `sigsetjmp` 会跨线程 SIGILL，Inferno 用源码级替换（`util/pvm-pac-shim.S`，只在 Android 交叉编译时加入）；开机图路径用环境变量 `PVM_BOOTSPLASH` 覆盖（APK 里没有安装前缀）。这两处是源码补丁，重建前先确认还在。
 - iOS 资源（kernelcache / DeviceTree / SEP / trustcache / ticket / nvram / nvme.1–7）**不进仓库、不进 APK**：Apple 版权 + 25.8 GB 系统盘。走编辑页「导入还原包 zip」，落在 `vms/<id>/apple/`。
 - `nvme.7` 必须挂成 `nsid=7,nstype=8`（panic log），写成 7 内核会找不到 panic log；`sep_nvram` 必须是 64 KiB（旧还原包给 2 KiB，导入时补零）。
-- 已知限制：旧 restore 镜像与最新 Inferno 的 chip-id 补丁不兼容时，launchd 的 `data-protection` 启动任务 exit(2)，内核 `userspace panic: boot task failure: data-protection`。官方 FAQ 要求用最新代码重新 restore（companion VM + idevicerestore + 14.0b5 IPSW）并打 InfernoFSPatcher；这不是 Android 移植引入的问题。
+- **iOS 现状（2026-11-12 复核，别写成「iOS 已经能启动」）**：启动命令与官方 `iphone_startup.sh` 逐字对齐；真机稳定卡在 `panic(... userspace panic: boot task failure: data-protection - exited due to exit(2))`。上游 FAQ 第一条确认是 chip-id 补丁变化导致**旧 restore 镜像的数据卷打不开**；同族日志还有 `Gigalocker file ... doesn't exist`（还原第二阶段没做完）。App 侧修不了，唯一正路是最新代码重新 restore（companion + idevicerestore + 14.0b5 IPSW）+ InfernoFSPatcher。卡在 `SEP accepted IMG4` / `skipping unencrypted volume` 则是上游已知偶发，重启几次即可。详见 `docs/inferno-android.md` 与 `docs/troubleshooting.md` 的 iOS 专章。
+- **重建 restore 的环境已在本机搭好并跑到 `Uploading filesystem: 77%`**（2026-11-12 晚，用户中途叫停交接他人）。资产在 Arch VM 的 `~/pvm`（Inferno host 构建、idevicerestore 含两处补丁、companion initramfs、restore 磁盘、`start-*.sh`），IPSW 与 assets 在 `C:/tmp/ios-restore/`，**临时交接文档 `C:/tmp/ios-restore/HANDOFF.md`**（含 SSH 凭据、复现步骤、踩坑清单）。三个必踩的坑：`irecv_init` 新版已移除、`HardwareModel` 要把 `N104DEV` 转小写 `n104ap` 再查表、`-chardev socket,...,logfile=` + `-serial chardev:` 会 `error_setv` 断言 core dump（改 `-serial file:`）。
+- 编辑页「恢复模式」开关把 `-pvm-apple-restore`（可选 `-pvm-apple-usb=<IP>:<端口>`）写进 `extraArgs`，`startApple` 翻译成 `-initrd 038-44135-124.dmg` + `boot-mode=enter_recovery` + `usb-conn-*`；用 extraArgs 当载体是为了不动 Room 表结构。正常启动时这些参数一个都不出现，改 `AppleCommandBuilder` 后要跑 `AppleCommandBuilderTest` 里 `normal boot keeps the upstream command` 那条。
+- `sep_nvram` 必须**精确 64 KiB**（`at24c-eeprom` 按定值校验后盾文件，旧还原包给 2 KiB）：`AppleAssets` 导入时补零、启动前再幂等 `repair()` 自愈；`status()`/`validate()` 按精确大小判定，别退回「≥2 KiB 就算过」。还原 ramdisk `038-44135-124.dmg` 是可选资源，导入时收下但不参与必需校验。
 
 ## Android（ARM64）机型（0.10.27）
 
 - 走现有 UEFI 链路，但磁盘是用户导入的**完整镜像**：落在 `vms/<id>/disk.qcow2`（qcow2 或 raw 均可），`DiskProvisioner.detectFormat()` 按 qcow2 魔数判断；不再创建空盘。
 - 平台切换时强制 `displayDevice = VIRTIO_GPU`、`bootFromCd = false`、内存 ≥ 4 GB；编辑页隐藏 ISO/驱动盘/磁盘控制器（Android 镜像自带引导）。
-- GSI 组件拼装尚未落地：实测把 SDK 的 `android-36;google_apis;arm64-v8a`（kernel-ranchu + ramdisk.img + system.img/vendor.img）放到 QEMU `virt` 上，内核与 init first stage 能跑、virtio-blk 能识别，但 Android 13+ 的 first-stage 从设备树读 fstab；补 `firmware/android/fstab` 后已能找到 metadata 分区，仍在 first-stage 静默 `reboot('bootloader')`，未定位到具体失败点。不要把这个当成「Android 已经能启动」。
+- **GSI 启动链（PC QEMU 实验，2026-11-12 更新；详见 `.workbuddy/memory/2026-11-12.md`，工件在 `C:/tmp/pvm-gsi/`）**：首阶段的 `reboot('bootloader')` 已定位并打通，**根因不是 ueventd**——AOSP 首阶段 init 自带 coldboot 会自己建 `/dev/block/*`（补 `ueventd → /init` 符号链接已用对照实验证伪）；真实原因是 GPT 的 `PARTNAME`（metadata/system/vendor…）与 fstab 写的 `vdaN` 对不上，`InitDevices()` 按 `uevent.partition_name` 匹配 `basename(blk_device)`。最小解是 `androidboot.partition_map=vda1,vda1;…;vda7,vda7` 自映射（纯 cmdline）。后续还需改 vendor 的 `fstab.ranchu`（模拟器原版带 `logical`，要求 super 分区）、去掉 `/data` 的加密标志、并给 `/data` 挂一块**已格式化的 ext4**（拼盘时 vda7 是空的，magic 0x0）。现在能跑到 zygote / surfaceflinger，但 **surfaceflinger SIGABRT 循环，未到 boot_completed**；加 `virtio-gpu-pci` 只把首次崩溃从 50 s 推迟到 148 s，未根除，串口日志无 tombstone。口径仍然是不算「Android 已经能启动」。以上全部只在主机 QEMU 验证，App 侧零改动、零提交，启动参数未在产品链路验证，不要写进产品。
 
 ## 手表系统（Wear OS）研究结论（2026-10-28）
 
@@ -61,7 +64,7 @@ cd android
 
 ## 测试
 
-测试数量以 `:app:testDebugUnitTest` 实跑为准（2026-11-12：31 个文件 / 307 用例，failures=0 / errors=0，6 个 `qemu-img`/`qemu-io` 交叉校验用例因宿主机未装而 `assumeTrue` 跳过），全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。本机无 JDK/SDK 时不要当成已通过。
+测试数量以 `:app:testDebugUnitTest` 实跑为准，全在 `app/src/test/`，纯 JVM：没有 Robolectric、没有 `androidTest` 源集，不需要设备或模拟器。本机无 JDK/SDK 时不要当成已通过。6 个 `qemu-img`/`qemu-io` 交叉校验用例因宿主机未装而 `assumeTrue` 跳过，所以「测试全绿」不等于 qcow2 格式真的被交叉校验过。
 
 `Qcow2CreatorTest` 里两个用例通过 `assumeTrue` 依赖宿主机的 `/usr/bin/qemu-img`（还有一个要求 `qemu-io`）：宿主机没装就**静默跳过**。所以「测试全绿」不等于 qcow2 格式真的被交叉校验过。
 

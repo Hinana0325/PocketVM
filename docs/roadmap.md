@@ -48,7 +48,7 @@ PocketVM 不只是一个“在手机上运行 Windows 的 QEMU 启动器”，�
 | 模块 | 功能 | 状态 |
 | --- | --- | --- |
 | VM Manager | 创建、删除、复制、启动虚拟机 | **多机同跑第一版已实现**（2026-11-12）：每 VM 独立 QEMU 进程/VNC 端口 + 内存预算 + 保活引用计数；**VM 复制已实现**（停止状态，qemu-img 转干净 qcow2 + vars/TPM 复制，名称自动去重） |
-| Image Manager | 管理 ISO、IMG、QCOW2、GSI | 已有 ISO 导入与 qcow2 置备；**GSI 组件拼装已落地**（2026-11-12，实验）：导入 kernel/ramdisk/system/vendor，sparse 自动展开，拼 GPT 物理分区盘（metadata/system/vendor/userdata）并转 qcow2；启动链（first-stage fstab / boot_devices）与显示（goldfish HAL）未打通；格式转换未做 |
+| Image Manager | 管理 ISO、IMG、QCOW2、GSI | 已有 ISO 导入与 qcow2 置备；**GSI 组件拼装已落地**（2026-11-12，实验）：导入 kernel/ramdisk/system/vendor，sparse 自动展开，拼 GPT 物理分区盘（metadata/system/vendor/userdata）并转 qcow2；**PC QEMU 上首阶段→二阶段→zygote 已打通**（同日实验，见 `.workbuddy/memory/2026-11-12.md`），但拼盘遗漏了格式化 userdata，且显示（surfaceflinger / goldfish 图形 HAL）仍卡住，未到 boot_completed；以上未在产品链路验证；格式转换未做 |
 | Hardware Manager | CPU、内存、磁盘、网络、显示配置 | 已有配置与校验，需补多架构硬件模板 |
 | Acceleration | KVM、Hypervisor、Virtio、图形加速 | **只读探测已实现**（2026-11-12，`AccelerationProbe` + 诊断中心「硬件加速」卡 + 调试接口 `/diagnostics`）；KVM 接入未做，TCG 仍是唯一执行路径 |
 | Snapshot | 快照、恢复、备份 | **第一版已实现**（2026-11-12）：qcow2 内部快照（秒级，不复制整盘）+ vars.fd / TPM 副本，恢复前自动保险快照；仅 VM 停止时可用；真机验证待做 |
