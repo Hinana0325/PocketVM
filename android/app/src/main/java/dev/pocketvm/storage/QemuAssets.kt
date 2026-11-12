@@ -30,7 +30,12 @@ object QemuAssets {
     // fallback. Bumped from v5 so any install that already extracted the reverted
     // single-firmware bundle re-extracts BOTH images — otherwise the old marker
     // short-circuits and 2026.08 never reaches firmwareDir.
-    private const val MARKER = ".extracted-v6"
+    // v7: adds the self-built edk2 2026.08 TPM2 image
+    // (`QEMU_EFI-2026.08-TPM2-RELEASE.fd`) alongside the plain 2026.08 and the
+    // 2024.02 fallback. Bumped from v6 so any install that already extracted
+    // the v6 bundle re-extracts and picks up the TPM2 firmware — otherwise the
+    // old marker short-circuits and the new image never reaches firmwareDir.
+    private const val MARKER = ".extracted-v7"
 
     /**
      * Independent marker for the `-L` data dir. v3 puts `efi-virtio.rom` at the

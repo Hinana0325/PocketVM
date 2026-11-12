@@ -96,11 +96,16 @@ libfdt/dtc 由 QEMU 源码内置；proxy-libintl 为 PocketVM 构建的 libintl 
 ## 4. edk2 / AAVMF 固件
 
 - 上游：TianoCore edk2 <https://github.com/tianocore/edk2>；平台为 ArmVirtQemu（AAVMF）。
-- 随包两份 64 MiB pflash：`QEMU_EFI-2026.08.fd.gz`（edk2 2026.08，默认）与
+- 随包三份 64 MiB pflash：`QEMU_EFI-2026.08-TPM2-RELEASE.fd.gz`（edk2 2026.08
+  自编开 TPM2，默认）与 `QEMU_EFI-2026.08.fd.gz`（edk2 2026.08，普通版）、
   `QEMU_EFI.fd.gz`（edk2 2024.02，兜底）。
-- 这两份是**未修改的上游构建产物**；若需对应源码，请取 edk2 对应版本标签，
-  按 ArmVirtQemu 平台构建 `QEMU_EFI.fd`。许可证为 BSD-2-Clause-Patent，
-  再分发须保留版权与许可声明。
+- TPM2 版是**自编产物，不是未修改的上游构建**：源码为官方 edk2 标签
+  `edk2-stable202608`（commit `2970e569`），按 ArmVirtQemu 平台构建，
+  构建参数 `-D TPM2_ENABLE=TRUE -D TPM2_CONFIG_ENABLE=TRUE`（未开 Secure Boot）。
+  构建产物与验证报告在仓库外的 `~/workspace/pocketvm-swtpm-poc/edk2-rebuild-2026.08/`。
+  另两份（普通版 2026.08 与 2024.02）是**未修改的上游构建产物**；若需对应源码，
+  请取 edk2 对应版本标签，按 ArmVirtQemu 平台构建 `QEMU_EFI.fd`。
+  许可证均为 BSD-2-Clause-Patent，再分发须保留版权与许可声明。
 
 ## 5. 重建后的验证
 

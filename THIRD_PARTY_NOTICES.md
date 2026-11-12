@@ -71,7 +71,8 @@ PAT 补丁文件为 `scripts/inferno-pvm-pac-shim.S` / `.c`。
 
 | 组件 | 版本 | 许可证 | 在仓库中的形态 |
 | --- | --- | --- | --- |
-| AAVMF（ArmVirtQemu，edk2） | 2026.08（默认） | BSD-2-Clause-Patent | `assets/firmware/QEMU_EFI-2026.08.fd.gz` |
+| AAVMF（ArmVirtQemu，edk2，TPM2 开启，自编） | 2026.08 + TPM2_ENABLE | BSD-2-Clause-Patent | `assets/firmware/QEMU_EFI-2026.08-TPM2-RELEASE.fd.gz` |
+| AAVMF（ArmVirtQemu，edk2） | 2026.08（普通版） | BSD-2-Clause-Patent | `assets/firmware/QEMU_EFI-2026.08.fd.gz` |
 | AAVMF（ArmVirtQemu，edk2） | 2024.02（兜底） | BSD-2-Clause-Patent | `assets/firmware/QEMU_EFI.fd.gz` |
 
 随包为 64 MiB pflash 镜像；若替换固件，需同时保留上游版权与许可声明。

@@ -49,10 +49,12 @@ class FirmwareManager @Inject constructor(
     }
 
     /**
-     * Name order. The bundle ships two images: `QEMU_EFI-2026.08.fd` (the active
-     * edk2 2026.08 build) and `QEMU_EFI.fd` (the 2024.02 fallback). The dated
-     * name sorts first, so 2026.08 is the default pick. Anything else here was
-     * imported by the user and stays selectable.
+     * Name order. The bundle ships three images: `QEMU_EFI-2026.08-TPM2-RELEASE.fd`
+     * (the self-built edk2 2026.08 build with TPM2 enabled, the default pick —
+     * '-' sorts before '.', so it comes before the plain 2026.08 image),
+     * `QEMU_EFI-2026.08.fd` (the plain edk2 2026.08 build) and `QEMU_EFI.fd`
+     * (the 2024.02 fallback). Anything else here was imported by the user and
+     * stays selectable.
      */
     private fun scan(): List<File> = layout.firmwareDir
         .listFiles()
