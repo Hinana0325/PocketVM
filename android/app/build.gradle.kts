@@ -34,8 +34,28 @@ android {
         }
     }
 
+    // 统一的侧载签名：多平台 / CI 用同一把 key，APK 才能互相覆盖升级。
+    // 私钥不进仓库——本机放 ~/.pocketvm/pocketvm-signing.jks，CI 由 workflow
+    // 从 Secret 解码到同一位置；也可用 -Ppvm.storeFile 或 PVM_KEYSTORE 指路径。
+    // 找不到就回退 SDK 默认 debug key（新机器开箱能构建，只是签名不通用）。
+    // 口令是固定的非机密值，保护对象是 .jks 文件本身。
+    val sideloadKeystore: File? = listOfNotNull(
+        (project.findProperty("pvm.storeFile") as String?)?.let { file(it) },
+        System.getenv("PVM_KEYSTORE")?.let { file(it) },
+        File(System.getProperty("user.home"), ".pocketvm/pocketvm-signing.jks"),
+    ).firstOrNull { it.isFile }
+    if (sideloadKeystore != null) {
+        signingConfigs.create("sideload") {
+            storeFile = sideloadKeystore
+            storePassword = System.getenv("PVM_STORE_PASSWORD") ?: "pocketvm-sideload"
+            keyAlias = System.getenv("PVM_KEY_ALIAS") ?: "pocketvm"
+            keyPassword = System.getenv("PVM_KEY_PASSWORD") ?: "pocketvm-sideload"
+        }
+    }
+
     buildTypes {
         debug {
+            signingConfig = signingConfigs.findByName("sideload") ?: signingConfigs.getByName("debug")
             // A sideloaded build can be signed by another machine's debug key and
             // therefore cannot be replaced in place. -PpvmSideBySide produces a
             // variant that installs alongside it instead, which is this device's
@@ -53,7 +73,7 @@ android {
             initWith(getByName("release"))
             isDebuggable = false
             isJniDebuggable = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("sideload") ?: signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
             if (project.hasProperty("pvmSideBySide")) applicationIdSuffix = ".debug"
         }
