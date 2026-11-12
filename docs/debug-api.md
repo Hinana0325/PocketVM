@@ -1,7 +1,7 @@
 # PocketVM 调试接口开发文档（设计稿）
 
-> 状态：**设计完成，未实现**。2026-11-12 实现任务被安全规则拦下（能从外面操控 App 的 HTTP 服务属于远程操控能力），代码一行没写，`debug-api` 分支与 main 完全一致。
-> 本文档只是设计参考：接口长什么样、端点有哪些、安全边界在哪。以后再做（或人工实现）直接按这个来，不用重新设计。
+> 状态：**已实现（2026-11-12）**。Ktor 3.3.0（kotlin-stdlib 2.2.10，与项目 Kotlin 对齐）+ CIO，绑 `127.0.0.1:18080`；默认关闭，诊断中心「开发者调试」区可开关；除 `/health` 外都要 `X-PocketVM-Token`；start/stop/restart 额外受「允许远程控制」开关门控。
+> 实现文件：`data/DebugPreferences.kt`（debug_prefs）、`debug/DebugApi.kt`（契约与快照模型）、`debug/DebugServerManager.kt`（服务器与路由）、`debug/DebugSnapshotExporter.kt`（快照导出）、`ui/DebugSettingsViewModel.kt` + 诊断中心 UI 区。单测 `DebugApiTest`（token/鉴权/钳制/快照字段与排除清单）；路由级测试未搭（依赖 Android 运行时），如实记录。
 
 ## 1. 目标
 

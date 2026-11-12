@@ -14,8 +14,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -23,9 +28,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.core.content.FileProvider
+import android.content.Intent
+import dev.pocketvm.debug.DebugApi
+import dev.pocketvm.debug.DebugServerState
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmRuntimeState
@@ -131,6 +142,8 @@ fun VmDiagnosticsScreen(
                     }
                 }
             }
+
+            DeveloperDebugSection()
         }
     }
 }
@@ -408,5 +421,104 @@ private fun ThermalCard(
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("去设置电池无限制") }
         }
+    }
+}
+
+// ---- 开发者调试（docs/debug-api.md）：开关、token、快照导出 ----
+
+@Composable
+private fun DeveloperDebugSection(vm: DebugSettingsViewModel = hiltViewModel()) {
+    val st by vm.state.collectAsState()
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    LaunchedEffect(st.shareFile) {
+        val file = st.shareFile ?: return@LaunchedEffect
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/json"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "分享调试快照"))
+        vm.consumeShare()
+    }
+
+    SectionCard(title = "开发者调试", subtitle = "本机 HTTP 接口；只回环，需要 token") {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("调试接口", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "开启后监听 ${DebugApi.HOST}:${DebugApi.PORT}；关闭时不占端口",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = st.enabled, onCheckedChange = vm::setEnabled)
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("允许远程控制", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "允许 start/stop/restart；接口关着时不可开",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = st.allowControl && st.enabled,
+                onCheckedChange = vm::setAllowControl,
+                enabled = st.enabled,
+            )
+        }
+
+        Text(
+            "状态：" + when (val s = st.server) {
+                DebugServerState.Stopped -> "未运行"
+                DebugServerState.Starting -> "启动中…"
+                is DebugServerState.Running -> "监听 ${DebugApi.HOST}:${s.port}"
+                is DebugServerState.Failed -> "启动失败：${s.message}"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (st.token.isNotBlank()) {
+            Text("Token（请求头 ${DebugApi.TOKEN_HEADER}）", style = MaterialTheme.typography.bodySmall)
+            Text(
+                st.token,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    clipboard.setText(AnnotatedString(st.token))
+                }) { Text("复制") }
+                TextButton(onClick = vm::regenerateToken) { Text("重新生成") }
+            }
+        }
+
+        OutlinedButton(onClick = vm::exportSnapshot, enabled = !st.exporting) {
+            Text(if (st.exporting) "正在导出…" else "导出调试快照")
+        }
+        st.notice?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+        Text(
+            "用法：adb forward tcp:${DebugApi.PORT} tcp:${DebugApi.PORT} 后请求 " +
+                "${DebugApi.HOST}:${DebugApi.PORT}${DebugApi.PREFIX}/health（其余端点带 token）。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

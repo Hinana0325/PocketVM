@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="diagnostics" path="diagnostics/" />
+    <cache-path name="debug_api" path="debug-api/" />
     <external-files-path name="vm_root" path="." />
 </paths>

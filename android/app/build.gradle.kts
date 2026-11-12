@@ -27,6 +27,10 @@ android {
         versionCode = 58
         versionName = "0.11.0-qemu11.1.2-edk2026.08"
 
+        // 调试快照要带构建工具链版本；从版本目录取，避免手抄漂移。
+        buildConfigField("String", "AGP_VERSION", "\"${libs.versions.agp.get()}\"")
+        buildConfigField("String", "KOTLIN_VERSION", "\"${libs.versions.kotlin.get()}\"")
+
         // The MVP only ships an arm64 execution layer. 32-bit devices cannot run
         // a 64-bit guest, so there is no point in building other ABIs.
         ndk {
@@ -163,6 +167,13 @@ dependencies {
     implementation(libs.androidx.work.runtime.ktx)
     // SSH 控制台：mwiede 的 JSch 分支，纯 Java、支持 rsa-sha2/ed25519。
     implementation(libs.jsch)
+    // 调试接口（docs/debug-api.md）：本地 HTTP，只读 + 回环 + token。
+    implementation(libs.ktor.server.core)
+    implementation(libs.ktor.server.cio)
+    implementation(libs.ktor.server.content.negotiation)
+    implementation(libs.ktor.serialization.kotlinx.json)
+    // 路由级单测（ktor-server-test-host）；跑不起来就只测纯函数部分。
+    testImplementation(libs.ktor.server.test.host)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

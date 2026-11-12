@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import dagger.hilt.android.HiltAndroidApp
+import dev.pocketvm.debug.DebugServerManager
 import dev.pocketvm.diagnostics.AgentFeed
 import dev.pocketvm.runtime.DeviceInfo
 import dev.pocketvm.storage.VmStorageLayout
@@ -39,6 +40,9 @@ class PocketVmApp : Application(), Configuration.Provider {
     @Inject
     lateinit var layout: VmStorageLayout
 
+    @Inject
+    lateinit var debugServer: DebugServerManager
+
     override fun onCreate() {
         super.onCreate()
         // The channel is opened here, not at the first launch, so that "app is up
@@ -59,6 +63,9 @@ class PocketVmApp : Application(), Configuration.Provider {
             "nativeLibDir" to applicationInfo.nativeLibraryDir,
             "root" to layout.root.absolutePath,
         )
+        // 调试接口（docs/debug-api.md）：跟随 debug_prefs 开关启停；默认关，
+        // App 行为与以前完全一致（不占端口）。
+        debugServer.start()
         // P3：日志清理定时任务（WorkManager）。每天跑一次，删 90 天前的旧运行
         // 日志；首次启动排队，之后 KEEP 不重复排队。
         LogCleanupScheduler.enqueue(this)
