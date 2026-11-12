@@ -32,6 +32,7 @@ import dev.pocketvm.ui.VmConnectionScreen
 import dev.pocketvm.ui.VmDetailScreen
 import dev.pocketvm.ui.VmDiagnosticsScreen
 import dev.pocketvm.ui.VmListScreen
+import dev.pocketvm.ui.VmSnapshotsScreen
 import dev.pocketvm.ui.VmViewModel
 
 /**
@@ -203,6 +204,9 @@ fun AppNavHost(
                         createVm.openConfig(vmId)
                         navController.navigate(VmConfigHome(vmId)) { launchSingleTop = true }
                     },
+                    onOpenSnapshots = {
+                        navController.navigate(VmSnapshots(vmId)) { launchSingleTop = true }
+                    },
                     onOpenDiagnostics = {
                         navController.navigate(VmDiagnostics(vmId)) { launchSingleTop = true }
                     },
@@ -313,6 +317,21 @@ fun AppNavHost(
                     contentPadding = topBarScreenPadding,
                     onBack = pop,
                     onSave = { saveConfig(route.vmId) },
+                )
+            }
+        }
+
+        // ---- 快照与备份 ----
+        composable<VmSnapshots> { backStackEntry ->
+            val vmId = backStackEntry.toRoute<VmSnapshots>().vmId
+            val target = state.vms.firstOrNull { it.id == vmId }
+            if (target == null) {
+                Text("虚拟机不存在或已删除", modifier = Modifier.padding(24.dp))
+            } else {
+                VmSnapshotsScreen(
+                    vm = target,
+                    contentPadding = topBarScreenPadding,
+                    onBack = pop,
                 )
             }
         }

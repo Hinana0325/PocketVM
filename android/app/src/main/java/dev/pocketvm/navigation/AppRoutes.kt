@@ -99,6 +99,10 @@ enum class DiagnosticType(val label: String) {
 @Serializable
 data class VmDiagnostics(val vmId: String)
 
+/** 快照与备份页：qcow2 内部快照 + UEFI 变量，仅停止状态可用。 */
+@Serializable
+data class VmSnapshots(val vmId: String)
+
 /** 诊断子页：一个分类一页。 */
 @Serializable
 data class DiagnosticDetail(val vmId: String, val type: DiagnosticType)

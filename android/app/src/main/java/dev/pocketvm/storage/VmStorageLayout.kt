@@ -71,6 +71,9 @@ class VmStorageLayout @Inject constructor(@ApplicationContext context: Context) 
      */
     fun configFile(vmId: String): File = File(vmDir(vmId), "config.json")
 
+    /** 快照元数据与 UEFI 变量副本（qcow2 内部快照存在磁盘里，这里只放附属物）。 */
+    fun snapshotsDir(vmId: String): File = dir("vms/${safeVmId(vmId)}/snapshots")
+
     fun qmpSocket(vmId: String): File = File(runDir, "${safeVmId(vmId)}.sock")
 
     /**

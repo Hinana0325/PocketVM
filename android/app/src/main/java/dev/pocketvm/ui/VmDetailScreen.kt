@@ -55,6 +55,7 @@ fun VmDetailScreen(
     onBack: () -> Unit,
     onOpenConsole: () -> Unit,
     onOpenConfig: () -> Unit,
+    onOpenSnapshots: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenConnection: () -> Unit,
     onStart: () -> Unit,
@@ -183,7 +184,7 @@ fun VmDetailScreen(
                 }
             }
 
-            SectionCard(title = "管理", subtitle = "控制台、配置、诊断、连接各是一页") {
+            SectionCard(title = "管理", subtitle = "控制台、配置、快照、诊断、连接各是一页") {
                 DetailEntry(
                     label = "控制台",
                     summary = "运行状态、日志、性能、SSH、客户机按键",
@@ -193,6 +194,11 @@ fun VmDetailScreen(
                     label = "配置",
                     summary = "处理器 / 内存 / 存储 / 设备 / 运行环境",
                     onClick = onOpenConfig,
+                )
+                DetailEntry(
+                    label = "快照与备份",
+                    summary = "停止状态下创建/恢复（qcow2 内部快照 + UEFI 变量）",
+                    onClick = onOpenSnapshots,
                 )
                 DetailEntry(
                     label = "诊断中心",
