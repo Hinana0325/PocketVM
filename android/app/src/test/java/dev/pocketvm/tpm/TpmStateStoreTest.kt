@@ -22,11 +22,14 @@ class TpmStateStoreTest {
         return TpmStateStore(vmsDir, runDir)
     }
 
+    // Windows 上 File.absolutePath 用反斜杠，断言统一按 / 比较。
+    private fun java.io.File.slashPath(): String = absolutePath.replace('\\', '/')
+
     @Test
     fun `state dir is vms-vmId-tpm-state and is created`() {
         val store = store()
         val dir = store.stateDir("win11")
-        assertTrue(dir.absolutePath.endsWith("vms/win11/tpm/state"))
+        assertTrue(dir.slashPath().endsWith("vms/win11/tpm/state"))
         assertTrue(dir.isDirectory)
     }
 
@@ -34,7 +37,7 @@ class TpmStateStoreTest {
     fun `socket is run-vmId-tpm-sock on internal storage`() {
         val store = store()
         val socket = store.socketFile("win11")
-        assertTrue(socket.absolutePath.endsWith("run/win11.tpm.sock"))
+        assertTrue(socket.slashPath().endsWith("run/win11.tpm.sock"))
         // socket 文件本身不由 store 创建，是 swtpm 启动时建的。
         assertFalse(socket.exists())
     }
@@ -43,8 +46,8 @@ class TpmStateStoreTest {
     fun `swtpm log sits beside state dir, not inside it`() {
         val store = store()
         val log = store.logFile("win11")
-        assertTrue(log.absolutePath.endsWith("vms/win11/tpm/swtpm.log"))
-        assertFalse(log.absolutePath.contains("tpm/state"))
+        assertTrue(log.slashPath().endsWith("vms/win11/tpm/swtpm.log"))
+        assertFalse(log.slashPath().contains("tpm/state"))
     }
 
     @Test
