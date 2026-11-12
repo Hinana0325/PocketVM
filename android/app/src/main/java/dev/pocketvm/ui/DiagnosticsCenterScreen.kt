@@ -37,6 +37,7 @@ import androidx.core.content.FileProvider
 import android.content.Intent
 import dev.pocketvm.debug.DebugApi
 import dev.pocketvm.debug.DebugServerState
+import dev.pocketvm.runtime.AccelerationVerdict
 import dev.pocketvm.core.model.RunManifest
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.core.model.VmRuntimeState
@@ -142,6 +143,8 @@ fun VmDiagnosticsScreen(
                     }
                 }
             }
+
+            AccelerationCard()
 
             DeveloperDebugSection()
         }
@@ -520,5 +523,46 @@ private fun DeveloperDebugSection(vm: DebugSettingsViewModel = hiltViewModel()) 
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+// ---- 硬件加速（roadmap §5）：只读探测，不改执行方式 ----
+
+@Composable
+private fun AccelerationCard(vm: AccelerationViewModel = hiltViewModel()) {
+    val st by vm.state.collectAsState()
+    SectionCard(title = "硬件加速", subtitle = "只读探测 · 不改变执行方式") {
+        val facts = st.facts
+        if (facts == null) {
+            Text("正在探测…", style = MaterialTheme.typography.bodySmall)
+        } else {
+            val label = when (st.verdict) {
+                AccelerationVerdict.AVAILABLE -> "KVM 可用（仍需重建执行层才能接入）"
+                AccelerationVerdict.PRESENT_BUT_DENIED -> "有 /dev/kvm 但权限受限"
+                else -> "无 KVM，继续 TCG"
+            }
+            StatusChip(
+                text = label,
+                tone = when (st.verdict) {
+                    AccelerationVerdict.AVAILABLE -> DiagTone.OK
+                    AccelerationVerdict.PRESENT_BUT_DENIED -> DiagTone.ERROR
+                    else -> DiagTone.IDLE
+                }.toTone(),
+            )
+            Text(st.summary, style = MaterialTheme.typography.bodySmall)
+            Text(
+                "/dev/kvm：${if (facts.kvmExists) "存在" else "不存在"}" +
+                    (if (facts.kvmExists) "（可读 ${facts.kvmReadable} / 可写 ${facts.kvmWritable}）" else "") +
+                    (facts.openError?.let { "；打开错误：$it" } ?: ""),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "内核：${facts.kernelRelease.ifBlank { "未知" }}" +
+                    " · 当前运行于虚拟机内：${if (facts.runningUnderHypervisor) "是" else "否"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

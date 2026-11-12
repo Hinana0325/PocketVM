@@ -11,6 +11,8 @@ import dev.pocketvm.diagnostics.DiagEvent
 import dev.pocketvm.diagnostics.LogTail
 import dev.pocketvm.diagnostics.RunManifestStore
 import dev.pocketvm.diagnostics.VmMetrics
+import dev.pocketvm.runtime.AccelerationProbe
+import dev.pocketvm.runtime.AccelerationPolicy
 import dev.pocketvm.runtime.VmSession
 import dev.pocketvm.storage.VmStorageLayout
 import io.ktor.http.HttpStatusCode
@@ -67,6 +69,7 @@ class DebugServerManager @Inject constructor(
     private val repo: VmConfigRepository,
     private val layout: VmStorageLayout,
     private val manifests: RunManifestStore,
+    private val acceleration: AccelerationProbe,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -179,6 +182,7 @@ class DebugServerManager @Inject constructor(
             metrics = session.metrics.value?.toDto(),
             diagEvents = session.diagEvents.value.takeLast(20).map { it.toDto() },
             agentFeed = agentFeedTail(50),
+            acceleration = accelerationDto(),
         )
     }
 
@@ -198,6 +202,20 @@ class DebugServerManager @Inject constructor(
 
     fun toJson(snapshot: SnapshotResponse): String =
         json.encodeToString(SnapshotResponse.serializer(), snapshot)
+
+    private fun accelerationDto(): AccelerationDto {
+        val facts = acceleration.probe()
+        return AccelerationDto(
+            verdict = AccelerationPolicy.verdict(facts).name,
+            summary = AccelerationPolicy.summary(facts),
+            kvmExists = facts.kvmExists,
+            kvmReadable = facts.kvmReadable,
+            kvmWritable = facts.kvmWritable,
+            openError = facts.openError,
+            runningUnderHypervisor = facts.runningUnderHypervisor,
+            kernelRelease = facts.kernelRelease,
+        )
+    }
 
     private fun agentFeedTail(limit: Int): List<String> {
         val file = layout.agentFeedFile()

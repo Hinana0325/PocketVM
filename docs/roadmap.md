@@ -50,7 +50,7 @@ PocketVM 不只是一个“在手机上运行 Windows 的 QEMU 启动器”，�
 | VM Manager | 创建、删除、复制、启动虚拟机 | 已有基础，需补复制与多虚拟机管理 |
 | Image Manager | 管理 ISO、IMG、QCOW2、GSI | 已有 ISO 导入与 qcow2 置备，需补 GSI 与格式转换 |
 | Hardware Manager | CPU、内存、磁盘、网络、显示配置 | 已有配置与校验，需补多架构硬件模板 |
-| Acceleration | KVM、Hypervisor、Virtio、图形加速 | 未做；见第 5 节，先探测、后接入 |
+| Acceleration | KVM、Hypervisor、Virtio、图形加速 | **只读探测已实现**（2026-11-12，`AccelerationProbe` + 诊断中心「硬件加速」卡 + 调试接口 `/diagnostics`）；KVM 接入未做，TCG 仍是唯一执行路径 |
 | Snapshot | 快照、恢复、备份 | 未做 |
 | Console | VNC、SPICE、串口、远程桌面 | VNC（仅本机）与 SSH 已有；SPICE、串口未做；局域网 VNC 入口已下线（D1=B） |
 | Debug API | 本机只读 HTTP：状态/日志/诊断/快照 | 已实现（`127.0.0.1:18080`，默认关，需 token；真机联调待做） |
@@ -74,7 +74,7 @@ PocketVM
 现实约束：小米 14 Pro 的 CPU 支持虚拟化，不等于普通 Android 应用能调用 KVM。
 未 Root 条件下默认只有 TCG；硬件加速是一个独立研究项目，**不作为第一个版本
 的阻塞条件**。加速能力探测（`/dev/kvm` 是否存在、内核配置、权限）先做成
-只读诊断，接入决定看探测结果，不预设结论。
+只读诊断，接入决定看探测结果，不预设结论。（2026-11-12：只读探测已落地，见 `android/app/src/main/java/dev/pocketvm/runtime/AccelerationProbe.kt`。）
 
 ## 6. 与其他项目的关系（项目分离，不可混淆）
 

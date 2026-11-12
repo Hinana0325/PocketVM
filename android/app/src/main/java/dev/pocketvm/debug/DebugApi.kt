@@ -124,6 +124,18 @@ data class DiagEventDto(
  * AgentFeed 事件尾巴。都是只读数据，不重算任何判据。
  */
 @Serializable
+data class AccelerationDto(
+    val verdict: String,
+    val summary: String,
+    val kvmExists: Boolean,
+    val kvmReadable: Boolean,
+    val kvmWritable: Boolean,
+    val openError: String? = null,
+    val runningUnderHypervisor: Boolean,
+    val kernelRelease: String,
+)
+
+@Serializable
 data class DiagnosticsResponse(
     val ok: Boolean = true,
     val vmId: String? = null,
@@ -131,6 +143,8 @@ data class DiagnosticsResponse(
     val metrics: MetricsDto? = null,
     val diagEvents: List<DiagEventDto> = emptyList(),
     val agentFeed: List<String> = emptyList(),
+    /** 硬件加速能力（只读探测，docs/roadmap.md §5）。 */
+    val acceleration: AccelerationDto? = null,
 )
 
 @Serializable
