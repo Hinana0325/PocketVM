@@ -125,17 +125,11 @@ fun ConsoleScreen(
     onRequestBatteryWhitelist: () -> Unit = {},
 ) {
     BackHandler { onBack() }
-    val sessionRuntime = state.runtime
-    val runtime = when (val r = sessionRuntime) {
-        is VmRuntimeState.Running -> if (r.vmId == vm.id) r else VmRuntimeState.Idle
-        is VmRuntimeState.Preparing -> if (r.vmId == vm.id) r else VmRuntimeState.Idle
-        is VmRuntimeState.Stopping -> if (r.vmId == vm.id) r else VmRuntimeState.Idle
-        is VmRuntimeState.Exited -> if (r.vmId == vm.id) r else VmRuntimeState.Idle
-        is VmRuntimeState.Failed -> if (r.vmId == null || r.vmId == vm.id) r else VmRuntimeState.Idle
-        VmRuntimeState.Idle -> VmRuntimeState.Idle
-    }
+    val runtime = state.runtimes[vm.id] ?: VmRuntimeState.Idle
     val running = runtime is VmRuntimeState.Running
-    val otherRunning = (sessionRuntime as? VmRuntimeState.Running)?.takeIf { it.vmId != vm.id }
+    val otherRunning = state.runtimes.entries
+        .firstOrNull { it.key != vm.id && it.value is VmRuntimeState.Running }
+        ?.value as? VmRuntimeState.Running
     var showArgv by remember { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
     var copiedError by remember { mutableStateOf(false) }
@@ -174,8 +168,7 @@ fun ConsoleScreen(
     }
     val canToggle = !state.busy &&
         runtime !is VmRuntimeState.Preparing &&
-        runtime !is VmRuntimeState.Stopping &&
-        (running || otherRunning == null)
+        runtime !is VmRuntimeState.Stopping
 
     LaunchedEffect(copied, copiedError) {
         if (copied || copiedError) {
@@ -694,8 +687,7 @@ private fun OverviewTab(
                         onClick = if (running) onStop else onStart,
                         enabled = !state.busy &&
                             runtime !is VmRuntimeState.Preparing &&
-                            runtime !is VmRuntimeState.Stopping &&
-                            otherRunning == null,
+                            runtime !is VmRuntimeState.Stopping,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (running) MaterialTheme.colorScheme.error
                             else MaterialTheme.colorScheme.primary,
@@ -711,7 +703,7 @@ private fun OverviewTab(
                 }
                 otherRunning?.let {
                     Text(
-                        "另一台虚拟机正在运行，需先停止才能启动这一台。",
+                        "其他虚拟机也在运行；再启动一台会受设备内存预算约束。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -917,8 +909,7 @@ private fun OverviewTab(
                         onClick = if (running) onStop else onStart,
                         enabled = !state.busy &&
                             runtime !is VmRuntimeState.Preparing &&
-                            runtime !is VmRuntimeState.Stopping &&
-                            otherRunning == null,
+                            runtime !is VmRuntimeState.Stopping,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (running) MaterialTheme.colorScheme.error
                             else MaterialTheme.colorScheme.primary,

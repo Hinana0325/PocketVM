@@ -139,7 +139,7 @@ fun PocketVmRoot(
     // Ask only when a VM actually starts: the notification is what keeps it alive.
     // 只在「从没运行到开始运行」或换了一台 VM 时请求一次通知权限；
     // Running.stage 会随引导阶段变化，不能拿整个 runtime 对象当 key。
-    val runningVmId = (state.runtime as? VmRuntimeState.Running)?.vmId
+    val runningVmId = state.runtimes.entries.firstOrNull { it.value is VmRuntimeState.Running }?.key
     LaunchedEffect(runningVmId) {
         if (runningVmId != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(

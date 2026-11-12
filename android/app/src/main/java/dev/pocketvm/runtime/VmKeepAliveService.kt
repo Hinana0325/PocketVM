@@ -105,7 +105,11 @@ class VmKeepAliveService : Service() {
         private const val CHANNEL_ID = "vm_runtime"
         private const val NOTIFICATION_ID = 1001
 
+        /** 多机同跑：按运行中的 VM 计数，最后一台停止时才关服务。 */
+        private val holders = java.util.concurrent.atomic.AtomicInteger(0)
+
         fun start(context: Context) {
+            if (holders.incrementAndGet() > 1) return
             // Android 12+ 在后台调用 startForegroundService 会抛
             // ForegroundServiceStartNotAllowedException；这是「保活失败」，不是
             // 启动失败，绝不能让它把整个 App 带走。
@@ -115,11 +119,13 @@ class VmKeepAliveService : Service() {
                     Intent(context, VmKeepAliveService::class.java),
                 )
             }.onFailure { t ->
+                holders.updateAndGet { n -> (n - 1).coerceAtLeast(0) }
                 AgentFeed.event("keepalive.start_failed", "error" to t.toString())
             }
         }
 
         fun stop(context: Context) {
+            if (holders.updateAndGet { n -> (n - 1).coerceAtLeast(0) } > 0) return
             context.stopService(Intent(context, VmKeepAliveService::class.java))
         }
     }

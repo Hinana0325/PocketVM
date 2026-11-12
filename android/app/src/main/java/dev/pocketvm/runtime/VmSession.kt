@@ -67,7 +67,6 @@ import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
-import javax.inject.Singleton
 
 /**
  * What Windows Setup prints before a CD boot, and the last moment the app can
@@ -107,12 +106,10 @@ sealed interface LaunchOutcome {
  * manifest → fork → confirm over QMP. The manifest is written *before* the fork so
  * that a crash between fork and confirmation still leaves the exact argv on disk.
  *
- * P3 起由 Hilt 以 @Singleton 提供：单例是硬要求，同时只能跑一台 VM，
- * Application 级的这一个实例就是全部状态的归属；UI 只通过 [VmRuntimeState]
- * 看到执行层。不要再手动 new 它，也不要把它放进 ViewModel（旋转屏幕、
- * UI 重建都不该碰到 QEMU 进程）。
+ * 每个运行中的 VM 一个实例，由 [VmSessionHost] 统一持有（多机同跑）。
+ * UI 只通过 [VmRuntimeState] 看到执行层；不要在 ViewModel 里手动 new，
+ * 也不要把它放进 ViewModel（旋转屏幕、UI 重建都不该碰到 QEMU 进程）。
  */
-@Singleton
 class VmSession @Inject constructor(
     @ApplicationContext context: Context,
     private val layout: VmStorageLayout,

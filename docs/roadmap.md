@@ -47,7 +47,7 @@ PocketVM 不只是一个“在手机上运行 Windows 的 QEMU 启动器”，�
 
 | 模块 | 功能 | 状态 |
 | --- | --- | --- |
-| VM Manager | 创建、删除、复制、启动虚拟机 | 已有基础，需补复制与多虚拟机管理 |
+| VM Manager | 创建、删除、复制、启动虚拟机 | **多机同跑第一版已实现**（2026-11-12）：每 VM 独立 QEMU 进程/VNC 端口 + 内存预算 + 保活引用计数；VM 复制未做 |
 | Image Manager | 管理 ISO、IMG、QCOW2、GSI | 已有 ISO 导入与 qcow2 置备；**GSI 组件拼装已落地**（2026-11-12，实验）：导入 kernel/ramdisk/system/vendor，sparse 自动展开，拼 GPT 物理分区盘（metadata/system/vendor/userdata）并转 qcow2；启动链（first-stage fstab / boot_devices）与显示（goldfish HAL）未打通；格式转换未做 |
 | Hardware Manager | CPU、内存、磁盘、网络、显示配置 | 已有配置与校验，需补多架构硬件模板 |
 | Acceleration | KVM、Hypervisor、Virtio、图形加速 | **只读探测已实现**（2026-11-12，`AccelerationProbe` + 诊断中心「硬件加速」卡 + 调试接口 `/diagnostics`）；KVM 接入未做，TCG 仍是唯一执行路径 |

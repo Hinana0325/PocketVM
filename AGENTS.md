@@ -114,7 +114,7 @@ cd android
 
 ## 从文件名看不出来的约定
 
-- `VmSession` 是唯一持有 QEMU 进程的对象，挂在 Application 级的 `AppContainer` 上（不在 ViewModel 里），是单例，所以**同时只能跑一台 VM**。UI 只通过密封接口 `VmRuntimeState` 看到执行层。
+- `VmSession` 持有**一台** QEMU 进程；`VmSessionHost`（@Singleton）按 vmId 管理多个 `VmSession`，即多机同跑：各自独立进程/VNC 端口，`SessionBudget` 按设备内存拦截明显装不下的启动，前台保活服务按运行台数引用计数。UI 通过 `UiState.runtimes: Map<vmId, VmRuntimeState>` 看所有执行层状态；控制台/诊断按 `activeVmId` 聚焦一台。
 - `VmSession.start()` 的顺序是契约：probe → validate → 置备存储 → **先写 manifest** → fork → QMP 确认。manifest 在 fork 之前落盘，崩在中间也留得下完整 argv。QMP 握手（而非 `isAlive`）才是「已进入主循环」的可靠信号。
 - **QMP 的 unix socket 必须落在内部 `filesDir/internal/run/`**：`Android/data` 走 FUSE，不支持 unix domain socket。VM 磁盘 / ISO / 日志在外部 files 目录。
 - VNC 参数用的是**显示号不是端口**：`QemuCommandBuilder.displayIndex()` = port − 5900；校验器把 <5900 判为错误。`password=on` 只是开启认证，密码要在 QMP 握手后 `set_password` 设置。
@@ -143,6 +143,8 @@ cd android
 - **两个很省事的工具链事实**：① shell 能直接执行 APK 里的 `libqemu-system-aarch64.so`（`/data/app/**/lib/arm64/` 是只读+可执行路径，`LD_LIBRARY_PATH` 指过去即可），不用过 App 就能验 QEMU 参数；② 每次重装 APK 都会换掉 `/data/app/~~<hash>/<pkg>-<hash>` 里的哈希，写死的路径立刻过期。
 
 - **2026-11-12 真机收口**：0.11.0 已装；Win11 优化盘 UEFI+ramfb 启动到桌面（pvm/pvm，8 vCPU/8192 MB）；调试接口单测+CI 通过；本机/CI 侧载签名已统一（换 key 后旧包需卸载一次）；硬件加速只读探测、快照（qcow2 内部快照 + vars.fd/TPM）与 GSI 组件拼装（sparse 展开 + GPT 物理分区盘）已落地，单测过；快照真机验证与 GSI 启动链仍待做。
+
+- **2026-11-12 多机同跑（第一版）**：`VmSession` 取消单例、改由 `VmSessionHost` 按 vmId 持有；内存预算（保留 1 GB）、VNC 端口自动避让、保活服务引用计数；单测过、真机验证待做。
 
 **主循环停摆已定位（2026-11-08 真机证实）：系统冻结，不是 QEMU 故障**。MIUI/HyperOS 的 cgroup freezer 把 App 与 QEMU 所在进程组整体冻结（`/sys/fs/cgroup/apps/uid_<uid>/pid_<pid>/cgroup.freeze=1`）：所有线程 parked（S、syscall=-1）、VNC/QMP 失联、App 看门狗同窗停采，解冻后自愈。屏幕亮着 + 前台服务也会被冻。修复：系统电池设置把 PocketVM 设「无限制」（实测持续 `freeze=0`）；App 内以采样间隙（`dtMs > 3×intervalMs`）检测并归因 H4——App 的 SELinux 域读不到 `cgroup.freeze`，只能靠间隙推断，shell 侧可 `cat` 确认。详见 `docs/troubleshooting.md`。判读工具上的坑仍在：**跨 UID 读 `/proc/<pid>/stat` 的 utime/stime 不可靠**（Android 对别的 UID 的聚合值会冻结或为零），要读就逐个读 `/proc/<pid>/task/<tid>/stat`；`wchan`/`io`/`stack`/`debuggerd -b` 被 SELinux 拒绝，卡死点只能靠 App 内部采。真正的 QEMU 内部停摆（H1/H2/H3）尚未在真机复现过——此前两次「停摆」都是冻结。
 

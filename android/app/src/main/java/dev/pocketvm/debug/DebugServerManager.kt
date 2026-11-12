@@ -13,7 +13,7 @@ import dev.pocketvm.diagnostics.RunManifestStore
 import dev.pocketvm.diagnostics.VmMetrics
 import dev.pocketvm.runtime.AccelerationProbe
 import dev.pocketvm.runtime.AccelerationPolicy
-import dev.pocketvm.runtime.VmSession
+import dev.pocketvm.runtime.VmSessionHost
 import dev.pocketvm.storage.VmStorageLayout
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -65,7 +65,7 @@ sealed interface DebugServerState {
 class DebugServerManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val prefs: DebugPreferences,
-    private val session: VmSession,
+    private val sessions: VmSessionHost,
     private val repo: VmConfigRepository,
     private val layout: VmStorageLayout,
     private val manifests: RunManifestStore,
@@ -133,7 +133,7 @@ class DebugServerManager @Inject constructor(
 
     suspend fun status(): StatusResponse {
         val vms = repo.loadAll()
-        val runningId = session.runningVmId()
+        val runningId = sessions.runningVmId()
         return StatusResponse(
             app = buildInfo(),
             uptimeMs = System.currentTimeMillis() - appStartedAtMs,
@@ -145,16 +145,16 @@ class DebugServerManager @Inject constructor(
     }
 
     suspend fun vmSummaries(): List<VmSummary> {
-        val runningId = session.runningVmId()
+        val runningId = sessions.runningVmId()
         return repo.loadAll().map { it.toSummary(running = it.id == runningId) }
     }
 
     suspend fun vmDetail(id: String): VmDetail? =
-        repo.load(id)?.toDetail(running = session.runningVmId() == id)
+        repo.load(id)?.toDetail(running = sessions.isRunning(id))
 
     suspend fun logs(vmId: String, rawLines: Int?): LogsResponse? {
         val config = repo.load(vmId) ?: return null
-        val manifest = session.currentRun(vmId) ?: manifests.latest(vmId)
+        val manifest = sessions.currentRun(vmId) ?: manifests.latest(vmId)
         val runId = manifest?.runId
         val file = runId?.let { layout.logFile(vmId, it) }
         val lines = if (file != null) {
@@ -167,8 +167,8 @@ class DebugServerManager @Inject constructor(
     }
 
     suspend fun diagnostics(): DiagnosticsResponse {
-        val runningId = session.runningVmId()
-        val manifest = runningId?.let { session.currentRun(it) } ?: runningId?.let { manifests.latest(it) }
+        val runningId = sessions.runningVmId()
+        val manifest = runningId?.let { sessions.currentRun(it) } ?: runningId?.let { manifests.latest(it) }
         val watchdog: JsonElement? = manifest?.let { m ->
             val file = layout.watchdogLogFile(m.vmId, m.runId)
             runCatching {
@@ -179,8 +179,8 @@ class DebugServerManager @Inject constructor(
         return DiagnosticsResponse(
             vmId = runningId,
             watchdog = watchdog,
-            metrics = session.metrics.value?.toDto(),
-            diagEvents = session.diagEvents.value.takeLast(20).map { it.toDto() },
+            metrics = runningId?.let { sessions.metrics.value[it] }?.toDto(),
+            diagEvents = runningId?.let { sessions.diagEvents.value[it] }?.takeLast(20)?.map { it.toDto() } ?: emptyList(),
             agentFeed = agentFeedTail(50),
             acceleration = accelerationDto(),
         )
@@ -321,11 +321,10 @@ class DebugServerManager @Inject constructor(
                     val id = call.parameters["id"].orEmpty()
                     val config = repo.load(id)
                         ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("vm_not_found"))
-                    val busy = session.runningVmId()
-                    if (busy != null && busy != id) {
-                        return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("another_vm_running"))
+                    if (sessions.isRunning(id)) {
+                        return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("vm_already_running"))
                     }
-                    if (busy == null) scope.launch { session.start(config) }
+                    scope.launch { sessions.start(config) }
                     call.respond(HttpStatusCode.Accepted, action(id))
                 }
                 post("/vms/{id}/stop") {
@@ -334,10 +333,10 @@ class DebugServerManager @Inject constructor(
                         return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("control_disabled"))
                     }
                     val id = call.parameters["id"].orEmpty()
-                    if (session.runningVmId() != id) {
+                    if (!sessions.isRunning(id)) {
                         return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("vm_not_running"))
                     }
-                    scope.launch { session.stop(id) }
+                    scope.launch { sessions.stop(id) }
                     call.respond(HttpStatusCode.Accepted, action(id))
                 }
                 post("/vms/{id}/restart") {
@@ -348,12 +347,12 @@ class DebugServerManager @Inject constructor(
                     val id = call.parameters["id"].orEmpty()
                     val config = repo.load(id)
                         ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("vm_not_found"))
-                    if (session.runningVmId() != id) {
+                    if (!sessions.isRunning(id)) {
                         return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("vm_not_running"))
                     }
                     scope.launch {
-                        session.stop(id)
-                        session.start(config)
+                        sessions.stop(id)
+                        sessions.start(config)
                     }
                     call.respond(HttpStatusCode.Accepted, action(id))
                 }
@@ -364,7 +363,7 @@ class DebugServerManager @Inject constructor(
     private fun action(vmId: String) = ActionResponse(
         accepted = true,
         vmId = vmId,
-        runningVmId = session.runningVmId(),
+        runningVmId = sessions.runningVmId(),
     )
 
     private suspend fun controlAllowed(): Boolean = prefs.allowControl.first()

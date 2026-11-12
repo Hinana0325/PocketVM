@@ -76,12 +76,12 @@ fun VmListScreen(
     onDelete: (String) -> Unit,
     onProbe: () -> Unit,
 ) {
-    val runningId = (state.runtime as? VmRuntimeState.Running)?.vmId
-    val preparingId = (state.runtime as? VmRuntimeState.Preparing)?.vmId
-    val stoppingId = (state.runtime as? VmRuntimeState.Stopping)?.vmId
-    // 同一时间只能跑一台：正在准备/运行/停止的都算「运行中」。
-    val activeId = runningId ?: preparingId ?: stoppingId
-    val runningCount = if (activeId != null && state.vms.any { it.id == activeId }) 1 else 0
+    // 多机同跑：按 vmId 取各自状态；准备/运行/停止都算「运行中」。
+    fun isLive(id: String): Boolean = when (state.runtimes[id]) {
+        is VmRuntimeState.Running, is VmRuntimeState.Preparing, is VmRuntimeState.Stopping -> true
+        else -> false
+    }
+    val runningCount = state.vms.count { isLive(it.id) }
     val stoppedCount = state.vms.size - runningCount
     val env = state.env
     var pendingDelete by remember { mutableStateOf<VmConfig?>(null) }
@@ -90,8 +90,8 @@ fun VmListScreen(
 
     val visibleVms = when (filter) {
         VmFilter.ALL -> state.vms
-        VmFilter.RUNNING -> state.vms.filter { it.id == activeId }
-        VmFilter.STOPPED -> state.vms.filter { it.id != activeId }
+        VmFilter.RUNNING -> state.vms.filter { isLive(it.id) }
+        VmFilter.STOPPED -> state.vms.filter { !isLive(it.id) }
     }
 
     LazyColumn(
@@ -131,7 +131,7 @@ fun VmListScreen(
                 env = env,
                 deviceMemoryMb = state.deviceMemoryMb,
                 freeSpaceMb = state.freeSpaceMb,
-                allocatedMemoryMb = state.vms.firstOrNull { it.id == activeId }?.memoryMb ?: 0,
+                allocatedMemoryMb = state.vms.filter { isLive(it.id) }.sumOf { it.memoryMb },
                 diskUsedBytes = state.diskUsage.values.sum(),
             )
         }
@@ -200,9 +200,9 @@ fun VmListScreen(
                         appleStatus = state.appleAssets[vm.id],
                         androidDiskBytes = state.androidDisks[vm.id] ?: 0L,
                         androidDiskFormat = state.androidFormats[vm.id] ?: "raw",
-                        runtime = state.runtime,
-                        runningId = runningId,
-                        metrics = if (runningId == vm.id) state.metrics else null,
+                        runtime = state.runtimes[vm.id] ?: VmRuntimeState.Idle,
+                        runningId = if (state.runtimes[vm.id] is VmRuntimeState.Running) vm.id else null,
+                        metrics = state.metricsByVm[vm.id],
                         busy = state.busy,
                         lastRun = state.lastRuns[vm.id],
                         onOpen = { onOpen(vm.id) },

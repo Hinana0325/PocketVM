@@ -3,7 +3,7 @@ package dev.pocketvm.storage
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.diagnostics.AgentFeed
 import dev.pocketvm.runtime.QemuEnvironment
-import dev.pocketvm.runtime.VmSession
+import dev.pocketvm.runtime.VmSessionHost
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -77,7 +77,7 @@ object SnapshotPolicy {
 class SnapshotManager @Inject constructor(
     private val layout: VmStorageLayout,
     private val qemu: QemuEnvironment,
-    private val session: VmSession,
+    private val sessions: VmSessionHost,
 ) {
 
     private val _progress = MutableStateFlow<String?>(null)
@@ -93,7 +93,7 @@ class SnapshotManager @Inject constructor(
 
     suspend fun create(vmId: String, label: String): Result<SnapshotMeta> = withContext(Dispatchers.IO) {
         runCatching {
-            requireStopped()
+            requireStopped(vmId)
             val disk = layout.diskFile(vmId)
             require(disk.isFile) { "磁盘还不存在，先启动一次虚拟机" }
             require(Qcow2Creator.isQcow2(disk)) { "只有 qcow2 磁盘支持快照" }
@@ -107,7 +107,7 @@ class SnapshotManager @Inject constructor(
 
     suspend fun restore(vmId: String, snapshotId: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            requireStopped()
+            requireStopped(vmId)
             val meta = readMeta(vmId, snapshotId) ?: error("快照不存在")
             val exe = qemu.resolveQemuImg(layout) ?: error("缺少 qemu-img，无法恢复快照")
             val disk = layout.diskFile(vmId)
@@ -139,7 +139,7 @@ class SnapshotManager @Inject constructor(
 
     suspend fun delete(vmId: String, snapshotId: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            requireStopped()
+            requireStopped(vmId)
             val meta = readMeta(vmId, snapshotId) ?: error("快照不存在")
             val exe = qemu.resolveQemuImg(layout)
             val disk = layout.diskFile(vmId)
@@ -156,8 +156,10 @@ class SnapshotManager @Inject constructor(
 
     // ---------- internals ----------
 
-    private fun requireStopped() {
-        SnapshotPolicy.blockReason(session.runningVmId(), session.state.value)?.let { error(it) }
+    private fun requireStopped(vmId: String) {
+        val state = sessions.stateOf(vmId)
+        SnapshotPolicy.blockReason(if (sessions.isRunning(vmId)) vmId else null, state)
+            ?.let { error(it) }
     }
 
     private fun writeSnapshot(vmId: String, label: String, exe: File, auto: Boolean): SnapshotMeta {

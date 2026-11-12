@@ -229,6 +229,7 @@ fun AppNavHost(
             if (target == null) {
                 Text("虚拟机不存在或已删除", modifier = Modifier.padding(24.dp))
             } else {
+                LaunchedEffect(vmId) { vm.openConsole(vmId) }
                 ConsoleScreen(
                     state = state,
                     vm = target,
@@ -269,7 +270,7 @@ fun AppNavHost(
             if (target == null) {
                 Text("虚拟机不存在或已删除", modifier = Modifier.padding(24.dp))
             } else {
-                val running = (state.runtime as? VmRuntimeState.Running)?.vmId == vmId
+                val running = state.runtimes[vmId] is VmRuntimeState.Running
                 VmConnectionScreen(
                     vm = target,
                     running = running,
@@ -343,6 +344,7 @@ fun AppNavHost(
             if (target == null) {
                 Text("虚拟机不存在或已删除", modifier = Modifier.padding(24.dp))
             } else {
+                LaunchedEffect(vmId) { vm.focus(vmId) }
                 VmDiagnosticsScreen(
                     state = state,
                     vm = target,

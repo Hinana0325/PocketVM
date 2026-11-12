@@ -69,7 +69,8 @@ fun VmDiagnosticsScreen(
 ) {
     val diag = state.diagnostics
     val snapshot = diag.snapshot
-    val nowMs = rememberNowMs(active = state.runtime is VmRuntimeState.Running)
+    val vmRuntime = state.runtimes[vm.id] ?: VmRuntimeState.Idle
+    val nowMs = rememberNowMs(active = vmRuntime is VmRuntimeState.Running)
     val report = state.sessionReports[vm.id]
 
     Column(modifier = Modifier.fillMaxSize().padding(contentPadding)) {
@@ -89,7 +90,7 @@ fun VmDiagnosticsScreen(
             SectionCard(title = "健康判定", subtitle = "每 5 秒采样一次") {
                 if (snapshot == null) {
                     Text(
-                        when (state.runtime) {
+                        when (vmRuntime) {
                             is VmRuntimeState.Running -> "正在等待第一个采样窗口，暂不下结论。"
                             is VmRuntimeState.Preparing -> "启动中，QMP 握手后开始采样。"
                             is VmRuntimeState.Stopping -> "正在关机，诊断信号已停止更新。"
@@ -211,12 +212,14 @@ fun DiagnosticDetailScreen(
     onOpenLogs: () -> Unit,
     onRequestBatteryWhitelist: () -> Unit,
 ) {
-    val runtime = state.runtime
-    val otherRunning = (runtime as? VmRuntimeState.Running)?.takeIf { it.vmId != vm.id }
+    val runtime = state.runtimes[vm.id] ?: VmRuntimeState.Idle
+    val otherRunning = state.runtimes.entries
+        .firstOrNull { it.key != vm.id && it.value is VmRuntimeState.Running }
+        ?.value as? VmRuntimeState.Running
     val lastManifest = state.lastRuns[vm.id]
     val report = state.sessionReports[vm.id]
     val diag = state.diagnostics
-    val canStart = !state.busy && otherRunning == null &&
+    val canStart = !state.busy &&
         (runtime is VmRuntimeState.Idle ||
             runtime is VmRuntimeState.Exited ||
             runtime is VmRuntimeState.Failed)
@@ -382,7 +385,9 @@ private fun DiagnosticSubPage(
         )
         otherRunning != null -> EmptyPanel(
             title = "当前虚拟机未运行",
-            subtitle = "另一台虚拟机正在运行，诊断数据属于那台；切过去查看，或先停止再启动这一台。",
+            subtitle = "其他虚拟机在运行；这台启动后即可看到它自己的诊断数据（多机同跑受内存预算约束）。",
+            actionLabel = if (canStart) "启动虚拟机" else null,
+            onAction = if (canStart) onStart else null,
         )
         else -> EmptyPanel(
             title = "还没有可诊断的运行",

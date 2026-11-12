@@ -7,7 +7,7 @@ import androidx.navigation.toRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.navigation.VmSnapshots
-import dev.pocketvm.runtime.VmSession
+import dev.pocketvm.runtime.VmSessionHost
 import dev.pocketvm.storage.SnapshotManager
 import dev.pocketvm.storage.SnapshotMeta
 import dev.pocketvm.storage.SnapshotPolicy
@@ -25,7 +25,7 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class SnapshotViewModel @Inject constructor(
     private val manager: SnapshotManager,
-    private val session: VmSession,
+    private val sessions: VmSessionHost,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -49,12 +49,15 @@ class SnapshotViewModel @Inject constructor(
             manager.progress.collect { text -> _state.update { it.copy(busy = text) } }
         }
         viewModelScope.launch {
-            session.state.collect { runtime ->
-                val runningId = session.runningVmId()
+            sessions.states.collect { map ->
+                val runtime = map[vmId] ?: VmRuntimeState.Idle
                 _state.update {
                     it.copy(
-                        runningVmId = runningId,
-                        blockReason = SnapshotPolicy.blockReason(runningId, runtime),
+                        runningVmId = if (sessions.isRunning(vmId)) vmId else null,
+                        blockReason = SnapshotPolicy.blockReason(
+                            if (sessions.isRunning(vmId)) vmId else null,
+                            runtime,
+                        ),
                     )
                 }
             }

@@ -62,11 +62,12 @@ fun VmDetailScreen(
     onStop: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val runtime = state.runtime
-    val running = runtime is VmRuntimeState.Running &&
-        (runtime as VmRuntimeState.Running).vmId == vm.id
-    val otherRunning = (runtime as? VmRuntimeState.Running)?.takeIf { it.vmId != vm.id }
-    val metrics = state.metrics.takeIf { running }
+    val runtime = state.runtimes[vm.id] ?: VmRuntimeState.Idle
+    val running = runtime is VmRuntimeState.Running
+    val otherRunning = state.runtimes.entries
+        .firstOrNull { it.key != vm.id && it.value is VmRuntimeState.Running }
+        ?.value as? VmRuntimeState.Running
+    val metrics = state.metricsByVm[vm.id]
     var confirmDelete by remember { mutableStateOf(false) }
 
     if (confirmDelete) {
@@ -115,8 +116,7 @@ fun VmDetailScreen(
                 KeyValueRow(
                     "状态",
                     when (runtime) {
-                        is VmRuntimeState.Running ->
-                            if (runtime.vmId == vm.id) "运行中 · PID ${runtime.pid}" else "另一台在运行"
+                        is VmRuntimeState.Running -> "运行中 · PID ${runtime.pid}"
                         is VmRuntimeState.Preparing -> "启动中"
                         is VmRuntimeState.Stopping -> "正在关机"
                         is VmRuntimeState.Exited -> "已退出 (exit=${runtime.exitCode})"
@@ -138,8 +138,7 @@ fun VmDetailScreen(
                         onClick = if (running) onStop else onStart,
                         enabled = !state.busy &&
                             runtime !is VmRuntimeState.Preparing &&
-                            runtime !is VmRuntimeState.Stopping &&
-                            otherRunning == null,
+                            runtime !is VmRuntimeState.Stopping,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (running) MaterialTheme.colorScheme.error
                             else MaterialTheme.colorScheme.primary,
@@ -153,7 +152,7 @@ fun VmDetailScreen(
                 }
                 otherRunning?.let {
                     Text(
-                        "另一台虚拟机正在运行，需先停止才能启动这一台。",
+                        "其他虚拟机也在运行；再启动一台会受设备内存预算约束。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

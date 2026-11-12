@@ -10,7 +10,7 @@ import dev.pocketvm.data.VmConfigRepository
 import dev.pocketvm.diagnostics.RunManifestStore
 import dev.pocketvm.runtime.NetworkMonitor
 import dev.pocketvm.runtime.QemuEnvironment
-import dev.pocketvm.runtime.VmSession
+import dev.pocketvm.runtime.VmSessionHost
 import dev.pocketvm.storage.DiskProvisioner
 import dev.pocketvm.storage.FirmwareManager
 import dev.pocketvm.storage.VmStorageLayout
@@ -75,6 +75,13 @@ data class EnvSnapshot(
 data class UiState(
     val vms: kotlin.collections.List<VmConfig> = emptyList(),
     val runtime: VmRuntimeState = VmRuntimeState.Idle,
+    /** 所有 VM 的运行态（多机同跑）；列表/详情按 vmId 取用。 */
+    val runtimes: Map<String, VmRuntimeState> = emptyMap(),
+    /** 当前 UI 聚焦的 VM（控制台/诊断显示它的状态流）。 */
+    val activeVmId: String? = null,
+    val metricsByVm: Map<String, dev.pocketvm.diagnostics.VmMetrics?> = emptyMap(),
+    val diagByVm: Map<String, dev.pocketvm.diagnostics.DiagSnapshot> = emptyMap(),
+    val diagEventsByVm: Map<String, List<dev.pocketvm.diagnostics.DiagEvent>> = emptyMap(),
     val log: String = "",
     /**
      * Tail of the guest's serial console. QEMU stays silent on a healthy launch,
@@ -142,7 +149,7 @@ data class UiState(
 @HiltViewModel
 class VmViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
-    private val session: VmSession,
+    private val sessions: VmSessionHost,
     private val configRepository: VmConfigRepository,
     private val environment: QemuEnvironment,
     private val firmwareManager: FirmwareManager,
@@ -218,9 +225,25 @@ class VmViewModel @Inject constructor(
         refreshBatteryState()
         _ui.update {
             it.copy(
-                log = session.readLog(vmId),
-                serial = session.readSerialTail(vmId),
+                log = vmId?.let { sessions.readLog(it) } ?: "",
+                serial = vmId?.let { sessions.readSerialTail(it) } ?: "",
                 notice = null,
+            )
+        }
+    }
+
+    /** 切换 UI 聚焦的 VM（控制台/诊断按它展示状态流）。 */
+    fun focus(vmId: String) {
+        _ui.update { st ->
+            st.copy(
+                activeVmId = vmId,
+                runtime = st.runtimes[vmId] ?: VmRuntimeState.Idle,
+                metrics = st.metricsByVm[vmId],
+                diagnostics = WatchdogUiState(
+                    enabled = true,
+                    snapshot = st.diagByVm[vmId],
+                    events = st.diagEventsByVm[vmId] ?: emptyList(),
+                ),
             )
         }
     }
@@ -244,7 +267,7 @@ class VmViewModel @Inject constructor(
     fun deleteVm(vmId: String) {
         // 只拦「这一台」还在运行/准备/停止；另一台在运行不该阻止删除 B。
         val runtime = _ui.value.runtime
-        val busy = session.runningVmId() == vmId ||
+        val busy = sessions.isRunning(vmId) ||
             (runtime as? VmRuntimeState.Preparing)?.vmId == vmId ||
             (runtime as? VmRuntimeState.Stopping)?.vmId == vmId
         if (busy) {
@@ -274,7 +297,7 @@ class VmViewModel @Inject constructor(
                 )
             }
             withContext(Dispatchers.IO) { sshConsole.disconnect() }
-            val outcome = session.start(vm)
+            val outcome = sessions.start(vm)
             // The CD fell back to virtio-scsi: remember it so the next start skips
             // the crash entirely (AUTO no longer retries USB). Input is left as
             // configured — the downgrade now keeps USB key/tablet, and virtio
@@ -317,7 +340,7 @@ class VmViewModel @Inject constructor(
                             }
                             append("；重试后启动成功")
                         }
-                        session.preflightNote?.let { append("；").append(it) }
+                        sessions.session(vmId).preflightNote?.let { append("；").append(it) }
                     }
                 }
                 is LaunchOutcome.Rejected -> outcome.report.errors.joinToString("\n") { it.message }
@@ -327,9 +350,9 @@ class VmViewModel @Inject constructor(
                 it.copy(
                     busy = false,
                     notice = message,
-                    log = session.readLog(vmId),
-                    serial = session.readSerialTail(vmId),
-                    argv = session.currentRun(vmId)?.argv ?: it.argv,
+                    log = sessions.readLog(vmId),
+                    serial = sessions.readSerialTail(vmId),
+                    argv = vmId?.let { id -> sessions.currentRun(id)?.argv } ?: it.argv,
                 )
             }
         }
@@ -338,14 +361,14 @@ class VmViewModel @Inject constructor(
     fun stop(vmId: String) {
         viewModelScope.launch {
             _ui.update { it.copy(busy = true, notice = "正在请求关机…") }
-            session.stop(vmId)
+            sessions.stop(vmId)
             // 前台服务/唤醒锁由 VmSession 在进程真正退出后释放。
-            val stillRunning = session.isRunning()
+            val stillRunning = sessions.isRunning(vmId)
             _ui.update {
                 it.copy(
                     busy = false,
                     notice = if (stillRunning) "已发送关机请求，等待 Windows 响应…" else "虚拟机已停止",
-                    log = session.readLog(vmId),
+                    log = sessions.readLog(vmId),
                 )
             }
         }
@@ -358,9 +381,9 @@ class VmViewModel @Inject constructor(
     fun refreshLog(vmId: String?) {
         _ui.update {
             it.copy(
-                log = session.readLog(vmId),
-                serial = session.readSerialTail(vmId),
-                argv = session.currentRun(vmId)?.argv ?: it.argv,
+                log = vmId?.let { sessions.readLog(it) } ?: "",
+                serial = vmId?.let { sessions.readSerialTail(it) } ?: "",
+                argv = vmId?.let { id -> sessions.currentRun(id)?.argv } ?: it.argv,
             )
         }
     }
@@ -547,7 +570,7 @@ class VmViewModel @Inject constructor(
         viewModelScope.launch {
             // P2：诊断包里的 config.json 写 Room 里的当前配置，不写磁盘旧文件。
             val config = configRepository.load(vmId)
-            val result = withContext(Dispatchers.IO) { session.exportDiagnostics(vmId, config) }
+            val result = withContext(Dispatchers.IO) { sessions.exportDiagnostics(vmId, config) }
             _ui.update { state ->
                 result.fold(
                     onSuccess = { state.copy(shareFile = it, notice = "诊断包已生成") },
@@ -566,13 +589,13 @@ class VmViewModel @Inject constructor(
      */
     fun bootFromShell(vmId: String) {
         viewModelScope.launch {
-            val running = (session.state.value as? VmRuntimeState.Running)?.vmId == vmId
+            val running = sessions.isRunning(vmId)
             if (!running) {
                 _ui.update { it.copy(notice = "虚拟机未运行") }
                 return@launch
             }
             _ui.update { it.copy(notice = "正在向 UEFI Shell 输入引导命令…") }
-            val ok = withContext(Dispatchers.IO) { session.bootFromShell("fs0") }
+            val ok = withContext(Dispatchers.IO) { sessions.session(vmId).bootFromShell("fs0") }
             _ui.update {
                 it.copy(
                     notice = if (ok) {
@@ -598,7 +621,7 @@ class VmViewModel @Inject constructor(
      * 所以这是固件菜单/安装界面唯一可靠的输入途径。静默发送，不弹提示。
      */
     fun sendGuestKey(vmId: String, qcode: String, label: String) {
-        if (session.runningVmId() != vmId) {
+        if (!sessions.isRunning(vmId)) {
             _ui.update {
                 it.copy(
                     lastGuestKeyLabel = label,
@@ -609,7 +632,7 @@ class VmViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) { session.sendKey(qcode) }
+            val ok = withContext(Dispatchers.IO) { sessions.session(vmId).sendKey(qcode) }
             _ui.update {
                 it.copy(
                     lastGuestKeyLabel = label,
@@ -622,20 +645,20 @@ class VmViewModel @Inject constructor(
 
     /** 组合键，例如 Ctrl+Alt+Del。 */
     fun sendGuestCombo(vmId: String, qcodes: List<String>) {
-        if (session.runningVmId() != vmId) return
-        viewModelScope.launch(Dispatchers.IO) { session.sendKeys(qcodes) }
+        if (!sessions.isRunning(vmId)) return
+        viewModelScope.launch(Dispatchers.IO) { sessions.session(vmId).sendKeys(qcodes) }
     }
 
     /** 把一段文本打给客户机（US 布局子集），末尾由调用方决定是否带回车。 */
     fun typeGuestText(vmId: String, text: String) {
         val payload = text.take(200)
         if (payload.isEmpty()) return
-        if (session.runningVmId() != vmId) {
+        if (!sessions.isRunning(vmId)) {
             _ui.update { it.copy(notice = "这台虚拟机没有在运行") }
             return
         }
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) { session.typeText(payload) }
+            val ok = withContext(Dispatchers.IO) { sessions.session(vmId).typeText(payload) }
             if (!ok) {
                 _ui.update { it.copy(notice = "文本发送失败：只支持 US 布局的字母/数字/常用符号") }
             }
@@ -663,19 +686,19 @@ class VmViewModel @Inject constructor(
             configRepository.save(updated)
             refresh()
 
-            if (session.runningVmId() != vmId) {
+            if (!sessions.isRunning(vmId)) {
                 _ui.update { it.copy(notice = "已卸载安装介质，下次启动将从虚拟磁盘引导") }
                 return@launch
             }
 
             _ui.update { it.copy(busy = true, notice = "已卸载安装介质，正在从虚拟磁盘重启…") }
-            session.stop(vmId)
-            val started = session.start(updated) is LaunchOutcome.Started
+            sessions.stop(vmId)
+            val started = sessions.start(updated) is LaunchOutcome.Started
             _ui.update {
                 it.copy(
                     busy = false,
                     notice = if (started) "已卸载介质，正在从虚拟磁盘启动" else "介质已卸载，但重启失败，请手动启动",
-                    log = session.readLog(vmId),
+                    log = sessions.readLog(vmId),
                 )
             }
         }
@@ -763,11 +786,20 @@ class VmViewModel @Inject constructor(
     private fun collectRuntime() {
         viewModelScope.launch {
             // 运行结束时清单会被重写（outcome / exitCode / finishedAt），
-            // 「最近一次运行」与启动报表必须重读；只在离开运行态的那一拍
+            // 「最近一次运行」与启动报表必须重读；只在聚焦的 VM 离开运行态时
             // refresh，避免每个状态帧都做磁盘 IO。
             var wasLive = false
-            session.state.collect { state ->
-                _ui.update { it.copy(runtime = state) }
+            sessions.states.collect { map ->
+                _ui.update { st ->
+                    val active = st.activeVmId
+                        ?: map.entries.firstOrNull { it.value is VmRuntimeState.Running }?.key
+                    st.copy(
+                        runtimes = map,
+                        activeVmId = active,
+                        runtime = active?.let { map[it] } ?: VmRuntimeState.Idle,
+                    )
+                }
+                val state = _ui.value.runtime
                 // Keep the wakelock through the whole shutdown: dropping it while
                 // Stopping is in flight is exactly when Android freezes the app.
                 val keepAlive = state is VmRuntimeState.Running ||
@@ -777,7 +809,7 @@ class VmViewModel @Inject constructor(
                 if (wasLive && terminal) refresh()
                 wasLive = keepAlive
                 if (!keepAlive) {
-                    // 前台服务由 VmSession 收尾；这里只处理 UI 侧的 SSH 状态。
+                    // 前台服务由各 VmSession 收尾（引用计数）；这里只处理 UI 侧的 SSH 状态。
                     if (sshConsole.state.value !is SshState.Disconnected) {
                         viewModelScope.launch(Dispatchers.IO) { sshConsole.disconnect() }
                     }
@@ -788,18 +820,29 @@ class VmViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            session.metrics.collect { sample ->
-                _ui.update { it.copy(metrics = sample) }
+            sessions.metrics.collect { map ->
+                _ui.update { st ->
+                    st.copy(metricsByVm = map, metrics = st.activeVmId?.let { id -> map[id] })
+                }
             }
         }
         // T2 的看门狗快照与事件都已在内存里（每 5 秒整体替换），这里只做
         // 合流与 UI 契约映射；不解析 jsonl，也不在 UI 侧重算判定。
         viewModelScope.launch {
-            combine(session.diag, session.diagEvents) { snapshot, events ->
-                WatchdogUiState(enabled = true, snapshot = snapshot, events = events)
-            }.collect { diag ->
-                _ui.update { it.copy(diagnostics = diag) }
-            }
+            combine(sessions.diag, sessions.diagEvents) { snapshots, events -> snapshots to events }
+                .collect { (snapshots, eventsByVm) ->
+                    _ui.update { st ->
+                        st.copy(
+                            diagByVm = snapshots,
+                            diagEventsByVm = eventsByVm,
+                            diagnostics = WatchdogUiState(
+                                enabled = true,
+                                snapshot = st.activeVmId?.let { id -> snapshots[id] },
+                                events = st.activeVmId?.let { id -> eventsByVm[id] } ?: emptyList(),
+                            ),
+                        )
+                    }
+                }
         }
         viewModelScope.launch {
             sshConsole.state.collect { ssh ->
@@ -817,10 +860,10 @@ class VmViewModel @Inject constructor(
                 if (running) {
                     // All of these are file reads: never on Main.
                     val tick = withContext(Dispatchers.IO) {
-                        val id = session.runningVmId()
+                        val id = _ui.value.activeVmId?.takeIf { sessions.isRunning(it) }
                         LogTick(
-                            log = session.readLog(id),
-                            serial = session.readSerialTail(id),
+                            log = id?.let { sessions.readLog(it) } ?: "",
+                            serial = id?.let { sessions.readSerialTail(it) } ?: "",
                             vmId = id,
                             usedBytes = id?.let {
                                 diskProvisioner.usedBytes(layout.diskFile(it))
