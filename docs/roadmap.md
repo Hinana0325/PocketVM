@@ -2,7 +2,8 @@
 
 > 定稿日期：2026-10-30。定位决定：先做**开发者导向的移动端虚拟化实验室**，
 > 普通用户版等硬件加速与 Windows 安装真正跑通后再谈。AI Agent 接口**不做**
-> （已明确排除，不在任何阶段中）。
+> （已明确排除，不在任何阶段中；指远程/云侧控制接口——本地只读、默认关闭、
+> 需 token 的调试接口不属于此类，见 `docs/debug-api.md`，已于 2026-11-12 落地）。
 
 ## 1. 定位
 
@@ -13,7 +14,11 @@ PocketVM 不只是一个“在手机上运行 Windows 的 QEMU 启动器”，�
 
 目标设备：小米 14 Pro（骁龙 8 Gen 3），未 Root。这是全部取舍的前提。
 
-## 2. 现状基线（2026-10-30，仓库 main）
+## 2. 现状基线（2026-11-12 更新；原始基线 2026-10-30）
+
+> 2026-11-12：0.11.0 已发布（Android 17 工具链、Room/DataStore、Hilt/WorkManager、
+> Navigation Compose、性能调度、H4 归因与启动报表）；Win11 已在真机启动到桌面；
+> 本机只读调试接口已落地；本机与 CI 侧载签名已统一。**同时只能跑一台 VM** 的约束仍在。
 
 - QEMU 11.1.2 + edk2，ARM64 `virt`，TCG 软模拟；`VmSession` / `QemuCommandBuilder` /
   `QmpClient` / `DiskProvisioner` / `FirmwareManager` / `IsoImporter` 已有，QMP 优雅关机、
@@ -48,6 +53,7 @@ PocketVM 不只是一个“在手机上运行 Windows 的 QEMU 启动器”，�
 | Acceleration | KVM、Hypervisor、Virtio、图形加速 | 未做；见第 5 节，先探测、后接入 |
 | Snapshot | 快照、恢复、备份 | 未做 |
 | Console | VNC、SPICE、串口、远程桌面 | VNC（仅本机）与 SSH 已有；SPICE、串口未做；局域网 VNC 入口已下线（D1=B） |
+| Debug API | 本机只读 HTTP：状态/日志/诊断/快照 | 已实现（`127.0.0.1:18080`，默认关，需 token；真机联调待做） |
 
 ## 5. 硬件抽象层（最值得做的部分）
 

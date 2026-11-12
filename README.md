@@ -3,7 +3,7 @@
 在未 Root 的小米 14 Pro（Snapdragon 8 Gen 3 / arm64）上，用 **QEMU TCG** 跑 Windows ARM64。
 0.1.x 只做一件事：**把启动链做成可重复验证的**，而不是先堆界面。
 
-当前代码对应计划中的 **P0（执行环境）** 与 **P1 的前半段**：
+当前代码对应 **P0（执行环境）**、**P1（可观测/归因）** 与 **P2/P3 的官方技术栈迁移**（Room / Hilt / Navigation / WorkManager），并已落地本机只读调试接口（`docs/debug-api.md`）：
 
 | 能力 | 状态 |
 | --- | --- |
@@ -18,10 +18,11 @@
 | 日志尾部读取 + 失败归因 + 诊断包 zip | 已实现 |
 | 性能占用仪表（CPU / 每 vCPU / 内存 / I/O，1 Hz 宿主机侧采样） | 已实现，含单测 |
 | 启动报表（按 session 聚合启动耗时 / 阶梯命中 / exit 分布） | 已实现，含单测 |
+| 调试接口（`127.0.0.1:18080`，只读 + token，默认关） | 已实现，含单测；真机联调待做 |
 | VNC 服务（端口 / 仅本机 / 密码） | 已实现，App 不内置渲染器；局域网模式暂不可用（`VNC_LAN_UNAVAILABLE`，P1 决策已下线该入口） |
 | GPU / KVM 加速 | 不在范围 |
 
-## 版本演进（当前 0.10.36 / QEMU 11.1.2 / edk2 2026.08）
+## 版本演进（当前 0.11.0 / QEMU 11.1.2 / edk2 2026.08；main 另有未发版改动）
 
 | 版本 | 关键变化 |
 | --- | --- |
@@ -66,6 +67,8 @@
 | 0.10.34 | **A3a 修复 + 25226 二次确认**：CD 提示卡覆盖 FIRMWARE / LOADING / BOOT_PROMPT，不再随阶段前进消失，保留手动关闭与 180s 安全窗口；选择 25226 时二次确认（不硬阻断）；新增 7 个单测 |
 | 0.10.35 | **灰白中性色重设计（Stitch）**：虚拟机列表、创建向导、控制台改用灰白中性配色，亮/暗两套主题同步；整理卡片层级与间距 |
 | 0.10.36 | **界面细节收敛**：统一间距与文本截断，修复换行/溢出 |
+| 0.11.0 | **Android 17 工具链 + 官方技术栈迁移**：AGP 9.1.1 / Gradle 9.3.1 / Kotlin 2.2.10 / compileSdk+targetSdk 37；性能调度（vCPU 绑性能核、温控降档、持续性能模式）；导航迁移 Navigation Compose；数据层 Room 2.7.2 + DataStore + NetworkMonitor；Hilt 2.59.1 依赖注入 + WorkManager 日志清理；H4 冻结归因与启动/会话报表 |
+| main（未发版） | **TPM 2.0 阶段 2**（swtpm 进程管理，分支验证）；**本机只读调试接口**（`127.0.0.1:18080`，默认关，`X-PocketVM-Token`）；**本机/CI 统一侧载签名**（专用 keystore，私钥不进仓库） |
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
 
@@ -382,11 +385,13 @@ docs/                       架构、排障、打包与推送、第三方许可�
 
 | 项 | 结论 |
 | --- | --- |
-| 编译（aarch64 动态 PIE） | 通过；单元测试以 `:app:testDebugUnitTest` 实跑为准（2026-11-08 实跑 252 用例：failures=0 / errors=0，6 个 `qemu-img`/`qemu-io` 交叉校验用例因宿主机未装而 `assumeTrue` 跳过） |
+| 编译（aarch64 动态 PIE） | 通过；单元测试以 `:app:testDebugUnitTest` 实跑为准（2026-11-12 实跑：31 文件 / 307 用例，failures=0 / errors=0，6 个 `qemu-img`/`qemu-io` 交叉校验用例因宿主机未装而 `assumeTrue` 跳过） |
 | APK 结构 | `lib/arm64-v8a/libqemu-system-aarch64.so` + keymaps，`extractNativeLibs=true` |
 | 真机启动 QEMU | **通过**（小米 14 Pro / Android 16）：UEFI 起来、virtio-gpu 出图 1280x800、VNC 服务正常、USB 键盘/数位板输入可用 |
 | 安装介质启动 | **通过**：固件从 USB 光驱引导 → Windows 安装程序答完「按任意键」→ `Loading files...` 走完 → WinPE 接管。USB 崩溃回退 virtio-scsi 后：无驱动盘时同一 ISO 双挂（scsi-cd 引导 + AHCI 副本供 WinPE 读 `install.wim`）；挂驱动盘时只走 virtio-cd（两个 ISO 设备同屏会冻结安装） |
-| Windows 安装全流程 | **安装已完成，首次启动/OOBE 进行中**（2026-11-08 真机）：Win11 已从磁盘引导进 OOBE（「请稍等」+ 中文语言栏），看门狗 HEALTHY；桌面尚未到达。此前两个拦路问题已修——① 显示设备：`virtio-gpu-pci` 的 GOP 没有线性帧缓冲（`Mode->FrameBufferBase=0`、`FrameBufferSize=0`），bootmgfw 把 NULL 存成目标表面，首次清屏 memcpy 写地址 0 触发 Data Abort（ESR `0x96000047`、FAR `0x0`），默认改为 `ramfb`；② 随机消失：ARMv9 PAC 使跨线程 `siglongjmp` 的 `autiasp` 失败（exit=132，libc `longjmp+460`），执行层已打无签名协程切换补丁。此前复现的「主循环停摆」均为 MIUI/HyperOS 的 cgroup 冻结（非 QEMU 故障），电池设「无限制」后持续解冻，App 已加 H4 采样间隙检测（详见 `docs/troubleshooting.md`） |
+| Windows 安装全流程 | **已完成，真机到桌面**（2026-11-12 真机）：审计模式建立本地账户 pvm（pvm/pvm）并完成优化（SysMain/WSearch/DiagTrack 停用、休眠关闭、RDP 开启），压盘后经 App 导入，UEFI + ramfb 从 NVMe（ESP 回退启动）进入锁屏 → 桌面；8 vCPU / 8192 MB。此前两个拦路问题已修——① 显示设备：`virtio-gpu-pci` 的 GOP 没有线性帧缓冲（`Mode->FrameBufferBase=0`、`FrameBufferSize=0`），bootmgfw 把 NULL 存成目标表面，首次清屏 memcpy 写地址 0 触发 Data Abort（ESR `0x96000047`、FAR `0x0`），默认改为 `ramfb`；② 随机消失：ARMv9 PAC 使跨线程 `siglongjmp` 的 `autiasp` 失败（exit=132，libc `longjmp+460`），执行层已打无签名协程切换补丁。此前复现的「主循环停摆」均为 MIUI/HyperOS 的 cgroup 冻结（非 QEMU 故障），电池设「无限制」后持续解冻，App 已加 H4 采样间隙检测（详见 `docs/troubleshooting.md`） |
+
+| 调试接口 | 单测（token/鉴权/钳制/快照排除清单）+ CI 通过；真机联调待做（需先停掉运行中的 VM） |
 
 第一次上机时最值得盯的三件事：`QemuEnvironment` 是否报 `QEMU_MISSING`（找不到 .so）、
 日志里有没有 `Could not read keymap`、以及 VNC 端口是否真的在监听。
