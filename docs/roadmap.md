@@ -18,16 +18,17 @@ PocketVM 不只是一个“在手机上运行 Windows 的 QEMU 启动器”，�
 
 > 2026-11-12：0.11.0 已发布（Android 17 工具链、Room/DataStore、Hilt/WorkManager、
 > Navigation Compose、性能调度、H4 归因与启动报表）；Win11 已在真机启动到桌面；
-> 本机只读调试接口已落地；本机与 CI 侧载签名已统一。**同时只能跑一台 VM** 的约束仍在。
+> 本机只读调试接口已落地；本机与 CI 侧载签名已统一。main 之后新增多机同跑第一版、
+> VM 复制、停止态 / 运行时快照与 qcow2 ⇄ raw 转换，均待真机收口。
 
-- QEMU 11.1.2 + edk2，ARM64 `virt`，TCG 软模拟；`VmSession` / `QemuCommandBuilder` /
-  `QmpClient` / `DiskProvisioner` / `FirmwareManager` / `IsoImporter` 已有，QMP 优雅关机、
-  SSH 控制台、运行日志（manifest 快照）已有。**同时只能跑一台 VM**（`VmSession` 单例），
-  多虚拟机管理是 P3 要打破的约束。
-- Windows 11 安装已在真机端到端跑通到 OOBE（2026-11-08：Win11 从磁盘引导进「请稍等」+
-  中文语言栏，看门狗 HEALTHY）；此前的「主循环停摆」已定位为 MIUI/HyperOS 的 cgroup
-  冻结（非 QEMU 故障），电池设「无限制」后持续解冻，App 已加 H4 采样间隙检测。桌面尚未
-  到达，P1 验收（含 minor 升版）仍是人类 owner 的决策（D4）。
+- QEMU 11.1.2 + edk2，ARM64 `virt`，TCG 软模拟；`VmSessionHost` 按 vmId 持有多个
+  `VmSession`，`QemuCommandBuilder` / `QmpClient` / `DiskProvisioner` / `FirmwareManager` /
+  `IsoImporter` 已有，QMP 优雅关机、SSH 控制台、运行日志（manifest 快照）已有。
+  多机同跑第一版已实现（独立 QEMU 进程 / VNC 端口、内存预算、保活引用计数），真机验证待做。
+- Windows 11 安装已在真机端到端跑通到桌面（2026-11-12：审计模式建立 pvm 账户并完成
+  优化盘，UEFI + ramfb 从 NVMe 启动，8 vCPU / 8192 MB）。此前的「主循环停摆」已定位为
+  MIUI/HyperOS 的 cgroup 冻结（非 QEMU 故障），电池设「无限制」后持续解冻，App 已加
+  H4 采样间隙检测。
 - VNC 局域网访问被挡在校验层（`VNC_LAN_UNAVAILABLE`，DES 后端缺失），只有“仅本机 +
   `adb forward`”是通的。2026-10-31 决策 D1=B：下线/隐藏局域网入口并文档化，
   执行层不重建，DES 留到未来重建 QEMU 时再补。
@@ -92,7 +93,7 @@ PocketVM
 | P0 | 0.1–0.10.36（已结束） | 执行环境与启动链：QEMU ARM64 启动器、UEFI/固件自愈、诊断与控制台；已形成基线 |
 | P1 | 0.11.0（已发布，2026-11-12，owner 决策升 minor 并打 tag） | Windows ARM 启动与虚拟磁盘管理；Win11 ARM64 完整安装端到端跑通一次；主循环停摆可观测/归因；以真机证据为准；另含 Android 17 工具链、性能调度、导航迁移（Navigation Compose）、数据层（Room/DataStore）、Hilt/WorkManager 官方技术栈迁移 |
 | P2 | 0.12+（待定） | Android GSI 启动与日志分析（真机复验，不以主机 QEMU 结果代替） |
-| P3 | 待定 | 多虚拟机管理、快照、网络（NAT/端口转发/多 VM 互联） |
+| P3 | 待定 | 多 VM 互联与网络实验室；多机同跑第一版、停止态 / 运行时快照已提前落地，待真机验证 |
 | P4 | 待定 | 硬件加速能力探测与接入（以前一阶段的探测结论为准） |
 | P5 | 1.0（待定） | 完整移动虚拟机管理器；桌面模式与虚拟磁盘工具视 P3–P4 余量决定 |
 
@@ -116,7 +117,7 @@ Vectras VM（GitHub 开源，QEMU 安卓前端，多系统、多架构、VNC）�
 
 ## 9. 未决事项
 
-- Windows 11 完整安装：已到 OOBE（2026-11-08 真机），桌面与首次设置尚未走完；P1 验收与 minor 升版由人类 owner 拍板（D4）。主循环停摆已定位为系统冻结（H4，非 QEMU 故障），不再是未决问题；真正的 QEMU 内部停摆（H1/H2/H3）尚未在真机复现。
+- 新能力真机收口：多机同跑、VM 复制、停止态 / 运行时快照、qcow2 ⇄ raw 转换与本机调试接口仍需真机验证；Windows 11 完整安装已于 2026-11-12 真机到桌面，不再作为未决事项。
 - VNC 局域网恢复：需在重建执行层时补 DES 后端（nettle/gnutls），暂无排期（D1=B 已下线入口）。
 - KVM 可用性：以只读探测结果为准，未探测前不承诺。
 - 发布签名：当前只有 debug/perf（debug 签名）包，生产签名与发布流水线未落地。

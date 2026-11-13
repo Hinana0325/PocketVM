@@ -8,7 +8,6 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +17,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+
+/** 快照进度必须在成功、失败和异常取消时都复位，避免界面永久停留在忙碌态。 */
+internal inline fun <T> withSnapshotProgress(
+    update: (String?) -> Unit,
+    message: String,
+    block: () -> T,
+): T {
+    update(message)
+    try {
+        return block()
+    } finally {
+        update(null)
+    }
+}
 
 /**
  * 一台 VM 的快照元数据。
@@ -84,6 +97,16 @@ object SnapshotPolicy {
         runtime is VmRuntimeState.Stopping -> "虚拟机正在关机，请等关机完成"
         else -> null
     }
+
+    /** 恢复入口按快照类型选门禁；运行时快照在停止时禁用，停止态快照反之。 */
+    fun restoreAllowed(
+        snapshot: SnapshotMeta,
+        blockReason: String?,
+        liveBlockReason: String?,
+    ): Boolean = if (snapshot.live) liveBlockReason == null else blockReason == null
+
+    /** 所有快照都通过 qemu-img 删除内部 Tag，因此只允许在停止状态删除。 */
+    fun deleteAllowed(blockReason: String?): Boolean = blockReason == null
 }
 
 /**
@@ -125,34 +148,35 @@ class SnapshotManager @Inject constructor(
     }
 
     suspend fun restore(vmId: String, snapshotId: String): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            requireStopped(vmId)
-            val meta = readMeta(vmId, snapshotId) ?: error("快照不存在")
-            val exe = qemu.resolveQemuImg(layout) ?: error("缺少 qemu-img，无法恢复快照")
-            val disk = layout.diskFile(vmId)
-            require(disk.isFile) { "磁盘不存在，无法恢复" }
+        withSnapshotProgress({ _progress.value = it }, "正在准备恢复快照…") {
+            runCatching {
+                requireStopped(vmId)
+                val meta = readMeta(vmId, snapshotId) ?: error("快照不存在")
+                val exe = qemu.resolveQemuImg(layout) ?: error("缺少 qemu-img，无法恢复快照")
+                val disk = layout.diskFile(vmId)
+                require(disk.isFile) { "磁盘不存在，无法恢复" }
 
-            // 先给当前状态留退路：自动快照失败就中止恢复。
-            _progress.value = "正在创建恢复前自动快照…"
-            writeSnapshot(vmId, "恢复前自动快照 ${SnapshotMetaCodec.diskTag(meta.id)}", exe, auto = true)
+                // 先给当前状态留退路：自动快照失败就中止恢复。
+                _progress.value = "正在创建恢复前自动快照…"
+                writeSnapshot(vmId, "恢复前自动快照 ${SnapshotMetaCodec.diskTag(meta.id)}", exe, auto = true)
 
-            _progress.value = "正在回滚磁盘…"
-            val (code, out) = runQemuImg(exe, "snapshot", "-a", meta.diskTag, disk.absolutePath)
-            check(code == 0) { "qemu-img snapshot -a 失败（exit=$code）：${out.take(300)}" }
+                _progress.value = "正在回滚磁盘…"
+                val (code, out) = runQemuImg(exe, "snapshot", "-a", meta.diskTag, disk.absolutePath)
+                check(code == 0) { "qemu-img snapshot -a 失败（exit=$code）：${out.take(300)}" }
 
-            varsBackupFile(vmId, meta.id).takeIf { it.isFile }?.let { vars ->
-                _progress.value = "正在恢复 UEFI 变量…"
-                atomicCopy(vars, layout.varsFile(vmId))
+                varsBackupFile(vmId, meta.id).takeIf { it.isFile }?.let { vars ->
+                    _progress.value = "正在恢复 UEFI 变量…"
+                    atomicCopy(vars, layout.varsFile(vmId))
+                }
+                val tpmDir = tpmBackupDir(vmId, meta.id)
+                if (meta.tpmIncluded && tpmDir.isDirectory) {
+                    _progress.value = "正在恢复 TPM 状态…"
+                    val target = File(layout.vmDir(vmId), "tpm/state")
+                    target.deleteRecursively()
+                    tpmDir.copyRecursively(target, overwrite = true)
+                }
+                AgentFeed.event("snapshot.restored", "vm" to vmId, "id" to meta.id)
             }
-            val tpmDir = tpmBackupDir(vmId, meta.id)
-            if (meta.tpmIncluded && tpmDir.isDirectory) {
-                _progress.value = "正在恢复 TPM 状态…"
-                val target = File(layout.vmDir(vmId), "tpm/state")
-                target.deleteRecursively()
-                tpmDir.copyRecursively(target, overwrite = true)
-            }
-            AgentFeed.event("snapshot.restored", "vm" to vmId, "id" to meta.id)
-            _progress.value = null
         }
     }
 
@@ -256,39 +280,42 @@ class SnapshotManager @Inject constructor(
         val id = SnapshotMetaCodec.newId(System.currentTimeMillis(), suffix)
         val tag = SnapshotMetaCodec.diskTag(id)
 
-        _progress.value = if (auto) "正在创建自动快照…" else "正在创建快照…"
-        val (code, out) = runQemuImg(exe, "snapshot", "-c", tag, disk.absolutePath)
-        check(code == 0) { "qemu-img snapshot -c 失败（exit=$code）：${out.take(300)}" }
+        return withSnapshotProgress(
+            update = { _progress.value = it },
+            message = if (auto) "正在创建自动快照…" else "正在创建快照…",
+        ) {
+            val (code, out) = runQemuImg(exe, "snapshot", "-c", tag, disk.absolutePath)
+            check(code == 0) { "qemu-img snapshot -c 失败（exit=$code）：${out.take(300)}" }
 
-        val vars = layout.varsFile(vmId)
-        var varsBytes = 0L
-        if (vars.isFile) {
-            varsBackupFile(vmId, id).let { target ->
-                target.parentFile?.mkdirs()
-                vars.copyTo(target, overwrite = true)
-                varsBytes = target.length()
+            val vars = layout.varsFile(vmId)
+            var varsBytes = 0L
+            if (vars.isFile) {
+                varsBackupFile(vmId, id).let { target ->
+                    target.parentFile?.mkdirs()
+                    vars.copyTo(target, overwrite = true)
+                    varsBytes = target.length()
+                }
             }
-        }
 
-        val tpmState = File(layout.vmDir(vmId), "tpm/state")
-        val tpmIncluded = tpmState.isDirectory
-        if (tpmIncluded) tpmState.copyRecursively(tpmBackupDir(vmId, id), overwrite = true)
+            val tpmState = File(layout.vmDir(vmId), "tpm/state")
+            val tpmIncluded = tpmState.isDirectory
+            if (tpmIncluded) tpmState.copyRecursively(tpmBackupDir(vmId, id), overwrite = true)
 
-        val meta = SnapshotMeta(
-            id = id,
-            label = label.ifBlank { "快照 ${SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date())}" },
-            createdAtEpochMs = System.currentTimeMillis(),
-            diskTag = tag,
-            varsBytes = varsBytes,
-            tpmIncluded = tpmIncluded,
-            auto = auto,
-        )
-        metaFile(vmId, id).let { file ->
-            file.parentFile?.mkdirs()
-            file.writeText(SnapshotMetaCodec.encode(meta))
+            val meta = SnapshotMeta(
+                id = id,
+                label = label.ifBlank { "快照 ${SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date())}" },
+                createdAtEpochMs = System.currentTimeMillis(),
+                diskTag = tag,
+                varsBytes = varsBytes,
+                tpmIncluded = tpmIncluded,
+                auto = auto,
+            )
+            metaFile(vmId, id).let { file ->
+                file.parentFile?.mkdirs()
+                file.writeText(SnapshotMetaCodec.encode(meta))
+            }
+            meta
         }
-        _progress.value = null
-        return meta
     }
 
     private fun readMeta(vmId: String, id: String): SnapshotMeta? =
@@ -313,11 +340,6 @@ class SnapshotManager @Inject constructor(
             .redirectErrorStream(true)
             .also { it.environment().putAll(qemu.childEnvironment(layout)) }
             .start()
-        val output = process.inputStream.bufferedReader().use { it.readText() }
-        if (!process.waitFor(60, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
-            return -1 to "qemu-img 超时（60s）"
-        }
-        process.exitValue() to output
+        runQemuImgProcess(process, timeoutSec = 60)
     }.getOrElse { t -> -1 to (t.message ?: t.javaClass.simpleName) }
 }

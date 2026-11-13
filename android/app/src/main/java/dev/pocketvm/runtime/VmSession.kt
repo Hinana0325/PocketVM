@@ -1071,8 +1071,11 @@ class VmSession @Inject constructor(
                 mapOf("command-line" to "savevm $tag"),
                 timeoutMs = LIVE_SNAPSHOT_TIMEOUT_MS,
             ) ?: error("savevm 没有返回结果（QMP 超时或连接已断开）")
-            val text = response.optString("return")
-            if (text.startsWith("Error", ignoreCase = true)) error(text)
+            val qmpError = response.optJSONObject("error")?.optString("desc")
+                ?.takeIf { it.isNotBlank() }
+                ?: if (response.has("error")) response.get("error").toString() else null
+            liveSnapshotError(qmpError, response.optString("return"))?.let { error(it) }
+            Unit
         }
     }
 
@@ -1084,14 +1087,18 @@ class VmSession @Inject constructor(
     suspend fun loadVmState(tag: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val client = qmp ?: error("QMP 未连接，无法恢复运行时快照")
-            val response = client.execute(
-                "human-monitor-command",
-                mapOf("command-line" to "loadvm $tag"),
-                timeoutMs = LIVE_SNAPSHOT_TIMEOUT_MS,
-            ) ?: error("loadvm 没有返回结果（QMP 超时或连接已断开）")
-            val text = response.optString("return")
-            runCatching { client.execute("cont", null, timeoutMs = 5_000) }
-            if (text.startsWith("Error", ignoreCase = true)) error(text)
+            withGuestResume({ client.execute("cont", null, timeoutMs = 5_000) }) {
+                val response = client.execute(
+                    "human-monitor-command",
+                    mapOf("command-line" to "loadvm $tag"),
+                    timeoutMs = LIVE_SNAPSHOT_TIMEOUT_MS,
+                ) ?: error("loadvm 没有返回结果（QMP 超时或连接已断开）")
+                val qmpError = response.optJSONObject("error")?.optString("desc")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: if (response.has("error")) response.get("error").toString() else null
+                liveSnapshotError(qmpError, response.optString("return"))?.let { error(it) }
+                Unit
+            }
         }
     }
 

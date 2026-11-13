@@ -29,6 +29,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import dev.pocketvm.core.model.VmConfig
 import dev.pocketvm.storage.DiskConverter
 import dev.pocketvm.storage.SnapshotMeta
+import dev.pocketvm.storage.SnapshotPolicy
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -72,9 +73,9 @@ fun VmSnapshotsScreen(
             SectionCard(title = "说明", subtitle = "qcow2 内部快照 · 停止态或运行态") {
                 Text(
                     "快照会记录磁盘当前状态（qcow2 内部快照，秒级、不复制整块盘）。" +
-                        "**停机快照**额外另存 UEFI 变量（vars.fd）与 TPM 状态，恢复前会自动为当前" +
+                        "停机快照额外另存 UEFI 变量（vars.fd）与 TPM 状态，恢复前会自动为当前" +
                         "状态建一份「自动快照」，误恢复可以再回滚。" +
-                        "**运行时快照**不用关机，但只覆盖磁盘与内存，UEFI 变量 / TPM 不随快照回滚。",
+                        "运行时快照不用关机，但只覆盖磁盘与内存，UEFI 变量 / TPM 不随快照回滚。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -148,12 +149,13 @@ fun VmSnapshotsScreen(
                     else -> st.snapshots.forEach { snap ->
                         SnapshotRow(
                             snap = snap,
-                            // 运行时快照要求 VM 在跑；停机快照要求 VM 已停止。
-                            enabled = if (snap.live) {
-                                !liveBlocked && !working
-                            } else {
-                                !blocked && !working
-                            },
+                            restoreEnabled = !working && SnapshotPolicy.restoreAllowed(
+                                snap,
+                                st.blockReason,
+                                st.liveBlockReason,
+                            ),
+                            // 删除走 qemu-img，所有快照（包括运行时快照）都必须停机。
+                            deleteEnabled = !working && SnapshotPolicy.deleteAllowed(st.blockReason),
                             onRestore = { pendingRestore = snap },
                             onDelete = { pendingDelete = snap },
                         )
@@ -216,7 +218,8 @@ fun VmSnapshotsScreen(
 @Composable
 private fun SnapshotRow(
     snap: SnapshotMeta,
-    enabled: Boolean,
+    restoreEnabled: Boolean,
+    deleteEnabled: Boolean,
     onRestore: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -243,8 +246,8 @@ private fun SnapshotRow(
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onRestore, enabled = enabled) { Text("恢复") }
-            OutlinedButton(onClick = onDelete, enabled = enabled) { Text("删除") }
+            OutlinedButton(onClick = onRestore, enabled = restoreEnabled) { Text("恢复") }
+            OutlinedButton(onClick = onDelete, enabled = deleteEnabled) { Text("删除") }
         }
     }
 }

@@ -4,9 +4,12 @@ import dev.pocketvm.core.model.VmRuntimeState
 import dev.pocketvm.storage.SnapshotMeta
 import dev.pocketvm.storage.SnapshotMetaCodec
 import dev.pocketvm.storage.SnapshotPolicy
+import dev.pocketvm.storage.withSnapshotProgress
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -100,5 +103,42 @@ class SnapshotMetaTest {
         assertNotNull(meta)
         assertEquals(false, meta!!.live)
         assertEquals(true, meta.tpmIncluded)
+    }
+
+    @Test
+    fun `live snapshot deletion follows stopped-state policy instead of restore policy`() {
+        val live = SnapshotMeta(
+            id = "20261113-221500-ab12",
+            label = "运行中",
+            createdAtEpochMs = 1_700_000_000_000,
+            diskTag = "pvm-20261113-221500-ab12",
+            varsBytes = 0,
+            tpmIncluded = false,
+            live = true,
+        )
+        val running = VmRuntimeState.Running("vm", 4242, 1_700_000_000_000, 5901, "/tmp/run.log")
+        val runningBlock = SnapshotPolicy.blockReason("vm", running)
+        val runningLiveBlock = SnapshotPolicy.liveBlockReason("vm", running)
+        val stoppedBlock = SnapshotPolicy.blockReason(null, VmRuntimeState.Idle)
+        val stoppedLiveBlock = SnapshotPolicy.liveBlockReason(null, VmRuntimeState.Idle)
+
+        assertTrue(SnapshotPolicy.restoreAllowed(live, runningBlock, runningLiveBlock))
+        assertFalse(SnapshotPolicy.deleteAllowed(runningBlock))
+        assertFalse(SnapshotPolicy.restoreAllowed(live, stoppedBlock, stoppedLiveBlock))
+        assertTrue(SnapshotPolicy.deleteAllowed(stoppedBlock))
+    }
+
+    @Test
+    fun `snapshot progress is cleared when the operation fails`() {
+        val updates = mutableListOf<String?>()
+
+        val failure = assertThrows(IllegalStateException::class.java) {
+            withSnapshotProgress({ updates.add(it) }, "working") {
+                error("boom")
+            }
+        }
+
+        assertEquals("boom", failure.message)
+        assertEquals(listOf("working", null), updates)
     }
 }

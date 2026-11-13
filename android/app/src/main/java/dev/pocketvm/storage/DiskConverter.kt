@@ -4,8 +4,6 @@ import dev.pocketvm.diagnostics.AgentFeed
 import dev.pocketvm.runtime.QemuEnvironment
 import dev.pocketvm.runtime.VmSessionHost
 import java.io.File
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
@@ -199,17 +197,7 @@ class DiskConverter @Inject constructor(
             .redirectErrorStream(true)
             .also { it.environment().putAll(qemu.childEnvironment(layout)) }
             .start()
-        // 边跑边读，避免管道写满导致 waitFor 假超时。
-        val outputFuture = CompletableFuture.supplyAsync {
-            process.inputStream.bufferedReader().use { it.readText() }
-        }
-        val finished = process.waitFor(timeoutSec, TimeUnit.SECONDS)
-        val output = runCatching { outputFuture.get(5, TimeUnit.SECONDS) }.getOrDefault("")
-        if (!finished) {
-            process.destroyForcibly()
-            return -1 to "qemu-img 超时（${timeoutSec}s）"
-        }
-        process.exitValue() to output
+        runQemuImgProcess(process, timeoutSec)
     }.getOrElse { t -> -1 to (t.message ?: t.javaClass.simpleName) }
 
     private companion object {

@@ -11,6 +11,7 @@
 | QEMU 可执行文件探测（真跑 `--version`，不只看文件存在） | 已实现 |
 | 配置校验 + 可操作的中文错误 | 已实现 |
 | QCOW2 磁盘创建（无 `qemu-img` 时用内置写入器，始终精简置备） | 已实现 |
+| qcow2 ⇄ raw 转换（`qemu-img convert`，临时文件 + 原子替换，停止态操作） | 已实现，含单测；真机验证待做 |
 | UEFI pflash code/vars 管理（校验等长） | 已实现 |
 | QEMU 参数构建（virt + NVMe/USB + VNC + QMP） | 已实现，含单元测试 |
 | 进程监督、优雅关机（ACPI→quit→kill）、exit code | 已实现 |
@@ -20,7 +21,7 @@
 | 启动报表（按 session 聚合启动耗时 / 阶梯命中 / exit 分布） | 已实现，含单测 |
 | 调试接口（`127.0.0.1:18080`，只读 + token，默认关） | 已实现，含单测；真机联调待做 |
 | 硬件加速能力探测（只读：/dev/kvm 存在与权限、内核版本、是否在虚拟机内） | 已实现，含单测；KVM 接入未做（TCG 仍是唯一执行路径） |
-| 快照与备份（qcow2 内部快照 + UEFI 变量 / TPM 副本，仅停止状态） | 已实现，含单测；真机验证待做 |
+| 快照与备份（停止态：qcow2 内部快照 + UEFI 变量 / TPM 副本；运行时：内存 + 设备状态，不含 UEFI / TPM） | 已实现，含单测；真机验证待做 |
 | GSI 组件拼装（kernel/ramdisk/system/vendor → GPT 物理分区盘，实验） | 已实现，含单测；启动链与显示未打通 |
 | 多机同跑（每台独立 QEMU 进程 / 独立 VNC 端口 + 内存预算） | 已实现，含单测；真机验证待做 |
 | 客户机串口控制台（`-serial unix` 交互式读写；Linux `console=ttyAMA0` 可用，Windows 需开 EMS） | 已实现，含单测 |
@@ -74,7 +75,7 @@
 | 0.10.35 | **灰白中性色重设计（Stitch）**：虚拟机列表、创建向导、控制台改用灰白中性配色，亮/暗两套主题同步；整理卡片层级与间距 |
 | 0.10.36 | **界面细节收敛**：统一间距与文本截断，修复换行/溢出 |
 | 0.11.0 | **Android 17 工具链 + 官方技术栈迁移**：AGP 9.1.1 / Gradle 9.3.1 / Kotlin 2.2.10 / compileSdk+targetSdk 37；性能调度（vCPU 绑性能核、温控降档、持续性能模式）；导航迁移 Navigation Compose；数据层 Room 2.7.2 + DataStore + NetworkMonitor；Hilt 2.59.1 依赖注入 + WorkManager 日志清理；H4 冻结归因与启动/会话报表 |
-| main（未发版） | **TPM 2.0 阶段 2**（swtpm 进程管理，分支验证）；**本机只读调试接口**（`127.0.0.1:18080`，默认关，`X-PocketVM-Token`）；**本机/CI 统一侧载签名**（专用 keystore，私钥不进仓库） |
+| main（未发版） | **TPM 2.0 阶段 2**（swtpm 进程管理，分支验证）；**本机只读调试接口**；**本机/CI 统一侧载签名**；**多机同跑第一版、VM 复制、客户机串口控制台**；**停止态 / 运行时快照与 qcow2 ⇄ raw 转换**，含快照删除门禁、QMP 错误传播、进度复位与 qemu-img 超时修复 |
 真机（Redmi K70 Pro / SM8650 / Android 16）已达到：QEMU 进程稳定运行、edk2 固件画面出现、VNC 可连。
 失败时优先看三处：`run-<id>.log`（QEMU 原始错误行）、`run-<id>.serial.log`（固件串口输出）、诊断包里的 `qemu-probe.txt`。
 
@@ -187,7 +188,7 @@ Linux 内核自带，装上即可上网。
 | 指标 | 来源 | 说明 |
 | --- | --- | --- |
 | 进程 CPU | `/proc/<pid>/stat` utime+stime 增量 | 以**单核 = 100%** 计。多线程 TCG 让多个 vCPU 线程并行翻译，总值超过 100% 是常态；附最近 60 秒迷你图 |
-| 每 vCPU 占用 | QMP `query-cpus-fast` 拿线程号 → `/proc/<tid>/stat` | 线程号一次运行内不变，只查一次；可看出负载是否摊在所有 vCPU 上 |
+| 每 vCPU 占用 | QMP `query-cpus-fast` 拿线程号 → `/proc/<tid>/schedstat` | 线程号一次运行内不变，只查一次；使用每线程运行纳秒，避免 Android 16 聚合值把所有 vCPU 显示成 100% |
 | 内存 | `/proc/<pid>/statm` resident | RSS 含 TCG 翻译缓存，通常高于客户机内存设定；换算成占手机物理内存的比例 |
 | 磁盘 I/O | `/proc/<pid>/io` read/write_bytes 增量 | qcow2 文件实际落到块层的速率，即用户感知的读写 |
 | 运行时长 | 启动时间戳 | — |
@@ -366,7 +367,7 @@ cd android && ./gradlew :app:assembleDebug                      # 需要调试�
 ## 目录
 
 ```
-android/                    Gradle 根（AGP 8.7 / Kotlin 2.1 / Compose）
+android/                    Gradle 根（AGP 9.1.1 / Kotlin 2.2.10 / Compose）
   app/src/main/java/dev/pocketvm/
     core/model/             VmConfig / RunManifest / 运行状态
     core/config/            配置存储（原子写）、校验器（纯 Kotlin，可单测）
@@ -414,7 +415,7 @@ docs/                       架构、排障、打包与推送、第三方许可�
 - 多机同跑（第一版）：每台 VM 一个独立 QEMU 进程与 VNC 端口；同时启动受设备内存预算（系统保留 1 GB）约束；控制台与诊断页一次聚焦一台（进入页面即切换）。
 - **SPICE 控制台不可用**：执行层没有编入 spice-server（`DT_NEEDED` 只有 z / pixman / slirp / glib / m / libc，无 `spice_server_*` 符号），App 也没有 SPICE 客户端；要恢复需重建执行层并移植客户端。控制台可用通道是 VNC（仅本机）、SSH 与**客户机串口**（Linux 可用，Windows 需自行开 EMS）。
 - minSdk 30：执行层以 API 30 为目标编译（`memfd_create` 的下限）。
-- 未做快照/回滚；改配置前请自行备份 `disk.qcow2`。
+- 快照 / 回滚已实现但真机验证待做：停止态快照包含 qcow2 磁盘、UEFI 变量与 TPM 副本；运行时快照包含磁盘、内存与设备状态，但不回滚 UEFI 变量 / TPM。raw 磁盘需先转换为 qcow2。
 
 ## 许可证
 
