@@ -58,7 +58,8 @@ cd android
 ./gradlew :app:testDebugUnitTest --tests "dev.pocketvm.QemuCommandBuilderTest"   # 单个测试类
 ```
 
-- `scripts/verify.sh` 是**提交前唯一需要手工跑的自检**：检查执行层架构、跑单元测试、检查 APK 的 `extractNativeLibs=true`。它是 bash-only，依赖 `file` 与 `aapt2`，按 `${ANDROID_HOME:-/opt/android-sdk}` 找 SDK。在 Windows 上用 Git Bash / WSL，别在 PowerShell 里跑。
+- `scripts/verify.sh` 是**提交前唯一需要手工跑的自检**：检查执行层架构、跑单元测试、检查 APK 的 `extractNativeLibs=true`。bash-only，SDK 位置先看 `ANDROID_HOME`、再退到 `android/local.properties` 的 `sdk.dir`；没有 `file(1)` 时直接读 ELF 头（e_machine=0xb7）判断架构，所以在 Git Bash 里也能跑，别在 PowerShell 里跑。
+  - **Windows 本机跑不了 JVM 单测**：命令行上限 32767，而 `debugUnitTestRuntimeClasspath` 的 jar 路径总长远超（本机实测 490 个 jar / 81 K 字符），java 启动参数被截断后会把路径片段当主类名，报成 `ClassNotFoundException: <片段>`；`--tests` 单类也一样，无法靠分批绕过。脚本已把这种情形识别为**环境阻塞**（warn，不计 FAIL），不要误判成测试失败；单测以 GitHub Actions CI 或 Linux/macOS 的实跑为准。
 - 需要 JDK 17+ 与 Android SDK 37；Windows 下用 `gradlew.bat`。
 - 有 GitHub Actions CI（`.github/workflows/ci.yml`，在 JDK 17 + Android SDK 37 上跑单元测试）；没有 pre-commit 配置。
 
