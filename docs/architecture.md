@@ -72,6 +72,12 @@ VNC 只绑 `127.0.0.1`，不暴露到局域网。
 ## 已知技术债
 
 1. `Screen` 用手写状态而不是 Navigation Compose —— 单 Activity 三屏，暂不值得引入依赖。
-2. 日志每 1s 轮询尾部 64 KB，未做增量 offset；VM 长时间运行后建议改成 inotify 或读取偏移。
+2. ~~日志每 1s 轮询尾部 64 KB，未做增量 offset~~ —— **已解决（2026-11-13）**：
+   `LogTailReader` 按文件偏移增量读取，`length == offset` 时直接返回上次结果（零 IO），
+   有新增只读新增字节；换文件或文件变短自动重置。`VmSession.readLog` / `readSerialTail`
+   已切到它，`LogTail.read` 保留给一次性场景（诊断导出、调试接口、失败归因）。
+   延迟若要再降（亚秒级）才需要 inotify，当前 1s 轮询下的开销已经只剩「增量字节 + 解码」。
+   顺带修了两个 off-by-one：`lines().takeLast(n)` 把末尾空串算成一行（要 n 行给 n-1 行）；
+   首次从 `length - maxBytes` 切入时首行是半截。
 3. `VmSession` 的监控协程未在进程退出后 join，极端情况下 `Exited` 会晚于 UI 重建。
 4. 没有持久化「上次异常退出」标记，冷启动后无法区分「用户停止」与「崩溃」。

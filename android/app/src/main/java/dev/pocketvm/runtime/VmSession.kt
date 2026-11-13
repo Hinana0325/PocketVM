@@ -24,6 +24,7 @@ import dev.pocketvm.diagnostics.DiagEvent
 import dev.pocketvm.diagnostics.DiagSnapshot
 import dev.pocketvm.diagnostics.DiagnosticsExporter
 import dev.pocketvm.diagnostics.LogTail
+import dev.pocketvm.diagnostics.LogTailReader
 import dev.pocketvm.diagnostics.ProcessHealth
 import dev.pocketvm.diagnostics.ProcStats
 import dev.pocketvm.diagnostics.QmpProbe
@@ -200,6 +201,15 @@ class VmSession @Inject constructor(
     private var currentManifest: RunManifest? = null
     @Volatile
     private var currentLog: File? = null
+
+    /**
+     * UI 每秒轮询日志与串口尾部。用增量读取器，避免日志静止时仍然每秒读满 64 KB
+     * （`LogTailReader` 在文件长度不变时直接返回上次结果）。
+     *
+     * 两个文件各自维护偏移：run 切换时路径会变，读取器自己会重置。
+     */
+    private val logTail = LogTailReader()
+    private val serialTail = LogTailReader()
 
     /** Which VM the live process belongs to. The UI can open any VM's console. */
     @Volatile
@@ -1025,7 +1035,7 @@ class VmSession @Inject constructor(
      */
     fun readLog(vmId: String? = null, maxLines: Int = 400): String {
         if (vmId != null && currentManifest?.vmId != vmId) return ""
-        return currentLog?.let { LogTail.read(it, maxLines = maxLines) } ?: ""
+        return currentLog?.let { logTail.read(it, maxLines) } ?: ""
     }
 
     /**
@@ -1041,7 +1051,7 @@ class VmSession @Inject constructor(
         if (vmId != null && manifest.vmId != vmId) return ""
         val file = layout.serialLogFile(manifest.vmId, manifest.runId)
         if (!file.exists()) return ""
-        return LogTail.read(file, maxBytes = 64 * 1024, maxLines = maxLines)
+        return serialTail.read(file, maxLines)
     }
 
     /**

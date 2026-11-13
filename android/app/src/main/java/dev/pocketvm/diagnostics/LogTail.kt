@@ -21,6 +21,9 @@ object LogTail {
                 raf.readFully(buffer)
                 String(buffer, Charsets.UTF_8)
                     .lines()
+                    // 文件以换行结尾时 lines() 会多出一个空串，直接 takeLast 会把它
+                    // 算成一行（要 100 行只给 99 行）。先去空串再截断。
+                    .dropLastWhile { it.isEmpty() }
                     .takeLast(maxLines)
                     .joinToString("\n")
             }

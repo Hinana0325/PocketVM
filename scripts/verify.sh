@@ -86,6 +86,7 @@ elif grep -qE 'ClassNotFoundException:|Test process encountered an unexpected pr
     ENV_BLOCKED=1
     warn "测试进程未能启动（环境限制，不是代码失败）"
     warn "  本机 Windows 命令行上限 32767，测试 classpath 超限；请用 CI 或 Linux/macOS 复核"
+    warn "  不依赖 Android/Hilt 的用例可先用：bash scripts/run-jvm-test.sh <测试类全名>"
 else
     bad "testDebugUnitTest 失败，见 $TEST_LOG"
     tail -15 "$TEST_LOG" 2>/dev/null | sed 's/^/    /'

@@ -56,6 +56,7 @@ cd android
 ./gradlew :app:assemblePerf -PpvmSideBySide=true   # 侧载发布用：非 debuggable + debug 签名，产物 apk/perf/app-perf.apk
 ./gradlew :app:testDebugUnitTest
 ./gradlew :app:testDebugUnitTest --tests "dev.pocketvm.QemuCommandBuilderTest"   # 单个测试类
+bash scripts/run-jvm-test.sh dev.pocketvm.LogTailReaderTest   # 纯 JVM 测试：短 classpath 直接 JUnitCore，绕开 Windows 命令行长度限制
 ```
 
 - `scripts/verify.sh` 是**提交前唯一需要手工跑的自检**：检查执行层架构、跑单元测试、检查 APK 的 `extractNativeLibs=true`。bash-only，SDK 位置先看 `ANDROID_HOME`、再退到 `android/local.properties` 的 `sdk.dir`；没有 `file(1)` 时直接读 ELF 头（e_machine=0xb7）判断架构，所以在 Git Bash 里也能跑，别在 PowerShell 里跑。
