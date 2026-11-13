@@ -48,10 +48,10 @@ PocketVM 不只是一个“在手机上运行 Windows 的 QEMU 启动器”，�
 | 模块 | 功能 | 状态 |
 | --- | --- | --- |
 | VM Manager | 创建、删除、复制、启动虚拟机 | **多机同跑第一版已实现**（2026-11-12）：每 VM 独立 QEMU 进程/VNC 端口 + 内存预算 + 保活引用计数；**VM 复制已实现**（停止状态，qemu-img 转干净 qcow2 + vars/TPM 复制，名称自动去重） |
-| Image Manager | 管理 ISO、IMG、QCOW2、GSI | 已有 ISO 导入与 qcow2 置备；**GSI 组件拼装已落地**（2026-11-12，实验）：导入 kernel/ramdisk/system/vendor，sparse 自动展开，拼 GPT 物理分区盘（metadata/system/vendor/userdata）并转 qcow2；**PC QEMU 上首阶段→二阶段→zygote 已打通**（同日实验，见 `.workbuddy/memory/2026-11-12.md`），但拼盘遗漏了格式化 userdata，且显示（surfaceflinger / goldfish 图形 HAL）仍卡住，未到 boot_completed；以上未在产品链路验证；格式转换未做 |
+| Image Manager | 管理 ISO、IMG、QCOW2、GSI | 已有 ISO 导入与 qcow2 置备；**GSI 组件拼装已落地**（2026-11-12，实验）：导入 kernel/ramdisk/system/vendor，sparse 自动展开，拼 GPT 物理分区盘（metadata/system/vendor/userdata）并转 qcow2；**PC QEMU 上首阶段→二阶段→zygote 已打通**（同日实验，见 `.workbuddy/memory/2026-11-12.md`），但拼盘遗漏了格式化 userdata，且显示（surfaceflinger / goldfish 图形 HAL）仍卡住，未到 boot_completed；以上未在产品链路验证；**qcow2 ⇄ raw 转换已落地**（2026-11-13）：`qemu-img convert` 写临时文件再原子替换，失败不动原盘；raw→qcow2 是主场景（raw 在 FUSE 上按虚拟容量占用、且不支持快照），qcow2→raw 会先检查空间；未真机验证 |
 | Hardware Manager | CPU、内存、磁盘、网络、显示配置 | 已有配置与校验，需补多架构硬件模板 |
 | Acceleration | KVM、Hypervisor、Virtio、图形加速 | **只读探测已实现**（2026-11-12，`AccelerationProbe` + 诊断中心「硬件加速」卡 + 调试接口 `/diagnostics`）；KVM 接入未做，TCG 仍是唯一执行路径 |
-| Snapshot | 快照、恢复、备份 | **第一版已实现**（2026-11-12）：qcow2 内部快照（秒级，不复制整盘）+ vars.fd / TPM 副本，恢复前自动保险快照；仅 VM 停止时可用；真机验证待做 |
+| Snapshot | 快照、恢复、备份 | **停止态快照已实现**（2026-11-12）：qcow2 内部快照（秒级，不复制整盘）+ vars.fd / TPM 副本，恢复前自动保险快照；**运行时快照已实现**（2026-11-13）：QMP HMP `savevm`/`loadvm`，不用关机、含内存与设备状态，但**不含** UEFI 变量与 TPM（恢复后保持当前值）；两者均未真机验证 |
 | Console | VNC、SPICE、串口、远程桌面 | VNC（仅本机）与 SSH 已有；**客户机串口控制台已实现**（2026-11-12：`-serial unix` 交互式读写，Linux `console=ttyAMA0` 可用，Windows 需开 EMS）；**SPICE 不可用**：执行层未编入 spice-server、App 无客户端，需重建执行层+移植客户端；局域网 VNC 入口已下线（D1=B） |
 | Debug API | 本机只读 HTTP：状态/日志/诊断/快照 | 已实现（`127.0.0.1:18080`，默认关，需 token；真机联调待做） |
 

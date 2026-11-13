@@ -53,4 +53,52 @@ class SnapshotMetaTest {
         assertTrue(SnapshotPolicy.blockReason(null, VmRuntimeState.Preparing("vm", "创建虚拟磁盘")) != null)
         assertTrue(SnapshotPolicy.blockReason(null, VmRuntimeState.Stopping("vm")) != null)
     }
+
+    @Test
+    fun `live snapshots only when the vm is actually running`() {
+        val running = VmRuntimeState.Running("vm", 4242, 1_700_000_000_000, 5901, "/tmp/run.log")
+        assertNull(SnapshotPolicy.liveBlockReason("vm", running))
+        // 没在跑就该用停止态快照（能连 UEFI 变量一起存）。
+        assertTrue(SnapshotPolicy.liveBlockReason(null, VmRuntimeState.Idle) != null)
+        assertTrue(SnapshotPolicy.liveBlockReason(null, VmRuntimeState.Exited("vm", 0)) != null)
+        // 启动/关机过程中即使进程还在，也不能存内存快照。
+        assertTrue(SnapshotPolicy.liveBlockReason("vm", VmRuntimeState.Preparing("vm", "启动 QEMU")) != null)
+        assertTrue(SnapshotPolicy.liveBlockReason("vm", VmRuntimeState.Stopping("vm")) != null)
+    }
+
+    @Test
+    fun `live flag round trips and defaults to false`() {
+        val live = SnapshotMeta(
+            id = "20261113-221500-ab12",
+            label = "运行中",
+            createdAtEpochMs = 1_700_000_000_000,
+            diskTag = "pvm-20261113-221500-ab12",
+            varsBytes = 0,
+            tpmIncluded = false,
+            live = true,
+        )
+        assertEquals(live, SnapshotMetaCodec.decode(SnapshotMetaCodec.encode(live)))
+    }
+
+    @Test
+    fun `legacy snapshot json without live field still decodes`() {
+        // 0.11.0 之前写下的快照元数据没有 live 字段，升级后必须还能读出来。
+        val legacy = """
+            {
+              "id": "20261112-141530-a1b2",
+              "label": "旧快照",
+              "createdAtEpochMs": 1700000000000,
+              "diskTag": "pvm-20261112-141530-a1b2",
+              "varsBytes": 67108864,
+              "tpmIncluded": true,
+              "auto": false
+            }
+        """.trimIndent()
+
+        val meta = SnapshotMetaCodec.decode(legacy)
+
+        assertNotNull(meta)
+        assertEquals(false, meta!!.live)
+        assertEquals(true, meta.tpmIncluded)
+    }
 }

@@ -41,6 +41,9 @@ find_jar() {
 JUNIT="$(find_jar junit/junit 'junit-4*.jar')"
 HAMCREST="$(find_jar org.hamcrest 'hamcrest-core-*.jar')"
 KOTLIN_STDLIB="$(find_jar org.jetbrains.kotlin/kotlin-stdlib 'kotlin-stdlib-2*.jar')"
+# 可选：用到 kotlinx.serialization 的测试（如 SnapshotMetaTest）需要这两个。
+SER_JSON="$(find_jar org.jetbrains.kotlinx/kotlinx-serialization-json-jvm 'kotlinx-serialization-json-jvm-*.jar')"
+SER_CORE="$(find_jar org.jetbrains.kotlinx/kotlinx-serialization-core-jvm 'kotlinx-serialization-core-jvm-*.jar')"
 
 for jar in "$JUNIT" "$HAMCREST" "$KOTLIN_STDLIB"; do
     if [ -z "$jar" ]; then
@@ -62,5 +65,7 @@ case "$(uname -s)" in
 esac
 
 CP="$(winpath "$MAIN_CLASSES")$SEP$(winpath "$TEST_CLASSES")$SEP$(winpath "$JUNIT")$SEP$(winpath "$HAMCREST")$SEP$(winpath "$KOTLIN_STDLIB")"
+[ -n "$SER_JSON" ] && CP="$CP$SEP$(winpath "$SER_JSON")"
+[ -n "$SER_CORE" ] && CP="$CP$SEP$(winpath "$SER_CORE")"
 
 exec java -cp "$CP" org.junit.runner.JUnitCore "$@"

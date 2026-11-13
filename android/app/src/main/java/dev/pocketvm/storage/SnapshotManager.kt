@@ -37,6 +37,13 @@ data class SnapshotMeta(
     val tpmIncluded: Boolean,
     /** 恢复前自动创建的保险快照。 */
     val auto: Boolean = false,
+    /**
+     * true = 运行时快照：QMP `savevm` 存了内存 + 设备状态，恢复后不用重启。
+     *
+     * 代价是**不含** UEFI 变量（pflash）与 TPM 状态，恢复后这两项保持恢复时的值；
+     * 要连变量一起回滚只能停机做停止态快照。
+     */
+    val live: Boolean = false,
 )
 
 object SnapshotMetaCodec {
@@ -63,6 +70,18 @@ object SnapshotPolicy {
         runningVmId != null -> "虚拟机正在运行，请先停止再操作快照"
         runtime is VmRuntimeState.Preparing -> "虚拟机正在启动，请等启动完成并停止后再操作快照"
         runtime is VmRuntimeState.Stopping -> "虚拟机正在关机，请等停止完成后再操作快照"
+        else -> null
+    }
+
+    /**
+     * 运行时快照的前置条件：必须在运行态，且不在启动/关机过程中。
+     *
+     * 和 [blockReason] 相反——停止态该用普通快照（能连 UEFI 变量一起存）。
+     */
+    fun liveBlockReason(runningVmId: String?, runtime: VmRuntimeState): String? = when {
+        runningVmId == null -> "虚拟机没有在运行，请用普通快照"
+        runtime is VmRuntimeState.Preparing -> "虚拟机正在启动，请等启动完成"
+        runtime is VmRuntimeState.Stopping -> "虚拟机正在关机，请等关机完成"
         else -> null
     }
 }
@@ -154,11 +173,80 @@ class SnapshotManager @Inject constructor(
         }
     }
 
+    /**
+     * 运行中快照：不用关机，`savevm` 把内存 + 设备状态写进 qcow2 内部快照。
+     *
+     * 与停止态快照的差别：**没有** UEFI 变量（pflash）和 TPM 状态的副本。恢复后这两项
+     * 保持恢复那一刻的值；要连变量一起回滚必须停机做 [create]。
+     */
+    suspend fun createLive(vmId: String, label: String): Result<SnapshotMeta> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                requireLive(vmId)
+                val disk = layout.diskFile(vmId)
+                require(disk.isFile) { "磁盘还不存在，先启动一次虚拟机" }
+                require(Qcow2Creator.isQcow2(disk)) { "只有 qcow2 磁盘支持运行时快照" }
+
+                val suffix = (System.nanoTime() and 0xFFFF).toString(16)
+                val id = SnapshotMetaCodec.newId(System.currentTimeMillis(), suffix)
+                val tag = SnapshotMetaCodec.diskTag(id)
+
+                _progress.value = "正在创建运行时快照（含内存，可能需要一会儿）…"
+                try {
+                    sessions.saveVmState(vmId, tag).getOrThrow()
+                } finally {
+                    _progress.value = null
+                }
+
+                val meta = SnapshotMeta(
+                    id = id,
+                    label = label.ifBlank {
+                        "运行时快照 " + SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date())
+                    },
+                    createdAtEpochMs = System.currentTimeMillis(),
+                    diskTag = tag,
+                    varsBytes = 0,
+                    tpmIncluded = false,
+                    live = true,
+                )
+                metaFile(vmId, id).let { file ->
+                    file.parentFile?.mkdirs()
+                    file.writeText(SnapshotMetaCodec.encode(meta))
+                }
+                AgentFeed.event("snapshot.created", "vm" to vmId, "id" to id, "live" to true)
+                meta
+            }
+        }
+
+    /** 回到运行时快照。要求 VM 正在运行——只有活着的 QEMU 进程才能 `loadvm`。 */
+    suspend fun restoreLive(vmId: String, snapshotId: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                requireLive(vmId)
+                val meta = readMeta(vmId, snapshotId) ?: error("快照不存在")
+                require(meta.live) { "这不是运行时快照；停止态快照请先关机再恢复" }
+
+                _progress.value = "正在恢复到运行时快照…"
+                try {
+                    sessions.loadVmState(vmId, meta.diskTag).getOrThrow()
+                } finally {
+                    _progress.value = null
+                }
+                AgentFeed.event("snapshot.restored", "vm" to vmId, "id" to meta.id, "live" to true)
+            }
+        }
+
     // ---------- internals ----------
 
     private fun requireStopped(vmId: String) {
         val state = sessions.stateOf(vmId)
         SnapshotPolicy.blockReason(if (sessions.isRunning(vmId)) vmId else null, state)
+            ?.let { error(it) }
+    }
+
+    private fun requireLive(vmId: String) {
+        val state = sessions.stateOf(vmId)
+        SnapshotPolicy.liveBlockReason(if (sessions.isRunning(vmId)) vmId else null, state)
             ?.let { error(it) }
     }
 

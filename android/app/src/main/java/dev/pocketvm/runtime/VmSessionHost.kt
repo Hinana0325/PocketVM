@@ -103,6 +103,15 @@ class VmSessionHost @Inject constructor(
     fun serialSend(vmId: String, text: String): Boolean =
         sessionOrNull(vmId)?.serialSend(text) == true
 
+    /** 运行中快照的保存/恢复，转发给持有 QMP 的会话。VM 没在跑时直接失败。 */
+    suspend fun saveVmState(vmId: String, tag: String): Result<Unit> =
+        sessionOrNull(vmId)?.saveVmState(tag)
+            ?: Result.failure(IllegalStateException("虚拟机没有在运行，无法创建运行时快照"))
+
+    suspend fun loadVmState(vmId: String, tag: String): Result<Unit> =
+        sessionOrNull(vmId)?.loadVmState(tag)
+            ?: Result.failure(IllegalStateException("虚拟机没有在运行，无法恢复到运行时快照"))
+
     suspend fun start(config: VmConfig): LaunchOutcome {
         if (isRunning(config.id)) {
             return LaunchOutcome.Failed("这台虚拟机已经在运行。")

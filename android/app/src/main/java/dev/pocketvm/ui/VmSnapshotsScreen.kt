@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import dev.pocketvm.core.model.VmConfig
+import dev.pocketvm.storage.DiskConverter
 import dev.pocketvm.storage.SnapshotMeta
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -50,6 +51,9 @@ fun VmSnapshotsScreen(
 
     val blocked = st.blockReason != null
     val working = st.busy != null
+    // 运行中只允许「运行时快照」：不用关机，但没有 UEFI 变量/TPM 的副本。
+    val live = st.runningVmId != null
+    val liveBlocked = st.liveBlockReason != null
 
     Column(modifier = Modifier.fillMaxSize().padding(contentPadding)) {
         PocketTopBar(
@@ -65,24 +69,52 @@ fun VmSnapshotsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            SectionCard(title = "说明", subtitle = "qcow2 内部快照 · 仅停止状态可用") {
+            SectionCard(title = "说明", subtitle = "qcow2 内部快照 · 停止态或运行态") {
                 Text(
-                    "快照会记录磁盘当前状态（qcow2 内部快照，秒级、不复制整块盘），" +
-                        "并另存 UEFI 变量（vars.fd）与 TPM 状态（如存在）。恢复前会自动为当前状态" +
-                        "建一份「自动快照」，误恢复可以再回滚。",
+                    "快照会记录磁盘当前状态（qcow2 内部快照，秒级、不复制整块盘）。" +
+                        "**停机快照**额外另存 UEFI 变量（vars.fd）与 TPM 状态，恢复前会自动为当前" +
+                        "状态建一份「自动快照」，误恢复可以再回滚。" +
+                        "**运行时快照**不用关机，但只覆盖磁盘与内存，UEFI 变量 / TPM 不随快照回滚。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (blocked) {
+                if (blocked && !live) {
                     Text(
                         st.blockReason.orEmpty(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
+                if (live && liveBlocked) {
+                    Text(
+                        st.liveBlockReason.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
 
-            SectionCard(title = "新建快照", subtitle = "名称可留空，自动用时间") {
+            // raw 磁盘既不能做内部快照，又会按虚拟容量占存储，给一个转换入口。
+            if (st.diskFormat == DiskConverter.Format.RAW) {
+                SectionCard(title = "磁盘格式", subtitle = "raw 不支持快照") {
+                    Text(
+                        "当前是 raw 镜像：在 FUSE 上会按虚拟容量占用存储，也不能创建快照。" +
+                            "转换成 qcow2 后占用按实际写入增长，并且能使用下面的快照功能。" +
+                            "转换期间原盘会保留一份备份，失败不会丢数据。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = { snapVm.convertToQcow2() },
+                        enabled = !live && !blocked && !working,
+                    ) { Text("转换为 qcow2") }
+                }
+            }
+
+            SectionCard(
+                title = if (live) "新建运行时快照" else "新建快照",
+                subtitle = if (live) "不用关机 · 含内存，可能要等几十秒" else "名称可留空，自动用时间",
+            ) {
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it.take(40) },
@@ -92,11 +124,11 @@ fun VmSnapshotsScreen(
                 )
                 Button(
                     onClick = {
-                        snapVm.create(label)
+                        if (live) snapVm.createLive(label) else snapVm.create(label)
                         label = ""
                     },
-                    enabled = !blocked && !working,
-                ) { Text("创建快照") }
+                    enabled = !working && if (live) !liveBlocked else !blocked,
+                ) { Text(if (live) "创建运行时快照" else "创建快照") }
             }
 
             st.busy?.let { text ->
@@ -116,7 +148,12 @@ fun VmSnapshotsScreen(
                     else -> st.snapshots.forEach { snap ->
                         SnapshotRow(
                             snap = snap,
-                            enabled = !blocked && !working,
+                            // 运行时快照要求 VM 在跑；停机快照要求 VM 已停止。
+                            enabled = if (snap.live) {
+                                !liveBlocked && !working
+                            } else {
+                                !blocked && !working
+                            },
                             onRestore = { pendingRestore = snap },
                             onDelete = { pendingDelete = snap },
                         )
@@ -141,13 +178,18 @@ fun VmSnapshotsScreen(
             title = { Text("恢复到「${snap.label}」？") },
             text = {
                 Text(
-                    "当前磁盘与 UEFI 变量会回到该快照的状态。恢复前会先为当前状态创建自动快照，" +
-                        "误操作可以再回滚。恢复要求虚拟机已停止。",
+                    if (snap.live) {
+                        "磁盘与内存会回到该快照的状态，虚拟机继续运行、不用重启。" +
+                            "运行时快照不含 UEFI 变量与 TPM 状态，这两项保持当前值。"
+                    } else {
+                        "当前磁盘与 UEFI 变量会回到该快照的状态。恢复前会先为当前状态创建自动快照，" +
+                            "误操作可以再回滚。恢复要求虚拟机已停止。"
+                    },
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    snapVm.restore(snap.id)
+                    if (snap.live) snapVm.restoreLive(snap.id) else snapVm.restore(snap.id)
                     pendingRestore = null
                 }) { Text("恢复") }
             },
@@ -190,8 +232,11 @@ private fun SnapshotRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(snap.label, style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    "$stamp · ${if (snap.auto) "自动快照" else "手动快照"}" +
-                        (if (snap.tpmIncluded) " · 含 TPM 状态" else ""),
+                    "$stamp · " + when {
+                        snap.live -> "运行时快照（不含 UEFI/TPM）"
+                        snap.auto -> "自动快照"
+                        else -> "手动快照"
+                    } + (if (snap.tpmIncluded) " · 含 TPM 状态" else ""),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

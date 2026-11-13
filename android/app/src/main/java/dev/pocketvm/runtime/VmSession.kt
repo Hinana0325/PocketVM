@@ -1055,6 +1055,47 @@ class VmSession @Inject constructor(
     }
 
     /**
+     * 运行中快照：用 QMP 的 HMP `savevm` 把内存 + 设备状态写进 qcow2 内部快照。
+     *
+     * 覆盖范围只有 qcow2 盘和内存，**不含** UEFI 变量（pflash 不在快照里）和 TPM
+     * 状态——恢复后这两项保持恢复那一刻的值。要连变量一起回滚，只能用停止态快照
+     * （[dev.pocketvm.storage.SnapshotManager.create]）。
+     *
+     * `savevm` 是同步 HMP 命令，12 GB 的盘在 TCG 手机上可能几十秒，所以超时给得很宽。
+     */
+    suspend fun saveVmState(tag: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val client = qmp ?: error("QMP 未连接，无法创建运行时快照")
+            val response = client.execute(
+                "human-monitor-command",
+                mapOf("command-line" to "savevm $tag"),
+                timeoutMs = LIVE_SNAPSHOT_TIMEOUT_MS,
+            ) ?: error("savevm 没有返回结果（QMP 超时或连接已断开）")
+            val text = response.optString("return")
+            if (text.startsWith("Error", ignoreCase = true)) error(text)
+        }
+    }
+
+    /**
+     * 回到运行中快照：HMP `loadvm` 之后 VM 处于暂停态，再补一条 `cont` 让它继续跑。
+     *
+     * 失败时也尝试 `cont`——不然用户会看到一个「明明在跑却不动」的虚拟机。
+     */
+    suspend fun loadVmState(tag: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val client = qmp ?: error("QMP 未连接，无法恢复运行时快照")
+            val response = client.execute(
+                "human-monitor-command",
+                mapOf("command-line" to "loadvm $tag"),
+                timeoutMs = LIVE_SNAPSHOT_TIMEOUT_MS,
+            ) ?: error("loadvm 没有返回结果（QMP 超时或连接已断开）")
+            val text = response.optString("return")
+            runCatching { client.execute("cont", null, timeoutMs = 5_000) }
+            if (text.startsWith("Error", ignoreCase = true)) error(text)
+        }
+    }
+
+    /**
      * Publishes [stage] to the UI, never moving backwards.
      *
      * Called from the serial watcher and the health probe, i.e. from two
@@ -2094,5 +2135,13 @@ class VmSession @Inject constructor(
 
         /** 诊断事件在内存里保留的条数（T6 看板默认展开上限）。 */
         const val DIAG_EVENT_LIMIT = 20
+
+        /**
+         * 运行时快照（savevm/loadvm）的超时。
+         *
+         * 这两个 HMP 命令是同步执行的，写完整个内存 + 脏页才返回；12 GB 的盘在 TCG
+         * 手机上可能几十秒到几分钟，用 QMP 默认的 3 秒必然误判失败。
+         */
+        const val LIVE_SNAPSHOT_TIMEOUT_MS = 300_000
     }
 }
