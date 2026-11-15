@@ -20,6 +20,7 @@ PocketVM Android Guest（Android 作为独立 Guest 平台，QEMU virt + 自建 
 | [M4-graphics-research-2026-11-15.md](M4-graphics-research-2026-11-15.md) | M4 图形栈适配研究（Cuttlefish 参考） | 根因：找不到 EGL 实现；路线 A（VirtIO GPU 2D + SwiftShader）唯一短期可行 |
 | [M5-swiftshader-egl-2026-11-15.md](M5-swiftshader-egl-2026-11-15.md) | M5 SwiftShader + ANGLE 最小图形链路（E1/E1c） | E1c 通过：setprop 桥打通，Abort message 变化；下一步 E2 构建 `vulkan.pastel.so` |
 | [M6-qemu-virt-graphics-restore-2026-11-15.md](M6-qemu-virt-graphics-restore-2026-11-15.md) | 恢复 M4 内核 + VirtIO GPU 环境；Pixel Boot HAL 兼容实验（有止损） | DRM 初始化与 `vdc checkpoint` 通过；Boot HAL 被 SELinux 设备标签挡住，止损冻结 |
+| [B1-cuttlefish-vendor-audit.md](B1-cuttlefish-vendor-audit.md) | 提取 Cuttlefish Android 17 Vendor 并审计 HAL/VINTF/SELinux/图形栈 | `vulkan.pastel.so` 与 minigbm/drm_hwc 齐全；核心 HAL 版本可对 Pixel，但 Pixel 专有 HAL 缺失、分区/SELinux 形态不同，不能直接替换 |
 
 ## 当前状态（2026-11-15）
 
