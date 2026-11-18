@@ -60,7 +60,7 @@ bash scripts/run-jvm-test.sh dev.pocketvm.LogTailReaderTest   # 纯 JVM 测试�
 ```
 
 - `scripts/verify.sh` 是**提交前唯一需要手工跑的自检**：检查执行层架构、跑单元测试、检查 APK 的 `extractNativeLibs=true`。bash-only，SDK 位置先看 `ANDROID_HOME`、再退到 `android/local.properties` 的 `sdk.dir`；没有 `file(1)` 时直接读 ELF 头（e_machine=0xb7）判断架构，所以在 Git Bash 里也能跑，别在 PowerShell 里跑。
-  - **Windows 本机跑不了 JVM 单测**：命令行上限 32767，而 `debugUnitTestRuntimeClasspath` 的 jar 路径总长远超（本机实测 490 个 jar / 81 K 字符），java 启动参数被截断后会把路径片段当主类名，报成 `ClassNotFoundException: <片段>`；`--tests` 单类也一样，无法靠分批绕过。脚本已把这种情形识别为**环境阻塞**（warn，不计 FAIL），不要误判成测试失败；单测以 GitHub Actions CI 或 Linux/macOS 的实跑为准。
+  - **Windows 本机已支持直接跑 JVM 单测**：此前因系统环境变量 PATH 中第三方工具遗留的未闭合双引号破坏命令行解析（报 `ClassNotFoundException: <路径片段>`），现已在 `gradlew.bat` 加入 PATH 双引号自动净化，并在 `build.gradle.kts` 中配置了防御性 Pathing Jar 机制。Windows 下直接跑 `.\gradlew.bat :app:testDebugUnitTest` 即可运行全部 368 个纯 JVM 单元测试（无需退回 CI）。
 - 需要 JDK 17+ 与 Android SDK 37；Windows 下用 `gradlew.bat`。
 - 有 GitHub Actions CI（`.github/workflows/ci.yml`，在 JDK 17 + Android SDK 37 上跑单元测试）；没有 pre-commit 配置。
 

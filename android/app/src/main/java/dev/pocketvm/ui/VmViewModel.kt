@@ -212,6 +212,18 @@ class VmViewModel @Inject constructor(
     /** 最近一次准备控制台的虚拟机；换了虚拟机才清 SSH 会话。 */
     private var lastConsoleVmId: String? = null
 
+    /** 控制台页面是否处于前台活跃状态。非活跃时自动暂停日志/串口尾部读取，避免后台无谓 CPU/IO 空耗与全局重组。 */
+    @Volatile
+    private var consoleActive: Boolean = false
+
+    /** 控制台页面进入/退出时调用。 */
+    fun setConsoleActive(active: Boolean, vmId: String? = null) {
+        consoleActive = active
+        if (active && vmId != null) {
+            openConsole(vmId)
+        }
+    }
+
     /**
      * 准备进入某台虚拟机的控制台：换了虚拟机就清掉旧 SSH 会话（免得串台），
      * 读一份当前日志/串口尾部，刷新电池白名单状态。
@@ -897,36 +909,48 @@ class VmViewModel @Inject constructor(
 
     private fun tickLog() {
         viewModelScope.launch {
+            var loopCount = 0
             while (true) {
                 val snapshot = _ui.value
                 val running = snapshot.runtime is VmRuntimeState.Running ||
                     snapshot.runtime is VmRuntimeState.Stopping
                 if (running) {
-                    // All of these are file reads: never on Main.
-                    val tick = withContext(Dispatchers.IO) {
-                        val id = _ui.value.activeVmId?.takeIf { sessions.isRunning(it) }
-                        LogTick(
-                            log = id?.let { sessions.readLog(it) } ?: "",
-                            serial = id?.let { sessions.readSerialTail(it) } ?: "",
-                            vmId = id,
-                            usedBytes = id?.let {
-                                diskProvisioner.usedBytes(layout.diskFile(it))
-                            },
-                        )
-                    }
-                    _ui.update { current ->
-                        val nextUsage = if (tick.vmId != null && tick.usedBytes != null) {
-                            current.diskUsage + (tick.vmId to tick.usedBytes)
-                        } else {
-                            current.diskUsage
+                    val needLog = consoleActive
+                    val needDisk = (loopCount % 5 == 0)
+                    if (needLog || needDisk) {
+                        // All of these are file reads: never on Main.
+                        val tick = withContext(Dispatchers.IO) {
+                            val id = _ui.value.activeVmId?.takeIf { sessions.isRunning(it) }
+                            LogTick(
+                                log = if (needLog && id != null) sessions.readLog(id) else "",
+                                serial = if (needLog && id != null) sessions.readSerialTail(id) else "",
+                                vmId = id,
+                                usedBytes = if (needDisk && id != null) {
+                                    diskProvisioner.usedBytes(layout.diskFile(id))
+                                } else null,
+                            )
                         }
-                        current.copy(
-                            log = if (tick.log != current.log) tick.log else current.log,
-                            serial = if (tick.serial != current.serial) tick.serial else current.serial,
-                            diskUsage = nextUsage,
-                        )
+                        _ui.update { current ->
+                            val nextUsage = if (tick.vmId != null && tick.usedBytes != null) {
+                                current.diskUsage + (tick.vmId to tick.usedBytes)
+                            } else {
+                                current.diskUsage
+                            }
+                            val nextLog = if (needLog && tick.log != current.log) tick.log else current.log
+                            val nextSerial = if (needLog && tick.serial != current.serial) tick.serial else current.serial
+                            if (nextLog == current.log && nextSerial == current.serial && nextUsage == current.diskUsage) {
+                                current
+                            } else {
+                                current.copy(
+                                    log = nextLog,
+                                    serial = nextSerial,
+                                    diskUsage = nextUsage,
+                                )
+                            }
+                        }
                     }
                 }
+                loopCount++
                 delay(1_000)
             }
         }

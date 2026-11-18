@@ -26,6 +26,9 @@
 @rem Set local scope for the variables with windows NT shell
 if "%OS%"=="Windows_NT" setlocal
 
+@rem 清理 PATH 中由于第三方工具安装遗留的未闭合双引号，防止 JVM 启动时命令行解析破坏
+set PATH=%PATH:"=%
+
 set DIRNAME=%~dp0
 if "%DIRNAME%"=="" set DIRNAME=.
 @rem This is normally unused

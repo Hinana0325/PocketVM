@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
@@ -230,7 +231,12 @@ fun AppNavHost(
             if (target == null) {
                 Text("虚拟机不存在或已删除", modifier = Modifier.padding(24.dp))
             } else {
-                LaunchedEffect(vmId) { vm.openConsole(vmId) }
+                DisposableEffect(vmId) {
+                    vm.setConsoleActive(true, vmId)
+                    onDispose {
+                        vm.setConsoleActive(false)
+                    }
+                }
                 ConsoleScreen(
                     state = state,
                     vm = target,

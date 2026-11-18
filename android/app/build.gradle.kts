@@ -1,4 +1,8 @@
+import java.io.FileOutputStream
 import java.security.MessageDigest
+import java.util.jar.Attributes
+import java.util.jar.JarOutputStream
+import java.util.jar.Manifest
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -185,3 +189,27 @@ dependencies {
 
     testImplementation(libs.junit)
 }
+
+// Windows 命令行超长（32767 字符限制）救星：
+// 当依赖众多（490+ jars / 81K+ 字符）时，通过 Manifest Pathing Jar 替换 Test 任务的超长 classpath，
+// 使命令行中的 -cp 缩短为单个临时 jar，彻底解决 Windows 本机无法跑单测的阻塞问题。
+tasks.withType<Test>().configureEach {
+    if (System.getProperty("os.name").lowercase().contains("windows")) {
+        doFirst {
+            val originalClasspath = classpath
+            val pathingJar = File(temporaryDir, "test-classpath-pathing.jar")
+            temporaryDir.mkdirs()
+            val manifest = Manifest().apply {
+                mainAttributes[Attributes.Name.MANIFEST_VERSION] = "1.0"
+                val classpathEntries = originalClasspath.files.joinToString(" ") { file ->
+                    val urlStr = file.toURI().toURL().toString()
+                    if (file.isDirectory && !urlStr.endsWith("/")) "$urlStr/" else urlStr
+                }
+                mainAttributes.putValue("Class-Path", classpathEntries)
+            }
+            JarOutputStream(FileOutputStream(pathingJar), manifest).close()
+            classpath = project.files(pathingJar)
+        }
+    }
+}
+
